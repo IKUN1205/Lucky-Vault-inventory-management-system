@@ -144,7 +144,7 @@
 | Journey Together | [Pokemon/EN] Journey Together Booster Pack | 27 | $6.0 | $4.8 | EXISTING |
 | Astral Radiance | [Pokemon/EN] Astral Radiance Booster Pack | 23 | $9.1 | $7.28 | EXISTING |
 | Hidden Fates | [Pokemon/EN] Hidden Fates Booster Pack | 15 | $19.9 | $15.92 | EXISTING |
-| Ninja Spinner | [Pokemon/JP] Ninja Spinner Booster Box (NEW) | 13 | $119.28 | $95.42 | NEW |
+| Ninja Spinner | [Pokemon/JP] Ninja Spinner Booster Pack (NEW) | 13 | $119.28 | $95.42 | NEW |
 | Dark Crystal Blaze | [Pokemon/CN] Dark Crystal Blaze Booster Box (NEW) | 12 | — | skip | NEW |
 | Gem Vol 2 | [Pokemon/CN] Gem Vol.2 Booster Box (NEW) | 12 | — | skip | NEW |
 | Inferno X | [Pokemon/JP] Mega Evolution Inferno X Booster Box | 9 | — | skip | EXISTING |

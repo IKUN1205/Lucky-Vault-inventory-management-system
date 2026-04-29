@@ -233,8 +233,7 @@ setmap("master.csv", "S/V Starter Deck Ancient Koraidon EX JP", NEW('Pokemon','S
 setmap("master.csv", "S/V Starter Deck Generations JP", NEW('Pokemon','Sealed','Starter Deck','S/V Starter Deck Generations','JP'))
 setmap("master.csv", "Raihan Trainer Card Collection JP", NEW('Pokemon','Sealed','Collection','Raihan Trainer Card Collection','JP'))
 
-setmap("rocket.csv", "Ninja Spinner", NEW('Pokemon','Sealed','Booster Box','Ninja Spinner Booster Box','JP', packs=30))
-# Note: Ninja Spinner appears twice in rocket.csv with different Type — handled below in special-cases
+# Ninja Spinner appears twice in rocket.csv: Box qty=2 + Packs qty=13. Disambiguate by type below.
 
 # ===== POKEMON CN — All NEW =====
 setmap("master.csv", "Black Crystal Blaze Jumbo", NEW('Pokemon','Sealed','Booster Box','Black Crystal Blaze Jumbo Booster Box','CN'))
@@ -316,6 +315,13 @@ TRIPLE_OVERRIDES = {
     ("packheads.csv", "nikke", "weiss schwarz"): NEW('Other','Sealed','Booster Box','NIKKE Goddess of Victory Booster Box (Weiss Schwarz)','EN'),
 }
 
+# Type-based overrides — for sheets where same product name appears with different Type column
+TYPE_OVERRIDES = {
+    # (sheet_file, sheet_product_lower, sheet_type_lower) -> mapping
+    ("rocket.csv", "ninja spinner", "box"):   NEW('Pokemon','Sealed','Booster Box','Ninja Spinner Booster Box','JP', packs=30),
+    ("rocket.csv", "ninja spinner", "packs"): NEW('Pokemon','Pack','Booster Pack','Ninja Spinner Booster Pack','JP'),
+}
+
 def sql_str(s):
     if s is None: return 'NULL'
     return "'" + str(s).replace("'", "''") + "'"
@@ -329,7 +335,10 @@ def resolve(sheet_file, row):
     sc = (row.get('Category') or '').strip()
     st = (row.get('Type') or '').strip()
     spk = sp.lower().strip()
-    # Triple override first
+    # Type override (most specific)
+    type_o = TYPE_OVERRIDES.get((sheet_file, spk, st.lower().strip()))
+    if type_o: return type_o
+    # Triple override (cat-based)
     triple = TRIPLE_OVERRIDES.get((sheet_file, spk, sc.lower().strip()))
     if triple: return triple
     # Direct override
