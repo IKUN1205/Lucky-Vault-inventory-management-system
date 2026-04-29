@@ -9,20 +9,13 @@ import { ArrowRightLeft, ArrowRight, Save } from 'lucide-react'
 const ALLOWED_LOCATION_NAMES = [
   'Master Inventory',
   'Front Store',
-  'Office Safe',
-  'Other/Out',
   'Slab Room',
-  'Storefront',
-  // Stream Rooms
+  // Stream Rooms (correctly named — TikTok and Whatnot are separate platforms)
   'Stream Room - eBay LuckyVaultUS',
   'Stream Room - eBay SlabbiePatty',
   'Stream Room - TikTok RocketsHQ',
-  'Stream Room - TikTok Whatnot',
-  'Stream Room - Whatnot Rockets',
-  // Platform locations
-  'Tiktok Packheads',
-  'Tiktok Rockets HQ',
-  'Whatnot'
+  'Stream Room - TikTok Packheads',
+  'Stream Room - Whatnot'
 ]
 
 // Helper to extract Launch Name
