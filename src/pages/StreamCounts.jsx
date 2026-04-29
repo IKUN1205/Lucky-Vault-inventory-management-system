@@ -304,7 +304,7 @@ export default function StreamCounts() {
         location: locations.find(l => l.id === form.location_id)?.name,
         streamer: users.find(u => u.id === form.streamer_id)?.name,
         counted_by: users.find(u => u.id === form.counted_by_id)?.name,
-        count_time: countDateTime,
+        count_time: localDate,
         total_sold: totalSold,
         total_discrepancies: totalDiscrepancies,
         sold_items: soldItems,
