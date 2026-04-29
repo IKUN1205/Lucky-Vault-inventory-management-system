@@ -238,12 +238,13 @@ export const createHighValueMovement = async (movement) => {
 // Update helpers
 export const updateInventory = async (productId, locationId, quantityChange, newAvgCost = null) => {
   // First try to get existing inventory record
+  // Use maybeSingle() so that 0 rows returns null instead of throwing 406
   const { data: existing } = await supabase
     .from('inventory')
     .select('*')
     .eq('product_id', productId)
     .eq('location_id', locationId)
-    .single()
+    .maybeSingle()
   
   if (existing) {
     const newQuantity = existing.quantity + quantityChange
@@ -284,12 +285,13 @@ export const updateInventory = async (productId, locationId, quantityChange, new
 // Also supports additional metadata like grading_company, grade, current_market_price
 export const updateInventoryManual = async (productId, locationId, quantityChange, costBasis = null, metadata = {}) => {
   // First try to get existing inventory record
+  // Use maybeSingle() so that 0 rows returns null instead of throwing 406
   const { data: existing } = await supabase
     .from('inventory')
     .select('*')
     .eq('product_id', productId)
     .eq('location_id', locationId)
-    .single()
+    .maybeSingle()
   
   if (existing) {
     const newQuantity = existing.quantity + quantityChange
