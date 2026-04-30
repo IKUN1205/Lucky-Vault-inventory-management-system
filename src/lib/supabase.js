@@ -155,6 +155,16 @@ export const createMovement = async (movement) => {
   return data
 }
 
+// Hard-delete a movement row. Used by Undo to reverse a transfer.
+// The caller is responsible for separately reversing the inventory deltas.
+export const deleteMovement = async (movementId) => {
+  const { error } = await supabase
+    .from('movements')
+    .delete()
+    .eq('id', movementId)
+  if (error) throw error
+}
+
 export const createBoxBreak = async (boxBreak) => {
   const { data, error } = await supabase
     .from('box_breaks')

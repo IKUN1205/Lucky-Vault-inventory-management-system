@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { fetchLocations, fetchInventory, createMovement, updateInventory } from '../lib/supabase'
+import { fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import Instructions from '../components/Instructions'
@@ -192,35 +192,90 @@ export default function MovedInventory() {
 
     setSubmitting(true)
 
+    // Track what we created, so the Undo button can reverse it
+    const completedMoves = []
+    // Snapshot of the cart for the closure (state will be cleared on success)
+    const movedFromId = form.from_location_id
+    const movedToId = form.to_location_id
+
     try {
       // Create movements + update inventory for each cart item
       for (const item of cart) {
         const inv = item.inventory
         const cost = (inv?.avg_cost_basis || 0) * item.quantity
 
-        await createMovement({
+        const movement = await createMovement({
           date: form.date,
           product_id: item.product_id,
-          from_location_id: form.from_location_id,
-          to_location_id: form.to_location_id,
+          from_location_id: movedFromId,
+          to_location_id: movedToId,
           quantity: item.quantity,
           cost_basis: cost,
           movement_type: 'Transfer',
           notes: form.notes
         })
 
-        await updateInventory(item.product_id, form.from_location_id, -item.quantity)
-        await updateInventory(item.product_id, form.to_location_id, item.quantity, inv?.avg_cost_basis)
+        await updateInventory(item.product_id, movedFromId, -item.quantity)
+        await updateInventory(item.product_id, movedToId, item.quantity, inv?.avg_cost_basis)
+
+        completedMoves.push({
+          movement_id: movement?.id,
+          product_id: item.product_id,
+          quantity: item.quantity,
+          avg_cost_basis: inv?.avg_cost_basis,
+        })
       }
 
       const totalUnits = cart.reduce((s, c) => s + c.quantity, 0)
-      addToast(`Moved ${cart.length} ${cart.length === 1 ? 'product' : 'products'} (${totalUnits} units) successfully!`)
+
+      // Build undo callback — reverses every movement we just created
+      const undo = async () => {
+        try {
+          for (const m of completedMoves) {
+            // Reverse inventory deltas
+            await updateInventory(m.product_id, movedFromId, m.quantity)
+            await updateInventory(m.product_id, movedToId, -m.quantity)
+            // Delete the movement record so the audit log is clean
+            if (m.movement_id) {
+              await deleteMovement(m.movement_id)
+            }
+          }
+          addToast(`Undone — ${completedMoves.length} ${completedMoves.length === 1 ? 'transfer' : 'transfers'} reverted`, 'info')
+          // Refresh inventory view since balances changed
+          if (form.from_location_id) loadInventoryForLocation(form.from_location_id)
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
+
       setCart([])
       setForm(f => ({ ...f, product_id: '', quantity: 1, notes: '' }))
-      loadInventoryForLocation(form.from_location_id)
+      loadInventoryForLocation(movedFromId)
+
+      addToast(
+        `Moved ${completedMoves.length} ${completedMoves.length === 1 ? 'product' : 'products'} (${totalUnits} units) successfully!`,
+        'success',
+        { action: { label: 'Undo', onClick: undo } }
+      )
     } catch (error) {
       console.error('Error moving inventory:', error)
-      addToast('Failed to move inventory — check console', 'error')
+      // Best-effort partial undo: reverse whatever already succeeded
+      if (completedMoves.length > 0) {
+        try {
+          for (const m of completedMoves) {
+            await updateInventory(m.product_id, movedFromId, m.quantity)
+            await updateInventory(m.product_id, movedToId, -m.quantity)
+            if (m.movement_id) await deleteMovement(m.movement_id)
+          }
+          addToast(`Move failed mid-way. Reverted ${completedMoves.length} completed transfers.`, 'error')
+        } catch (rollbackErr) {
+          console.error('Rollback also failed:', rollbackErr)
+          addToast('Move failed AND rollback failed — check console + DB!', 'error')
+        }
+      } else {
+        addToast('Failed to move inventory — check console', 'error')
+      }
     } finally {
       setSubmitting(false)
     }
