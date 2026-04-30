@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react'
-import { 
+import {
   fetchLocations,
   fetchUsers,
   fetchInventoryForRoom,
   createStreamCount,
   createStreamCountItems,
+  deleteStreamCount,
+  deleteStreamCountItemsByCountId,
   createUser,
   updateInventory,
   fetchStreamCounts,
@@ -265,6 +267,7 @@ export default function StreamCounts() {
       await createStreamCountItems(itemsWithId)
       
       // Update inventory for each changed item
+      const appliedDeltas = []  // for undo
       for (const item of items) {
         if (item.difference !== 0) {
           await updateInventory(
@@ -272,9 +275,10 @@ export default function StreamCounts() {
             form.location_id,
             item.difference // This will subtract if negative (sold) or add if positive
           )
+          appliedDeltas.push({ product_id: item.product_id, delta: item.difference })
         }
       }
-      
+
       // Build report
       const soldItems = items
         .filter(i => i.difference < 0)
@@ -316,7 +320,36 @@ export default function StreamCounts() {
       const countsData = await fetchStreamCounts(null, null, null)
       setRecentCounts(countsData.slice(0, 10))
       
-      addToast(`Count submitted! ${totalSold} items sold.`, 'success')
+      const streamCountId = streamCount?.id
+      const undoLocationId = form.location_id
+      const undo = async () => {
+        try {
+          // Reverse every inventory delta we applied
+          for (const d of appliedDeltas) {
+            await updateInventory(d.product_id, undoLocationId, -d.delta)
+          }
+          // Delete child rows first (FK), then the parent
+          if (streamCountId) {
+            await deleteStreamCountItemsByCountId(streamCountId)
+            await deleteStreamCount(streamCountId)
+          }
+          addToast('Undone — stream count reverted, inventory restored', 'info')
+          // Refresh recent counts list
+          const data = await fetchStreamCounts(null, null, null)
+          setRecentCounts(data.slice(0, 10))
+          // Send user back to step 1 so they can redo
+          setStep(1)
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
+
+      addToast(
+        `Count submitted! ${totalSold} items sold.`,
+        'success',
+        streamCountId ? { action: { label: 'Undo', onClick: undo } } : undefined
+      )
       setStep(3)
     } catch (error) {
       console.error('Error submitting count:', error)

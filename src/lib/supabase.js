@@ -183,6 +183,17 @@ export const deletePlatformSale      = makeDeleter('platform_sales')
 export const deleteBusinessExpense   = makeDeleter('business_expenses')
 export const deleteHighValueItem     = makeDeleter('high_value_items')
 export const deleteHighValueMovement = makeDeleter('high_value_movements')
+export const deleteStreamCount       = makeDeleter('stream_counts')
+
+// Stream count items are joined by stream_count_id, not by their own id —
+// delete them with a ranged delete. Used to undo a stream count submission.
+export const deleteStreamCountItemsByCountId = async (streamCountId) => {
+  const { error } = await supabase
+    .from('stream_count_items')
+    .delete()
+    .eq('stream_count_id', streamCountId)
+  if (error) throw error
+}
 
 export const createBoxBreak = async (boxBreak) => {
   const { data, error } = await supabase
