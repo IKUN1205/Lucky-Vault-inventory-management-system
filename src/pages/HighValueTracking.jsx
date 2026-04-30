@@ -5,6 +5,7 @@ import {
   fetchVendors,
   fetchUsers,
   createHighValueItem,
+  deleteHighValueItem,
   updateHighValueItemLocation,
   supabase
 } from '../lib/supabase'
@@ -162,7 +163,25 @@ export default function HighValueTracking() {
           vendors={vendors}
           users={users}
           onClose={() => setShowAddForm(false)}
-          onSuccess={() => { setShowAddForm(false); loadData(); addToast('High value item added!'); }}
+          onSuccess={(newItemId) => {
+            setShowAddForm(false)
+            loadData()
+            const undo = async () => {
+              try {
+                if (newItemId) await deleteHighValueItem(newItemId)
+                addToast('Undone — high value item removed', 'info')
+                loadData()
+              } catch (err) {
+                console.error('Undo failed:', err)
+                addToast('Undo failed — check console', 'error')
+              }
+            }
+            addToast(
+              'High value item added!',
+              'success',
+              newItemId ? { action: { label: 'Undo', onClick: undo } } : undefined
+            )
+          }}
           addToast={addToast}
         />
       )}
@@ -376,7 +395,7 @@ function AddHighValueForm({ locations, vendors, users, onClose, onSuccess, addTo
       
       const purchasePrice = form.purchase_price ? parseFloat(form.purchase_price) : null
       
-      await createHighValueItem({
+      const created = await createHighValueItem({
         card_name: form.card_name,
         brand: form.brand,
         item_type: form.item_type,
@@ -393,7 +412,7 @@ function AddHighValueForm({ locations, vendors, users, onClose, onSuccess, addTo
         photo_url: photoUrl,
         status: 'In Inventory'
       })
-      onSuccess()
+      onSuccess(created?.id)
     } catch (error) {
       console.error('Error adding item:', error)
       addToast('Failed to add item', 'error')

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { 
   fetchProducts, fetchUsers, fetchVendors, fetchPaymentMethods,
-  createAcquisition, createVendor, createPaymentMethod, convertToUSD, getExchangeRates
+  createAcquisition, deleteAcquisition, createVendor, createPaymentMethod, convertToUSD, getExchangeRates
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
@@ -150,12 +150,13 @@ export default function PurchasedItems() {
     }
 
     setSubmitting(true)
+    const createdIds = []
 
     try {
       for (const item of validItems) {
         const costUSD = convertToUSD(parseFloat(item.cost), header.currency)
-        
-        await createAcquisition({
+
+        const acq = await createAcquisition({
           date_purchased: header.date_purchased,
           acquirer_id: header.acquirer_id,
           source_country: header.source_country,
@@ -169,13 +170,40 @@ export default function PurchasedItems() {
           status: 'Purchased',
           notes: item.notes || null
         })
+        if (acq?.id) createdIds.push(acq.id)
       }
 
-      addToast(`${validItems.length} purchase(s) logged! Go to "Intake to Master" to receive.`)
+      const undo = async () => {
+        try {
+          for (const id of createdIds) {
+            await deleteAcquisition(id)
+          }
+          addToast(`Undone — ${createdIds.length} purchase${createdIds.length === 1 ? '' : 's'} removed`, 'info')
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
+      addToast(
+        `${validItems.length} purchase(s) logged! Go to "Intake to Master" to receive.`,
+        'success',
+        createdIds.length > 0 ? { action: { label: 'Undo', onClick: undo } } : undefined
+      )
       setLineItems([{ id: 1, product_id: '', quantity: 1, cost: '', notes: '' }])
     } catch (error) {
       console.error('Error creating acquisition:', error)
-      addToast('Failed to log purchase', 'error')
+      // Best-effort rollback of partial inserts
+      if (createdIds.length > 0) {
+        try {
+          for (const id of createdIds) await deleteAcquisition(id)
+          addToast(`Save failed mid-way. Reverted ${createdIds.length} created purchase${createdIds.length === 1 ? '' : 's'}.`, 'error')
+        } catch (rollbackErr) {
+          console.error('Rollback failed:', rollbackErr)
+          addToast('Save AND rollback failed — check console', 'error')
+        }
+      } else {
+        addToast('Failed to log purchase', 'error')
+      }
     } finally {
       setSubmitting(false)
     }

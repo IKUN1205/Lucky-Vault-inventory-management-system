@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react'
 
-import { 
+import {
   fetchAcquisitions,
   fetchLocations,
   createReceipt,
+  deleteReceipt,
   updateAcquisitionStatus,
   updateInventory,
   convertToUSD
@@ -65,10 +66,17 @@ export default function IntakeToMaster() {
 
     setProcessingId(acquisition.id)
 
+    // Snapshot prior state so undo can restore exactly
+    const prevStatus = acquisition.status
+    const prevReceived = acquisition.quantity_received || 0
+    const acqId = acquisition.id
+    const productId = acquisition.product_id
+    const masterId = masterLocation.id
+
     try {
       const qty = parseInt(receivedQty)
-      const totalReceived = (acquisition.quantity_received || 0) + qty
-      
+      const totalReceived = prevReceived + qty
+
       // Determine new status
       let newStatus = 'Received'
       if (totalReceived < acquisition.quantity_purchased) {
@@ -78,27 +86,42 @@ export default function IntakeToMaster() {
       }
 
       // Create receipt record
-      await createReceipt({
-        acquisition_id: acquisition.id,
+      const receipt = await createReceipt({
+        acquisition_id: acqId,
         date_received: new Date().toISOString().split('T')[0],
         quantity_received: qty,
         received_by: null
       })
 
       // Update acquisition status
-      await updateAcquisitionStatus(acquisition.id, newStatus, totalReceived)
+      await updateAcquisitionStatus(acqId, newStatus, totalReceived)
 
       // Update inventory
       const costPerUnit = acquisition.cost_usd / acquisition.quantity_purchased
-      await updateInventory(
-        acquisition.product_id,
-        masterLocation.id,
-        qty,
-        costPerUnit
+      await updateInventory(productId, masterId, qty, costPerUnit)
+
+      const undo = async () => {
+        try {
+          // Reverse inventory delta
+          await updateInventory(productId, masterId, -qty)
+          // Restore acquisition's prior status + qty_received
+          await updateAcquisitionStatus(acqId, prevStatus, prevReceived)
+          // Hard-delete the receipt row
+          if (receipt?.id) await deleteReceipt(receipt.id)
+          addToast('Undone — receipt reverted', 'info')
+          loadData()
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
+
+      addToast(
+        `Received ${qty} units into Master Inventory`,
+        'success',
+        { action: { label: 'Undo', onClick: undo } }
       )
 
-      addToast(`Received ${qty} units into Master Inventory`)
-      
       // Refresh data
       loadData()
     } catch (error) {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, deletePlatformSale } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import { DollarSign, Save, Upload, AlertCircle, Check, Plus } from 'lucide-react'
 
@@ -168,7 +168,7 @@ export default function PlatformSales() {
         ? parseFloat(sessionForm.net_sales) / parseFloat(sessionForm.stream_hours)
         : null
 
-      const { error } = await supabase.from('platform_sales').insert({
+      const { data: inserted, error } = await supabase.from('platform_sales').insert({
         platform,
         channel: sessionForm.channel,
         date: sessionForm.date,
@@ -182,11 +182,22 @@ export default function PlatformSales() {
         hourly_net: hourlyNet,
         product_type: sessionForm.product_type || null,
         notes: sessionForm.notes || null
-      })
+      }).select().single()
 
       if (error) throw error
 
-      addToast('Sale entry saved!')
+      const insertedId = inserted?.id
+      const undo = async () => {
+        try {
+          if (insertedId) await deletePlatformSale(insertedId)
+          addToast('Undone — sale entry removed', 'info')
+          loadRecentSales()
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
+      addToast('Sale entry saved!', 'success', { action: { label: 'Undo', onClick: undo } })
       setSessionForm(f => ({
         ...f,
         streamer_id: '',
@@ -277,7 +288,7 @@ export default function PlatformSales() {
         }
       }
 
-      const { error } = await supabase.from('platform_sales').insert({
+      const { data: inserted, error } = await supabase.from('platform_sales').insert({
         platform: 'TikTok',
         channel: 'RocketsHQ',
         date: itemForm.date,
@@ -292,11 +303,22 @@ export default function PlatformSales() {
         margin_percent: parseFloat(itemForm.margin_percent) || null,
         shipping: parseFloat(itemForm.shipping) || null,
         notes: itemForm.notes || null
-      })
+      }).select().single()
 
       if (error) throw error
 
-      addToast('TikTok sale saved!')
+      const insertedId = inserted?.id
+      const undo = async () => {
+        try {
+          if (insertedId) await deletePlatformSale(insertedId)
+          addToast('Undone — TikTok sale removed', 'info')
+          loadRecentSales()
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
+      addToast('TikTok sale saved!', 'success', { action: { label: 'Undo', onClick: undo } })
       setItemForm(f => ({
         ...f,
         external_product_name: '',

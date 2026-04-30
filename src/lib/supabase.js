@@ -165,6 +165,25 @@ export const deleteMovement = async (movementId) => {
   if (error) throw error
 }
 
+// ----- Generic delete helpers used by Undo flows -----
+// Each one hard-deletes the given row by id. Inventory deltas (if any)
+// must be reversed separately by the caller.
+const makeDeleter = (table) => async (id) => {
+  const { error } = await supabase.from(table).delete().eq('id', id)
+  if (error) throw error
+}
+
+export const deleteAcquisition       = makeDeleter('acquisitions')
+export const deleteReceipt           = makeDeleter('receipts')
+export const deleteBoxBreak          = makeDeleter('box_breaks')
+export const deleteShipment          = makeDeleter('shipments')
+export const deleteGradingSubmission = makeDeleter('grading_submissions')
+export const deleteStorefrontSale    = makeDeleter('storefront_sales')
+export const deletePlatformSale      = makeDeleter('platform_sales')
+export const deleteBusinessExpense   = makeDeleter('business_expenses')
+export const deleteHighValueItem     = makeDeleter('high_value_items')
+export const deleteHighValueMovement = makeDeleter('high_value_movements')
+
 export const createBoxBreak = async (boxBreak) => {
   const { data, error } = await supabase
     .from('box_breaks')

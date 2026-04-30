@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { fetchProducts, fetchLocations, fetchInventory, createBoxBreak, updateInventory } from '../lib/supabase'
+import { fetchProducts, fetchLocations, fetchInventory, createBoxBreak, deleteBoxBreak, updateInventory } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import Instructions from '../components/Instructions'
@@ -109,30 +109,55 @@ export default function BreakBox() {
 
     setSubmitting(true)
 
+    const sealedId = form.sealed_product_id
+    const packId = packProduct.id
+    const masterId = masterLocation.id
+    const boxesBroken = parseInt(form.boxes_broken)
+    const packsCreated = totalPacks
+
     try {
-      const boxesBroken = parseInt(form.boxes_broken)
-      
-      await createBoxBreak({
+      const boxBreak = await createBoxBreak({
         date: form.date,
-        sealed_product_id: form.sealed_product_id,
-        pack_product_id: packProduct.id,
+        sealed_product_id: sealedId,
+        pack_product_id: packId,
         boxes_broken: boxesBroken,
-        packs_created: totalPacks,
-        location_id: masterLocation.id,
+        packs_created: packsCreated,
+        location_id: masterId,
         notes: form.notes
       })
 
-      await updateInventory(form.sealed_product_id, masterLocation.id, -boxesBroken)
+      await updateInventory(sealedId, masterId, -boxesBroken)
 
       const costPerPack = selectedInventory?.avg_cost_basis ? selectedInventory.avg_cost_basis / actualPackCount : null
-      await updateInventory(packProduct.id, masterLocation.id, totalPacks, costPerPack)
+      await updateInventory(packId, masterId, packsCreated, costPerPack)
+
+      const undo = async () => {
+        try {
+          // Restore boxes, remove the packs we created
+          await updateInventory(sealedId, masterId, boxesBroken)
+          await updateInventory(packId, masterId, -packsCreated)
+          if (boxBreak?.id) await deleteBoxBreak(boxBreak.id)
+          addToast('Undone — box break reverted', 'info')
+
+          const invData = await fetchInventory(masterId)
+          const breakableInv = invData.filter(inv => inv.product?.breakable && inv.quantity > 0)
+          setInventory(breakableInv)
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
 
       const launchName = extractLaunchName(selectedProduct.name, selectedProduct.category)
-      addToast(`Broke ${boxesBroken} ${launchName} box(es) into ${totalPacks} packs!`)
-      
+      addToast(
+        `Broke ${boxesBroken} ${launchName} box(es) into ${packsCreated} packs!`,
+        'success',
+        { action: { label: 'Undo', onClick: undo } }
+      )
+
       setForm(f => ({ ...f, sealed_product_id: '', boxes_broken: 1, override_pack_count: false, manual_pack_count: '', notes: '' }))
-      
-      const invData = await fetchInventory(masterLocation.id)
+
+      const invData = await fetchInventory(masterId)
       const breakableInv = invData.filter(inv => inv.product?.breakable && inv.quantity > 0)
       setInventory(breakableInv)
     } catch (error) {

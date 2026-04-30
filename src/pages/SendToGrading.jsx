@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react'
-import { 
+import {
   fetchProducts,
   fetchLocations,
   fetchInventory,
   createGradingSubmission,
+  deleteGradingSubmission,
   createMovement,
   updateInventory
 } from '../lib/supabase'
@@ -89,15 +90,18 @@ export default function SendToGrading() {
 
     setSubmitting(true)
 
-    try {
-      const qty = parseInt(form.quantity_sent)
+    const productId = form.product_id
+    const fromLocId = form.from_location_id
+    const qty = parseInt(form.quantity_sent)
+    const company = form.grading_company
 
+    try {
       // Create grading submission
-      await createGradingSubmission({
+      const submission = await createGradingSubmission({
         date_sent: form.date_sent,
-        grading_company: form.grading_company,
+        grading_company: company,
         grading_location: form.grading_location,
-        product_id: form.product_id,
+        product_id: productId,
         quantity_sent: qty,
         status: 'Sent',
         notes: form.notes,
@@ -105,14 +109,26 @@ export default function SendToGrading() {
       })
 
       // Update inventory - subtract from source
-      await updateInventory(
-        form.product_id,
-        form.from_location_id,
-        -qty
+      await updateInventory(productId, fromLocId, -qty)
+
+      const submissionId = submission?.id
+      const undo = async () => {
+        try {
+          await updateInventory(productId, fromLocId, qty)
+          if (submissionId) await deleteGradingSubmission(submissionId)
+          addToast('Undone — grading submission reverted', 'info')
+          loadInventoryForLocation(fromLocId)
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
+      addToast(
+        `Sent ${qty} singles to ${company} for grading!`,
+        'success',
+        { action: { label: 'Undo', onClick: undo } }
       )
 
-      addToast(`Sent ${qty} singles to ${form.grading_company} for grading!`)
-      
       // Reset form
       setForm(f => ({
         ...f,
@@ -120,8 +136,8 @@ export default function SendToGrading() {
         quantity_sent: 1,
         notes: ''
       }))
-      
-      loadInventoryForLocation(form.from_location_id)
+
+      loadInventoryForLocation(fromLocId)
     } catch (error) {
       console.error('Error creating grading submission:', error)
       addToast('Failed to create grading submission', 'error')

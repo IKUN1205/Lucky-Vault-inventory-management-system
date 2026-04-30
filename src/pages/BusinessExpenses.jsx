@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { supabase, convertToUSD } from '../lib/supabase'
+import { supabase, convertToUSD, deleteBusinessExpense } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { Receipt, Truck, Building, Zap, Utensils, Plane, MoreHorizontal, Save, DollarSign, Plus, X } from 'lucide-react'
@@ -81,7 +81,7 @@ export default function BusinessExpenses() {
       const amount = parseFloat(form.amount)
       const amountUsd = convertToUSD(amount, form.currency)
 
-      const { error } = await supabase
+      const { data: inserted, error } = await supabase
         .from('business_expenses')
         .insert({
           date: form.date,
@@ -93,10 +93,23 @@ export default function BusinessExpenses() {
           description: form.description,
           notes: form.notes || null
         })
+        .select()
+        .single()
 
       if (error) throw error
 
-      addToast('Expense recorded successfully!')
+      const insertedId = inserted?.id
+      const undo = async () => {
+        try {
+          if (insertedId) await deleteBusinessExpense(insertedId)
+          addToast('Undone — expense removed', 'info')
+          loadData()
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
+      addToast('Expense recorded successfully!', 'success', { action: { label: 'Undo', onClick: undo } })
       setForm({
         date: new Date().toISOString().split('T')[0],
         category: '',

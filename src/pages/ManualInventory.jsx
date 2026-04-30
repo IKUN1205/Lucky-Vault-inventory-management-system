@@ -114,7 +114,7 @@ export default function ManualInventory() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    
+
     if (!form.product_id || !form.location_id) {
       addToast('Please select product and location', 'error')
       return
@@ -127,11 +127,29 @@ export default function ManualInventory() {
 
     setSubmitting(true)
 
+    const productId = form.product_id
+    const locationId = form.location_id
+    const qty = parseInt(form.quantity)
+
     try {
       const avgCostBasis = form.avg_cost_basis !== '' ? parseFloat(form.avg_cost_basis) : null
-      await updateInventory(form.product_id, form.location_id, parseInt(form.quantity), avgCostBasis)
-      addToast('Inventory added successfully!')
+      await updateInventory(productId, locationId, qty, avgCostBasis)
+
+      // Undo: subtract the same qty back. Cost basis isn't restored — it's
+      // only changed if the user supplied one, and we don't track the prior
+      // value. Reversing the qty is the meaningful part for accidental adds.
+      const undo = async () => {
+        try {
+          await updateInventory(productId, locationId, -qty)
+          addToast('Undone — inventory reverted', 'info')
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
+
       setForm(f => ({ ...f, product_id: '', quantity: '', avg_cost_basis: '' }))
+      addToast(`Added ${qty} units to inventory`, 'success', { action: { label: 'Undo', onClick: undo } })
     } catch (error) {
       console.error('Error adding inventory:', error)
       addToast('Failed to add inventory', 'error')
@@ -142,7 +160,7 @@ export default function ManualInventory() {
 
   const handleBulkSubmit = async (e) => {
     e.preventDefault()
-    
+
     if (!bulkLocation) {
       addToast('Please select a location', 'error')
       return
@@ -155,21 +173,39 @@ export default function ManualInventory() {
     }
 
     setSubmitting(true)
-    let successCount = 0
+    const completed = []  // { product_id, qty } per successful row
+    const targetLocation = bulkLocation
 
     for (const item of validItems) {
       try {
+        const qty = parseInt(item.quantity)
         const avgCostBasis = item.avg_cost_basis !== '' ? parseFloat(item.avg_cost_basis) : null
-        await updateInventory(item.product_id, bulkLocation, parseInt(item.quantity), avgCostBasis)
-        successCount++
+        await updateInventory(item.product_id, targetLocation, qty, avgCostBasis)
+        completed.push({ product_id: item.product_id, qty })
       } catch (err) {
         console.error('Error adding item:', err)
       }
     }
 
-    addToast(`${successCount} item(s) added to inventory!`)
+    const undo = async () => {
+      try {
+        for (const c of completed) {
+          await updateInventory(c.product_id, targetLocation, -c.qty)
+        }
+        addToast(`Undone — ${completed.length} item${completed.length === 1 ? '' : 's'} reverted`, 'info')
+      } catch (err) {
+        console.error('Undo failed:', err)
+        addToast('Undo failed — check console', 'error')
+      }
+    }
+
     setBulkItems([{ id: 1, product_id: '', quantity: 1, avg_cost_basis: '' }])
     setSubmitting(false)
+    addToast(
+      `${completed.length} item${completed.length === 1 ? '' : 's'} added to inventory`,
+      'success',
+      completed.length > 0 ? { action: { label: 'Undo', onClick: undo } } : undefined
+    )
   }
 
   // Format product for SearchableSelect - using new nomenclature

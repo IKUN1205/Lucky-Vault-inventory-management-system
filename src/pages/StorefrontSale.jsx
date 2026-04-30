@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react'
-import { 
+import {
   fetchProducts,
   createStorefrontSale,
+  deleteStorefrontSale,
+  updateInventory,
   supabase
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
@@ -110,7 +112,7 @@ export default function StorefrontSale() {
     setSubmitting(true)
 
     try {
-      await createStorefrontSale({
+      const sale = await createStorefrontSale({
         date: bulkForm.date,
         sale_type: 'Bulk',
         brand: bulkForm.brand,
@@ -121,8 +123,18 @@ export default function StorefrontSale() {
         created_by: null
       })
 
-      addToast('Bulk sale logged successfully!')
-      
+      const saleId = sale?.id
+      const undo = async () => {
+        try {
+          if (saleId) await deleteStorefrontSale(saleId)
+          addToast('Undone — bulk sale removed', 'info')
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
+      }
+      addToast('Bulk sale logged successfully!', 'success', { action: { label: 'Undo', onClick: undo } })
+
       setBulkForm(f => ({
         ...f,
         quantity: 1,
@@ -159,17 +171,24 @@ export default function StorefrontSale() {
 
     setSubmitting(true)
 
+    // Snapshot for undo
+    const prodId = selectedInventory.product_id
+    const locId = selectedInventory.location_id
+    const prevAvgCost = selectedInventory.avg_cost_basis || 0
+    const inventoryRowId = selectedInventory.id
+    const prevQty = selectedInventory.quantity
+
     try {
       const salePrice = parseFloat(productForm.sale_price)
-      const costBasis = (selectedInventory.avg_cost_basis || 0) * qty
+      const costBasis = prevAvgCost * qty
       const profit = salePrice - costBasis
 
       // Log the sale
-      await createStorefrontSale({
+      const sale = await createStorefrontSale({
         date: productForm.date,
         sale_type: 'Product',
-        product_id: selectedInventory.product_id,
-        location_id: selectedInventory.location_id,
+        product_id: prodId,
+        location_id: locId,
         quantity: qty,
         sale_price: salePrice,
         cost_basis: costBasis,
@@ -179,25 +198,45 @@ export default function StorefrontSale() {
       })
 
       // Subtract from inventory
-      const newQuantity = selectedInventory.quantity - qty
-      
-      if (newQuantity <= 0) {
+      const newQuantity = prevQty - qty
+      const inventoryRowDeleted = newQuantity <= 0
+
+      if (inventoryRowDeleted) {
         // Delete inventory record if quantity is 0
         await supabase
           .from('inventory')
           .delete()
-          .eq('id', selectedInventory.id)
+          .eq('id', inventoryRowId)
       } else {
         // Update quantity
         await supabase
           .from('inventory')
           .update({ quantity: newQuantity })
-          .eq('id', selectedInventory.id)
+          .eq('id', inventoryRowId)
+      }
+
+      const saleId = sale?.id
+      const undo = async () => {
+        try {
+          if (saleId) await deleteStorefrontSale(saleId)
+          if (inventoryRowDeleted) {
+            // Recreate the inventory row at its original qty + cost
+            await updateInventory(prodId, locId, prevQty, prevAvgCost)
+          } else {
+            // Add the qty back to the still-existing row
+            await updateInventory(prodId, locId, qty)
+          }
+          addToast('Undone — sale reverted, inventory restored', 'info')
+          loadData()
+        } catch (err) {
+          console.error('Undo failed:', err)
+          addToast('Undo failed — check console', 'error')
+        }
       }
 
       const profitText = profit >= 0 ? `+$${profit.toFixed(2)}` : `-$${Math.abs(profit).toFixed(2)}`
-      addToast(`Sale logged! Profit: ${profitText}`)
-      
+      addToast(`Sale logged! Profit: ${profitText}`, 'success', { action: { label: 'Undo', onClick: undo } })
+
       // Reset form
       setProductForm(f => ({
         ...f,
@@ -206,7 +245,7 @@ export default function StorefrontSale() {
         sale_price: '',
         notes: ''
       }))
-      
+
       // Reload inventory
       loadData()
     } catch (error) {
