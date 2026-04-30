@@ -3,7 +3,7 @@ import { fetchLocations, fetchInventory, createMovement, updateInventory } from 
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import Instructions from '../components/Instructions'
-import { ArrowRightLeft, ArrowRight, Save } from 'lucide-react'
+import { ArrowRightLeft, ArrowRight, Save, Plus, X, Trash2 } from 'lucide-react'
 
 // All valid physical locations for inventory movement
 const ALLOWED_LOCATION_NAMES = [
@@ -28,7 +28,7 @@ const extractLaunchName = (fullName, category) => {
 
 export default function MovedInventory() {
   const { toasts, addToast, removeToast } = useToast()
-  
+
   const [locations, setLocations] = useState([])
   const [inventory, setInventory] = useState([])
   const [loading, setLoading] = useState(true)
@@ -42,6 +42,10 @@ export default function MovedInventory() {
     quantity: 1,
     notes: ''
   })
+
+  // Cart of items to transfer in one batch
+  // Each item: { product_id, quantity, inventory: <full inventory row for display + cost> }
+  const [cart, setCart] = useState([])
 
   const [productFilters, setProductFilters] = useState({ brand: '', type: '' })
 
@@ -67,7 +71,7 @@ export default function MovedInventory() {
     try {
       const invData = await fetchInventory(locationId)
       // Filter to sealed products only
-      const sealedOnly = invData.filter(inv => 
+      const sealedOnly = invData.filter(inv =>
         inv.product?.type === 'Sealed' || inv.product?.type === 'Pack'
       )
       setInventory(sealedOnly)
@@ -80,6 +84,11 @@ export default function MovedInventory() {
     const { name, value } = e.target
     setForm(f => ({ ...f, [name]: value }))
     if (name === 'from_location_id') {
+      // Changing source invalidates the cart (different products available)
+      if (cart.length > 0) {
+        setCart([])
+        addToast('Cart cleared — source location changed', 'info')
+      }
       setForm(f => ({ ...f, product_id: '', quantity: 1 }))
     }
   }
@@ -97,51 +106,121 @@ export default function MovedInventory() {
   })
 
   const selectedInventory = inventory.find(inv => inv.product_id === form.product_id)
-  const maxQuantity = selectedInventory?.quantity || 0
+
+  // How much of this product is already reserved in the cart
+  const cartQtyForProduct = (productId) =>
+    cart.filter(c => c.product_id === productId).reduce((s, c) => s + c.quantity, 0)
+
+  // Available qty after subtracting what's already in cart
+  const availableQty = selectedInventory
+    ? Math.max(0, selectedInventory.quantity - cartQtyForProduct(form.product_id))
+    : 0
 
   const allowedLocations = locations.filter(l => ALLOWED_LOCATION_NAMES.includes(l.name))
   const physicalLocations = allowedLocations.filter(l => l.type === 'Physical')
   const allDestinations = allowedLocations.filter(l => l.id !== form.from_location_id)
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    
-    if (!form.from_location_id || !form.to_location_id || !form.product_id) {
-      addToast('Please fill all required fields', 'error')
+  // -------- Cart actions --------
+  const handleAddToCart = () => {
+    if (!form.from_location_id || !form.to_location_id) {
+      addToast('Pick From and To locations first', 'error')
       return
     }
-    
-    if (form.quantity > maxQuantity) {
-      addToast(`Only ${maxQuantity} available`, 'error')
+    if (!form.product_id) {
+      addToast('Pick a product first', 'error')
+      return
+    }
+    const qty = parseInt(form.quantity)
+    if (!qty || qty < 1) {
+      addToast('Quantity must be at least 1', 'error')
+      return
+    }
+    if (qty > availableQty) {
+      const inCart = cartQtyForProduct(form.product_id)
+      addToast(
+        inCart > 0
+          ? `Only ${availableQty} more available (${inCart} already in cart)`
+          : `Only ${availableQty} available`,
+        'error'
+      )
+      return
+    }
+
+    // If product already in cart, merge by summing qty
+    const existing = cart.find(c => c.product_id === form.product_id)
+    if (existing) {
+      setCart(cart.map(c =>
+        c.product_id === form.product_id
+          ? { ...c, quantity: c.quantity + qty }
+          : c
+      ))
+      addToast(`Updated: ${qty} more added (total ${existing.quantity + qty})`)
+    } else {
+      setCart([...cart, {
+        product_id: form.product_id,
+        quantity: qty,
+        inventory: selectedInventory,
+      }])
+      addToast(`Added ${qty} × ${selectedInventory?.product?.name?.slice(0, 40)}`)
+    }
+
+    // Clear product + quantity, keep filters and locations
+    setForm(f => ({ ...f, product_id: '', quantity: 1 }))
+  }
+
+  const handleRemoveFromCart = (productId) => {
+    setCart(cart.filter(c => c.product_id !== productId))
+  }
+
+  const handleClearCart = () => {
+    if (cart.length === 0) return
+    if (!confirm(`Clear all ${cart.length} items from cart?`)) return
+    setCart([])
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+
+    if (!form.from_location_id || !form.to_location_id) {
+      addToast('Pick From and To locations first', 'error')
+      return
+    }
+    if (cart.length === 0) {
+      addToast('Cart is empty — add at least one product', 'error')
       return
     }
 
     setSubmitting(true)
 
     try {
-      const qty = parseInt(form.quantity)
-      const costBasis = selectedInventory?.avg_cost_basis * qty
+      // Create movements + update inventory for each cart item
+      for (const item of cart) {
+        const inv = item.inventory
+        const cost = (inv?.avg_cost_basis || 0) * item.quantity
 
-      await createMovement({
-        date: form.date,
-        product_id: form.product_id,
-        from_location_id: form.from_location_id,
-        to_location_id: form.to_location_id,
-        quantity: qty,
-        cost_basis: costBasis,
-        movement_type: 'Transfer',
-        notes: form.notes
-      })
+        await createMovement({
+          date: form.date,
+          product_id: item.product_id,
+          from_location_id: form.from_location_id,
+          to_location_id: form.to_location_id,
+          quantity: item.quantity,
+          cost_basis: cost,
+          movement_type: 'Transfer',
+          notes: form.notes
+        })
 
-      await updateInventory(form.product_id, form.from_location_id, -qty)
-      await updateInventory(form.product_id, form.to_location_id, qty, selectedInventory?.avg_cost_basis)
+        await updateInventory(item.product_id, form.from_location_id, -item.quantity)
+        await updateInventory(item.product_id, form.to_location_id, item.quantity, inv?.avg_cost_basis)
+      }
 
-      addToast('Inventory moved successfully!')
+      const totalUnits = cart.reduce((s, c) => s + c.quantity, 0)
+      addToast(`Moved ${cart.length} ${cart.length === 1 ? 'product' : 'products'} (${totalUnits} units) successfully!`)
+      setCart([])
       setForm(f => ({ ...f, product_id: '', quantity: 1, notes: '' }))
       loadInventoryForLocation(form.from_location_id)
     } catch (error) {
       console.error('Error moving inventory:', error)
-      addToast('Failed to move inventory', 'error')
+      addToast('Failed to move inventory — check console', 'error')
     } finally {
       setSubmitting(false)
     }
@@ -150,6 +229,8 @@ export default function MovedInventory() {
   // Format for SearchableSelect - new nomenclature
   const formatProductOption = (inv) => {
     const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
+    const inCart = cartQtyForProduct(inv.product_id)
+    const remaining = Math.max(0, inv.quantity - inCart)
     return (
       <div className="flex items-center gap-2">
         <span className="text-vault-gold">{inv.product?.brand}</span>
@@ -159,47 +240,53 @@ export default function MovedInventory() {
         <span className="text-gray-300">{inv.product?.category}</span>
         <span className="text-gray-400">|</span>
         <span className="text-blue-400">{inv.product?.language}</span>
-        <span className="text-green-400 ml-2">• {inv.quantity} avail</span>
+        <span className={`ml-2 ${remaining > 0 ? 'text-green-400' : 'text-red-400'}`}>
+          • {remaining} avail{inCart > 0 ? ` (${inCart} in cart)` : ''}
+        </span>
       </div>
     )
   }
 
   const getProductLabel = (inv) => {
     const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
-    return `${inv.product?.brand} | ${launchName} | ${inv.product?.category} | ${inv.product?.language} - ${inv.quantity} avail`
+    const inCart = cartQtyForProduct(inv.product_id)
+    const remaining = Math.max(0, inv.quantity - inCart)
+    return `${inv.product?.brand} | ${launchName} | ${inv.product?.category} | ${inv.product?.language} - ${remaining} avail${inCart > 0 ? ` (${inCart} in cart)` : ''}`
   }
 
   if (loading) {
     return <div className="flex items-center justify-center h-64"><div className="spinner"></div></div>
   }
 
+  const totalCartUnits = cart.reduce((s, c) => s + c.quantity, 0)
+
   return (
     <div className="fade-in">
       <ToastContainer toasts={toasts} removeToast={removeToast} />
-      
+
       <div className="mb-6">
         <h1 className="font-display text-2xl font-bold text-white flex items-center gap-3">
           <ArrowRightLeft className="text-orange-400" />
           Move Inventory
         </h1>
-        <p className="text-gray-400 mt-1">Transfer inventory between locations</p>
+        <p className="text-gray-400 mt-1">Transfer one or many products between locations in a single batch</p>
       </div>
 
       <Instructions>
         <div className="space-y-3 text-gray-300">
-          <p className="font-medium text-white">Transfer products between locations:</p>
+          <p className="font-medium text-white">Bulk transfer flow:</p>
           <ol className="list-decimal list-inside space-y-2 ml-2">
             <li>Select <span className="text-vault-gold">FROM location</span> (where it's coming from)</li>
             <li>Select <span className="text-vault-gold">TO location</span> (where it's going)</li>
-            <li>Search and select the <span className="text-vault-gold">product</span></li>
-            <li>Enter <span className="text-vault-gold">quantity</span> to move</li>
-            <li>Click <span className="text-vault-gold">Move Inventory</span></li>
+            <li>Pick a <span className="text-vault-gold">product</span> + <span className="text-vault-gold">quantity</span> → click <span className="text-vault-gold">Add to Cart</span></li>
+            <li>Repeat for as many products as you need — they accumulate in the cart below</li>
+            <li>When done, click <span className="text-vault-gold">Move N Items</span> to transfer everything in one batch</li>
           </ol>
-          <p className="text-orange-400 text-xs mt-3">💡 Common: Master Inventory → Stream Room before streams</p>
+          <p className="text-orange-400 text-xs mt-3">💡 Changing FROM location clears the cart. Same product added twice merges quantities.</p>
         </div>
       </Instructions>
 
-      <form onSubmit={handleSubmit} className="card max-w-2xl">
+      <form onSubmit={handleSubmit} className="card max-w-3xl">
         <div className="mb-4">
           <label className="block text-sm font-medium text-gray-300 mb-2">Date *</label>
           <input type="date" name="date" value={form.date} onChange={handleChange} required />
@@ -229,8 +316,8 @@ export default function MovedInventory() {
 
         {form.from_location_id && (
           <div className="pt-6 border-t border-vault-border">
-            <h3 className="font-display text-lg font-semibold text-white mb-4">Select Product</h3>
-            
+            <h3 className="font-display text-lg font-semibold text-white mb-4">Add Products to Cart</h3>
+
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">Brand</label>
@@ -251,7 +338,7 @@ export default function MovedInventory() {
             </div>
 
             <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-300 mb-2">Product * (in stock)</label>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Product (in stock)</label>
               <p className="text-xs text-gray-500 mb-2">Format: Brand | Launch Name | Product Type | Language</p>
               <SearchableSelect
                 options={filteredInventory}
@@ -265,22 +352,98 @@ export default function MovedInventory() {
             </div>
 
             {form.product_id && (
-              <div className="mt-4">
-                <label className="block text-sm font-medium text-gray-300 mb-2">Quantity * (max: {maxQuantity})</label>
-                <input type="number" name="quantity" value={form.quantity} onChange={handleChange} min="1" max={maxQuantity} required />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Quantity (max: {availableQty})
+                  </label>
+                  <input
+                    type="number"
+                    name="quantity"
+                    value={form.quantity}
+                    onChange={handleChange}
+                    min="1"
+                    max={availableQty}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddToCart}
+                  disabled={availableQty < 1}
+                  className="btn btn-secondary"
+                >
+                  <Plus size={18} /> Add to Cart
+                </button>
               </div>
             )}
+          </div>
+        )}
 
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-gray-300 mb-2">Notes</label>
-              <input type="text" name="notes" value={form.notes} onChange={handleChange} placeholder="Optional" />
+        {/* Cart display */}
+        {cart.length > 0 && (
+          <div className="mt-6 p-4 bg-vault-bg/60 rounded-lg border border-vault-gold/30">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="font-display text-sm uppercase tracking-wide text-vault-gold">
+                Cart — {cart.length} {cart.length === 1 ? 'product' : 'products'} · {totalCartUnits} units
+              </h4>
+              <button
+                type="button"
+                onClick={handleClearCart}
+                className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"
+              >
+                <Trash2 size={14} /> Clear all
+              </button>
+            </div>
+            <div className="space-y-2">
+              {cart.map(item => {
+                const launchName = extractLaunchName(item.inventory?.product?.name, item.inventory?.product?.category)
+                return (
+                  <div key={item.product_id} className="flex items-center justify-between gap-3 p-3 bg-vault-card rounded border border-vault-border">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap text-sm">
+                        <span className="text-vault-gold font-medium">{item.inventory?.product?.brand}</span>
+                        <span className="text-gray-500">|</span>
+                        <span className="text-white">{launchName}</span>
+                        <span className="text-gray-500">|</span>
+                        <span className="text-gray-300">{item.inventory?.product?.category}</span>
+                        <span className="text-gray-500">|</span>
+                        <span className="text-blue-400">{item.inventory?.product?.language}</span>
+                      </div>
+                    </div>
+                    <span className="text-orange-400 font-bold whitespace-nowrap">× {item.quantity}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveFromCart(item.product_id)}
+                      className="text-gray-400 hover:text-red-400 p-1"
+                      aria-label="Remove from cart"
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                )
+              })}
             </div>
           </div>
         )}
 
         <div className="mt-6">
-          <button type="submit" className="btn btn-primary w-full" disabled={submitting || !form.product_id}>
-            {submitting ? <div className="spinner w-5 h-5 border-2"></div> : <><Save size={20} /> Move Inventory</>}
+          <label className="block text-sm font-medium text-gray-300 mb-2">Notes (applied to all items)</label>
+          <input type="text" name="notes" value={form.notes} onChange={handleChange} placeholder="Optional" />
+        </div>
+
+        <div className="mt-6">
+          <button
+            type="submit"
+            className="btn btn-primary w-full"
+            disabled={submitting || cart.length === 0}
+          >
+            {submitting ? (
+              <div className="spinner w-5 h-5 border-2"></div>
+            ) : (
+              <>
+                <Save size={20} /> Move {cart.length || ''} {cart.length === 1 ? 'Item' : 'Items'}
+              </>
+            )}
           </button>
         </div>
       </form>
