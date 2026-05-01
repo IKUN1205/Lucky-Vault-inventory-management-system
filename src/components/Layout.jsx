@@ -23,6 +23,7 @@ import {
   Link2,
   Users,
   ShoppingBag,
+  Gauge,
   LogOut
 } from 'lucide-react'
 
@@ -40,6 +41,7 @@ const navItems = [
   { path: '/break-box', label: 'Break Box', icon: Box },
   { path: '/expenses', label: 'Business Expenses', icon: Receipt },
   { path: '/reports', label: 'Reports', icon: BarChart3 },
+  { path: '/turnover', label: 'Turnover', icon: Gauge },
   { path: '/users', label: 'Team Management', icon: Users },
   { path: '/high-value', label: 'High Value', icon: Star },
 ]
