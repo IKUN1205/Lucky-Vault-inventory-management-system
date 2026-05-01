@@ -452,6 +452,8 @@ export default function OnlineOrders() {
               onChange={(value) => setForm(f => ({ ...f, product_id: value }))}
               options={productOptions}
               placeholder="Search..."
+              getOptionValue={(opt) => opt.value}
+              getOptionLabel={(opt) => opt.label}
             />
           </div>
 

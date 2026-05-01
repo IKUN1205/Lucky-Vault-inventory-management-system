@@ -10,6 +10,7 @@ const ALL_PAGES = [
   { path: '/', label: 'Dashboard' },
   { path: '/inventory', label: 'View Inventory' },
   { path: '/move-inventory', label: 'Move Inventory' },
+  { path: '/online-orders', label: 'Online Orders' },
   { path: '/manual-inventory', label: 'Manual Inventory' },
   { path: '/stream-counts', label: 'Stream Counts' },
   { path: '/platform-sales', label: 'Platform Sales' },
