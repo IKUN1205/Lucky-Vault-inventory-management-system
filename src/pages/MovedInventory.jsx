@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement } from '../lib/supabase'
+import { fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement, fetchUsers } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import Instructions from '../components/Instructions'
@@ -33,6 +33,7 @@ export default function MovedInventory() {
 
   const [locations, setLocations] = useState([])
   const [inventory, setInventory] = useState([])
+  const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
 
@@ -40,6 +41,7 @@ export default function MovedInventory() {
     date: new Date().toISOString().split('T')[0],
     from_location_id: '',
     to_location_id: '',
+    moved_by_id: '',
     product_id: '',
     quantity: 1,
     notes: ''
@@ -59,8 +61,18 @@ export default function MovedInventory() {
 
   const loadData = async () => {
     try {
-      const locData = await fetchLocations()
+      const [locData, userData] = await Promise.all([
+        fetchLocations(),
+        fetchUsers()
+      ])
       setLocations(locData)
+      setUsers(userData)
+
+      // Default Moved By to the currently logged-in user (if they exist in the users list).
+      // Operator can always change it before submitting if someone else is doing the move.
+      if (user?.id && userData.some(u => u.id === user.id)) {
+        setForm(f => ({ ...f, moved_by_id: user.id }))
+      }
     } catch (error) {
       console.error('Error loading data:', error)
       addToast('Failed to load data', 'error')
@@ -187,6 +199,10 @@ export default function MovedInventory() {
       addToast('Pick From and To locations first', 'error')
       return
     }
+    if (!form.moved_by_id) {
+      addToast('Pick who is moving the items', 'error')
+      return
+    }
     if (cart.length === 0) {
       addToast('Cart is empty — add at least one product', 'error')
       return
@@ -235,6 +251,7 @@ export default function MovedInventory() {
       try {
         const fromLoc = locations.find(l => l.id === movedFromId)
         const toLoc = locations.find(l => l.id === movedToId)
+        const movedByUser = users.find(u => u.id === form.moved_by_id)
         const itemsForLark = cart.map(c => ({
           name: c.inventory?.product?.name || 'Unknown product',
           quantity: c.quantity
@@ -246,7 +263,7 @@ export default function MovedInventory() {
             fromLocation: fromLoc?.name || 'Unknown',
             toLocation: toLoc?.name || 'Unknown',
             items: itemsForLark,
-            user: user?.name || 'Unknown',
+            user: movedByUser?.name || 'Unknown',
             totalUnits
           })
         }).catch(err => {
@@ -370,9 +387,25 @@ export default function MovedInventory() {
       </Instructions>
 
       <form onSubmit={handleSubmit} className="card max-w-3xl">
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-300 mb-2">Date *</label>
-          <input type="date" name="date" value={form.date} onChange={handleChange} required />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Date *</label>
+            <input type="date" name="date" value={form.date} onChange={handleChange} required />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Moved By *</label>
+            <select
+              name="moved_by_id"
+              value={form.moved_by_id}
+              onChange={handleChange}
+              required
+            >
+              <option value="">Who is moving these items...</option>
+              {users.map(u => (
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end mb-6">
