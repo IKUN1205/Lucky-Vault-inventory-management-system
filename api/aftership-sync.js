@@ -12,9 +12,18 @@
 
 import { createClient } from '@supabase/supabase-js'
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://dqreqevbjszercgackuc.supabase.co'
-// Prefer service role key (bypasses RLS) but fall back to anon key if not set.
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
+// Vite client env vars use the VITE_ prefix (required for client bundle exposure)
+// — for the serverless function we accept both prefixed and unprefixed forms so
+// the cron works without the user having to add new env vars in Vercel.
+const SUPABASE_URL = process.env.SUPABASE_URL
+  || process.env.VITE_SUPABASE_URL
+  || 'https://dqreqevbjszercgackuc.supabase.co'
+// Prefer service role key (bypasses RLS) but fall back to the anon key if not
+// set. The anon key is already shipped to the browser, so using it server-side
+// adds no new exposure.
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+  || process.env.SUPABASE_ANON_KEY
+  || process.env.VITE_SUPABASE_ANON_KEY
 const AFTERSHIP_KEY = process.env.AFTERSHIP_API_KEY
 const LARK_INTERNAL_URL = process.env.LARK_WEBHOOK_URL  // re-use direct call rather than self-fetch
 const CRON_SECRET = process.env.CRON_SECRET
