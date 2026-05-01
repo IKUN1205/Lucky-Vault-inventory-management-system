@@ -4,11 +4,35 @@
 // ships in the client bundle (otherwise anyone could spam the group).
 //
 // Supports multiple notification types via the `type` field:
-//   - "move"    : triggered after a Move Inventory transfer
-//   - "receive" : triggered after Receive on Intake to Master
+//   - "move"         : triggered after a Move Inventory transfer
+//   - "receive"      : triggered after Receive on Intake to Master
+//   - "online_order" : triggered after Ship Order on Online Orders
+//   - "purchased"    : triggered after Log Purchase on Purchased Items
 //
 // New types live in the buildMessage switch — keep formatting in one place
 // so we never need to redeploy when wording changes.
+
+// Carrier → tracking URL template. Keep keys in sync with the dropdown in
+// PurchasedItems.jsx. "Other" / unknown carriers fall back to 17track which
+// auto-detects most carriers.
+const CARRIER_TRACKING_URLS = {
+  'USPS':        n => `https://tools.usps.com/go/TrackConfirmAction?tLabels=${encodeURIComponent(n)}`,
+  'UPS':         n => `https://www.ups.com/track?tracknum=${encodeURIComponent(n)}`,
+  'FedEx':       n => `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(n)}`,
+  'DHL':         n => `https://www.dhl.com/en/express/tracking.html?AWB=${encodeURIComponent(n)}`,
+  'Japan Post':  n => `https://trackings.post.japanpost.jp/services/srv/search/?requestNo1=${encodeURIComponent(n)}&locale=en`,
+  'EMS':         n => `https://www.17track.net/en/track?nums=${encodeURIComponent(n)}`,
+  'Yamato':      n => `https://toi.kuronekoyamato.co.jp/cgi-bin/tneko?init=yes&number00=1&number01=${encodeURIComponent(n)}`,
+  'SF Express':  n => `https://www.sf-express.com/we/ow/chn/sc/waybill/waybillNew/waybillQuery?nos=${encodeURIComponent(n)}`,
+  'China Post':  n => `https://www.17track.net/en/track?nums=${encodeURIComponent(n)}`,
+  'Other':       n => `https://www.17track.net/en/track?nums=${encodeURIComponent(n)}`
+}
+
+function buildTrackingUrl(carrier, trackingNumber) {
+  if (!trackingNumber) return null
+  const fn = CARRIER_TRACKING_URLS[carrier] || CARRIER_TRACKING_URLS['Other']
+  return fn(trackingNumber)
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -133,7 +157,56 @@ function buildMessage(body) {
     return lines.join('\n')
   }
 
+  if (type === 'purchased') {
+    const {
+      acquirer,        // who bought it (acquirer field, e.g. "Eric")
+      vendor,          // optional vendor name (e.g. "TCGPlayer")
+      sourceCountry,   // "USA" / "Japan" / "China"
+      currency,        // "USD" / "JPY" / "RMB"
+      totalCost,       // sum of cost in original currency (number)
+      totalCostUSD,    // sum of cost converted to USD (number, optional)
+      items,           // [{ name, quantity, cost }]
+      totalUnits,
+      carrier,         // optional ("USPS" / "FedEx" / etc.)
+      trackingNumber   // optional
+    } = body
+    if (!acquirer || !Array.isArray(items) || items.length === 0) {
+      throw new Error('purchased: missing acquirer/items')
+    }
+    const lines = []
+    lines.push('🛍️ New Purchase Logged')
+    lines.push(`By: ${acquirer}`)
+    if (vendor) lines.push(`Vendor: ${vendor}${sourceCountry ? ` (${sourceCountry})` : ''}`)
+    lines.push('')
+    for (const item of items) {
+      lines.push(`• ${item.name || 'Unknown product'} × ${item.quantity ?? 0}`)
+    }
+    lines.push('')
+    const skuLabel = items.length === 1 ? 'SKU' : 'SKUs'
+    const costStr = totalCost != null
+      ? formatCost(totalCost, currency) + (currency !== 'USD' && totalCostUSD != null ? `  (≈ $${totalCostUSD.toFixed(2)} USD)` : '')
+      : null
+    lines.push(`Total: ${items.length} ${skuLabel} / ${totalUnits ?? 0} units${costStr ? ` / ${costStr}` : ''}`)
+    if (trackingNumber) {
+      lines.push('')
+      lines.push(`Carrier: ${carrier || 'Unknown'}`)
+      lines.push(`Tracking: ${trackingNumber}`)
+      const url = buildTrackingUrl(carrier, trackingNumber)
+      if (url) lines.push(`Track: ${url}`)
+    }
+    lines.push(`Time: ${nowUtcStamp()}`)
+    return lines.join('\n')
+  }
+
   throw new Error(`Unknown notification type: ${type}`)
+}
+
+function formatCost(amount, currency) {
+  if (amount == null) return ''
+  const symbol = currency === 'USD' ? '$' : (currency === 'JPY' ? '¥' : (currency === 'RMB' ? '¥' : ''))
+  // Show 0 decimals for JPY (yen has no fractional unit), 2 for others
+  const decimals = currency === 'JPY' ? 0 : 2
+  return `${symbol}${Number(amount).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} ${currency}`
 }
 
 function nowUtcStamp() {

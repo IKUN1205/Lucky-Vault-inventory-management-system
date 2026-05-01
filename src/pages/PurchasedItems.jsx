@@ -15,6 +15,21 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
+// Carrier options. Keep in sync with CARRIER_TRACKING_URLS in api/lark-notify.js
+// so the Lark message can build the correct deep-link to the carrier site.
+const CARRIER_OPTIONS = [
+  'USPS',
+  'UPS',
+  'FedEx',
+  'DHL',
+  'Japan Post',
+  'EMS',
+  'Yamato',
+  'SF Express',
+  'China Post',
+  'Other'
+]
+
 export default function PurchasedItems() {
   const { toasts, addToast, removeToast } = useToast()
   
@@ -37,7 +52,9 @@ export default function PurchasedItems() {
     source_country: 'USA',
     vendor_id: '',
     payment_method_id: '',
-    currency: 'USD'
+    currency: 'USD',
+    carrier: '',
+    tracking_number: ''
   })
 
   const [lineItems, setLineItems] = useState([
@@ -151,10 +168,16 @@ export default function PurchasedItems() {
 
     setSubmitting(true)
     const createdIds = []
+    // Track everything we'll need for the Lark notification + cost totals
+    let totalCostOriginal = 0
+    let totalCostUSD = 0
+    let totalUnits = 0
+    const larkItems = []
 
     try {
       for (const item of validItems) {
-        const costUSD = convertToUSD(parseFloat(item.cost), header.currency)
+        const costNum = parseFloat(item.cost)
+        const costUSD = convertToUSD(costNum, header.currency)
 
         const acq = await createAcquisition({
           date_purchased: header.date_purchased,
@@ -164,13 +187,58 @@ export default function PurchasedItems() {
           payment_method_id: header.payment_method_id || null,
           product_id: item.product_id,
           quantity_purchased: parseInt(item.quantity),
-          cost: parseFloat(item.cost),
+          cost: costNum,
           currency: header.currency,
           cost_usd: costUSD,
           status: 'Purchased',
-          notes: item.notes || null
+          notes: item.notes || null,
+          // Tracking lives on each acquisition row (header-level concept duplicated
+          // per row for query simplicity — the daily AfterShip cron just needs to
+          // find rows with tracking_number IS NOT NULL).
+          carrier: header.carrier || null,
+          tracking_number: header.tracking_number?.trim() || null
         })
         if (acq?.id) createdIds.push(acq.id)
+
+        // Build Lark payload pieces from the validated form data (not the DB
+        // response) so we have product names already in memory.
+        const product = products.find(p => p.id === item.product_id)
+        const launchName = product ? extractLaunchName(product.name, product.category) : 'Unknown product'
+        larkItems.push({
+          name: product
+            ? `${product.brand} | ${launchName} | ${product.category} | ${product.language}`
+            : 'Unknown product',
+          quantity: parseInt(item.quantity)
+        })
+        totalCostOriginal += costNum
+        totalCostUSD += costUSD
+        totalUnits += parseInt(item.quantity)
+      }
+
+      // Fire-and-forget Lark notification. Failures here must NOT roll back the
+      // purchase, so we don't await and we eat any error.
+      try {
+        const acquirerUser = users.find(u => u.id === header.acquirer_id)
+        const vendorObj = vendors.find(v => v.id === header.vendor_id)
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'purchased',
+            acquirer: acquirerUser?.name || 'Unknown',
+            vendor: vendorObj?.name || null,
+            sourceCountry: header.source_country || null,
+            currency: header.currency,
+            totalCost: totalCostOriginal,
+            totalCostUSD: totalCostUSD,
+            items: larkItems,
+            totalUnits,
+            carrier: header.carrier || null,
+            trackingNumber: header.tracking_number?.trim() || null
+          })
+        }).catch(err => console.error('[lark-notify] purchased request failed:', err))
+      } catch (err) {
+        console.error('[lark-notify] failed to build purchased payload:', err)
       }
 
       const undo = async () => {
@@ -190,6 +258,9 @@ export default function PurchasedItems() {
         createdIds.length > 0 ? { action: { label: 'Undo', onClick: undo } } : undefined
       )
       setLineItems([{ id: 1, product_id: '', quantity: 1, cost: '', notes: '' }])
+      // Reset shipping fields so the next entry starts clean — date/acquirer/vendor
+      // intentionally stay so users can log multiple shipments from the same trip.
+      setHeader(h => ({ ...h, carrier: '', tracking_number: '' }))
     } catch (error) {
       console.error('Error creating acquisition:', error)
       // Best-effort rollback of partial inserts
@@ -353,6 +424,35 @@ export default function PurchasedItems() {
                 <option value="RMB">RMB (¥)</option>
               </select>
             </div>
+          </div>
+
+          {/* Shipping info — optional. Filling these out posts a tracking link
+              to the Lark group and (Phase 2) auto-pings when the package is
+              about to arrive. */}
+          <div className="mt-6 pt-4 border-t border-vault-border">
+            <h3 className="text-sm font-semibold text-gray-300 mb-3">Shipping (optional)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Carrier</label>
+                <select name="carrier" value={header.carrier} onChange={handleHeaderChange}>
+                  <option value="">— None —</option>
+                  {CARRIER_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Tracking Number</label>
+                <input
+                  type="text"
+                  name="tracking_number"
+                  value={header.tracking_number}
+                  onChange={handleHeaderChange}
+                  placeholder="Optional — paste from receipt / vendor email"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              💡 If you fill in tracking, the team gets a Lark notification with a one-click track link.
+            </p>
           </div>
         </div>
 
