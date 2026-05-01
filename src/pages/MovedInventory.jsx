@@ -260,6 +260,7 @@ export default function MovedInventory() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            type: 'move',
             fromLocation: fromLoc?.name || 'Unknown',
             toLocation: toLoc?.name || 'Unknown',
             items: itemsForLark,

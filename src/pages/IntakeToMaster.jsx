@@ -100,6 +100,32 @@ export default function IntakeToMaster() {
       const costPerUnit = acquisition.cost_usd / acquisition.quantity_purchased
       await updateInventory(productId, masterId, qty, costPerUnit)
 
+      // Fire-and-forget Lark notification — never roll back the receipt if Lark is down.
+      try {
+        const product = acquisition.product || {}
+        const launchName = extractLaunchName(product.name, product.category)
+        const productLabel = `${product.brand || 'Unknown'} | ${launchName} | ${product.category || ''} (${product.language || '—'})`
+        const unit = (product.category || '').toLowerCase().includes('pack') ? 'packs' : 'boxes'
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'receive',
+            productLabel,
+            acquirer: acquisition.acquirer?.name || null,
+            thisBatch: qty,
+            totalReceived,
+            totalOrdered: acquisition.quantity_purchased,
+            status: newStatus,
+            unit
+          })
+        }).catch(err => {
+          console.error('[lark-notify] receive request failed (receipt still saved):', err)
+        })
+      } catch (err) {
+        console.error('[lark-notify] failed to build receive payload:', err)
+      }
+
       const undo = async () => {
         try {
           // Reverse inventory delta
