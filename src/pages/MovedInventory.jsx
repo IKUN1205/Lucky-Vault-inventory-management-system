@@ -3,6 +3,7 @@ import { fetchLocations, fetchInventory, createMovement, updateInventory, delete
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import Instructions from '../components/Instructions'
+import { useAuth } from '../lib/AuthContext'
 import { ArrowRightLeft, ArrowRight, Save, Plus, X, Trash2 } from 'lucide-react'
 
 // All valid physical locations for inventory movement
@@ -28,6 +29,7 @@ const extractLaunchName = (fullName, category) => {
 
 export default function MovedInventory() {
   const { toasts, addToast, removeToast } = useToast()
+  const { user } = useAuth()
 
   const [locations, setLocations] = useState([])
   const [inventory, setInventory] = useState([])
@@ -227,6 +229,32 @@ export default function MovedInventory() {
       }
 
       const totalUnits = cart.reduce((s, c) => s + c.quantity, 0)
+
+      // Fire-and-forget Lark notification. Failures here MUST NOT bubble up
+      // (the move already succeeded — we don't want to roll it back if Lark is down).
+      try {
+        const fromLoc = locations.find(l => l.id === movedFromId)
+        const toLoc = locations.find(l => l.id === movedToId)
+        const itemsForLark = cart.map(c => ({
+          name: c.inventory?.product?.name || 'Unknown product',
+          quantity: c.quantity
+        }))
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fromLocation: fromLoc?.name || 'Unknown',
+            toLocation: toLoc?.name || 'Unknown',
+            items: itemsForLark,
+            user: user?.name || 'Unknown',
+            totalUnits
+          })
+        }).catch(err => {
+          console.error('[lark-notify] request failed (move still succeeded):', err)
+        })
+      } catch (err) {
+        console.error('[lark-notify] failed to build payload:', err)
+      }
 
       // Build undo callback — reverses every movement we just created
       const undo = async () => {
