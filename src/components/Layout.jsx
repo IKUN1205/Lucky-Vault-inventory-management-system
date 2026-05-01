@@ -22,6 +22,7 @@ import {
   TrendingUp,
   Link2,
   Users,
+  ShoppingBag,
   LogOut
 } from 'lucide-react'
 
@@ -29,6 +30,7 @@ const navItems = [
   { path: '/', label: 'Dashboard', icon: Home },
   { path: '/inventory', label: 'View Inventory', icon: Eye },
   { path: '/move-inventory', label: 'Move Inventory', icon: ArrowRightLeft },
+  { path: '/online-orders', label: 'Online Orders', icon: ShoppingBag },
   { path: '/manual-inventory', label: 'Manual Inventory', icon: PackagePlus },
   { path: '/stream-counts', label: 'Stream Counts', icon: ClipboardList },
   { path: '/platform-sales', label: 'Platform Sales', icon: TrendingUp },

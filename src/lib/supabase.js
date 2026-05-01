@@ -184,6 +184,47 @@ export const deleteBusinessExpense   = makeDeleter('business_expenses')
 export const deleteHighValueItem     = makeDeleter('high_value_items')
 export const deleteHighValueMovement = makeDeleter('high_value_movements')
 export const deleteStreamCount       = makeDeleter('stream_counts')
+export const deleteOnlineOrder       = makeDeleter('online_orders')
+
+// ----- Online Orders (outbound shipment tracker) -----
+// Header + line items live in two tables; the page calls these in sequence
+// inside its own try/catch so partial failures can be undone.
+
+export const createOnlineOrder = async (order) => {
+  const { data, error } = await supabase
+    .from('online_orders')
+    .insert(order)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export const createOnlineOrderItem = async (item) => {
+  const { data, error } = await supabase
+    .from('online_order_items')
+    .insert(item)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export const fetchRecentOnlineOrders = async (limit = 20) => {
+  const { data, error } = await supabase
+    .from('online_orders')
+    .select(`
+      *,
+      handled_by:users!handled_by_id(name),
+      source_location:locations!source_location_id(name),
+      items:online_order_items(*, product:products(id, brand, name, language, category))
+    `)
+    .eq('deleted', false)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return data
+}
 
 // Stream count items are joined by stream_count_id, not by their own id —
 // delete them with a ranged delete. Used to undo a stream count submission.

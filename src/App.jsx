@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard'
 import PurchasedItems from './pages/PurchasedItems'
 import IntakeToMaster from './pages/IntakeToMaster'
 import MovedInventory from './pages/MovedInventory'
+import OnlineOrders from './pages/OnlineOrders'
 import BreakBox from './pages/BreakBox'
 import SendToGrading from './pages/SendToGrading'
 import StorefrontSale from './pages/StorefrontSale'
@@ -72,6 +73,9 @@ function AppRoutes() {
       } />
       <Route path="/move-inventory" element={
         <ProtectedRoute path="/move-inventory"><Layout><MovedInventory /></Layout></ProtectedRoute>
+      } />
+      <Route path="/online-orders" element={
+        <ProtectedRoute path="/online-orders"><Layout><OnlineOrders /></Layout></ProtectedRoute>
       } />
       <Route path="/break-box" element={
         <ProtectedRoute path="/break-box"><Layout><BreakBox /></Layout></ProtectedRoute>

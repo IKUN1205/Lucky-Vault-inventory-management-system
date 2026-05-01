@@ -78,6 +78,30 @@ function buildMessage(body) {
     return lines.join('\n')
   }
 
+  if (type === 'online_order') {
+    const { handledBy, platform, channel, orderNumber, customerName, sourceLocation, items, totalUnits, trackingNumber } = body
+    if (!platform || !channel || !sourceLocation || !Array.isArray(items) || items.length === 0) {
+      throw new Error('online_order: missing platform/channel/sourceLocation/items')
+    }
+    const lines = []
+    lines.push('🛒 Online Order Shipped')
+    lines.push(`By: ${handledBy || 'Unknown'}`)
+    lines.push(`Platform: ${platform} @ ${channel}`)
+    if (orderNumber) lines.push(`Order #: ${orderNumber}`)
+    if (customerName) lines.push(`Customer: ${customerName}`)
+    lines.push(`From: ${sourceLocation}`)
+    lines.push('')
+    for (const item of items) {
+      lines.push(`• ${item.name || 'Unknown product'} × ${item.quantity ?? 0}`)
+    }
+    lines.push('')
+    const skuLabel = items.length === 1 ? 'SKU' : 'SKUs'
+    lines.push(`Total: ${items.length} ${skuLabel} / ${totalUnits ?? 0} units`)
+    if (trackingNumber) lines.push(`Tracking: ${trackingNumber}`)
+    lines.push(`Time: ${nowUtcStamp()}`)
+    return lines.join('\n')
+  }
+
   if (type === 'receive') {
     const {
       productLabel,    // e.g. "Pokemon | Gem Vol.5 | Booster Box (CN)"
