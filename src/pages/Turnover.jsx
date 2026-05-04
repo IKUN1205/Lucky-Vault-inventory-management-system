@@ -59,51 +59,76 @@ export default function Turnover() {
       const cutoff = ninetyDaysAgo.toISOString()
       const cutoffDate = cutoff.slice(0, 10)
 
-      // Pull everything we need in parallel.
-      // Sales sources: Stream Counts, Storefront Sales, Online Orders.
-      // Platform Sales (item-level rows) intentionally excluded to avoid
-      // double-counting — Stream Counts already captures the unit movement.
-      const [
-        productsRes,
-        inventoryRes,
-        locationsRes,
-        streamItemsRes,
-        storefrontRes,
-        onlineItemsRes
-      ] = await Promise.all([
+      // Phase 1: fetch the simple stuff in parallel.
+      // We avoid PostgREST nested-table filters (e.g. .gte('foo.bar', x)) since
+      // those are flaky — instead we fetch parent rows first and then children
+      // by parent_id in phase 2.
+      const [productsRes, inventoryRes, locationsRes, streamCountsRes, storefrontRes, onlineOrdersRes] = await Promise.all([
         supabase.from('products').select('id, name, brand, category, language, type'),
         supabase.from('inventory').select('product_id, location_id, quantity').gt('quantity', 0),
         supabase.from('locations').select('id, name'),
-        // Stream count items: difference < 0 means units left inventory (sold)
         supabase
-          .from('stream_count_items')
-          .select(`
-            product_id, difference,
-            stream_count:stream_counts!inner(count_time, location_id)
-          `)
-          .lt('difference', 0)
-          .gte('stream_count.count_time', cutoff),
+          .from('stream_counts')
+          .select('id, count_time, location_id')
+          .gte('count_time', cutoff),
         supabase
           .from('storefront_sales')
           .select('product_id, quantity, date, location_id, sale_type')
-          .eq('sale_type', 'Product')
-          .not('product_id', 'is', null)
           .gte('date', cutoffDate),
         supabase
-          .from('online_order_items')
-          .select(`
-            product_id, quantity,
-            order:online_orders!inner(date, platform, channel, source_location_id, deleted)
-          `)
-          .gte('order.date', cutoffDate)
+          .from('online_orders')
+          .select('id, date, platform, channel, source_location_id, deleted')
+          .gte('date', cutoffDate)
       ])
 
-      if (productsRes.error) throw productsRes.error
-      if (inventoryRes.error) throw inventoryRes.error
-      if (locationsRes.error) throw locationsRes.error
-      if (streamItemsRes.error) throw streamItemsRes.error
-      if (storefrontRes.error) throw storefrontRes.error
-      if (onlineItemsRes.error) throw onlineItemsRes.error
+      // Surface specific failures so we can pinpoint which query broke
+      const failures = []
+      if (productsRes.error) failures.push(`products: ${productsRes.error.message}`)
+      if (inventoryRes.error) failures.push(`inventory: ${inventoryRes.error.message}`)
+      if (locationsRes.error) failures.push(`locations: ${locationsRes.error.message}`)
+      if (streamCountsRes.error) failures.push(`stream_counts: ${streamCountsRes.error.message}`)
+      if (storefrontRes.error) failures.push(`storefront_sales: ${storefrontRes.error.message}`)
+      if (onlineOrdersRes.error) failures.push(`online_orders: ${onlineOrdersRes.error.message}`)
+      if (failures.length > 0) {
+        console.error('[Turnover] phase 1 failures:', failures)
+        throw new Error(failures.join(' | '))
+      }
+
+      const streamCountIds = (streamCountsRes.data || []).map(sc => sc.id)
+      const streamCountById = Object.fromEntries(
+        (streamCountsRes.data || []).map(sc => [sc.id, sc])
+      )
+      const onlineOrderIds = (onlineOrdersRes.data || [])
+        .filter(o => !o.deleted)
+        .map(o => o.id)
+      const onlineOrderById = Object.fromEntries(
+        (onlineOrdersRes.data || []).map(o => [o.id, o])
+      )
+
+      // Phase 2: fetch line items by parent ids
+      const [streamItemsRes, onlineItemsRes] = await Promise.all([
+        streamCountIds.length === 0
+          ? Promise.resolve({ data: [], error: null })
+          : supabase
+              .from('stream_count_items')
+              .select('product_id, difference, stream_count_id')
+              .in('stream_count_id', streamCountIds)
+              .lt('difference', 0),
+        onlineOrderIds.length === 0
+          ? Promise.resolve({ data: [], error: null })
+          : supabase
+              .from('online_order_items')
+              .select('product_id, quantity, order_id')
+              .in('order_id', onlineOrderIds)
+      ])
+
+      const phase2Failures = []
+      if (streamItemsRes.error) phase2Failures.push(`stream_count_items: ${streamItemsRes.error.message}`)
+      if (onlineItemsRes.error) phase2Failures.push(`online_order_items: ${onlineItemsRes.error.message}`)
+      if (phase2Failures.length > 0) {
+        console.error('[Turnover] phase 2 failures:', phase2Failures)
+        throw new Error(phase2Failures.join(' | '))
+      }
 
       const locById = Object.fromEntries((locationsRes.data || []).map(l => [l.id, l.name]))
 
@@ -112,18 +137,21 @@ export default function Turnover() {
 
       // 1. Stream counts — channel = location name (the stream room)
       for (const item of streamItemsRes.data || []) {
-        const loc = item.stream_count
-        if (!loc) continue
+        const sc = streamCountById[item.stream_count_id]
+        if (!sc) continue
         events.push({
           product_id: item.product_id,
           qty: Math.abs(item.difference),
-          date: loc.count_time?.slice(0, 10),
-          channel: locById[loc.location_id] || 'Unknown room'
+          date: sc.count_time?.slice(0, 10),
+          channel: locById[sc.location_id] || 'Unknown room'
         })
       }
 
-      // 2. Storefront — channel = location name (e.g. Front Store)
+      // 2. Storefront — channel = location name (e.g. Front Store).
+      //    Filter sale_type in JS in case the column is missing/NULL on older rows.
       for (const s of storefrontRes.data || []) {
+        if (s.sale_type && s.sale_type !== 'Product') continue
+        if (!s.product_id) continue
         events.push({
           product_id: s.product_id,
           qty: s.quantity,
@@ -132,10 +160,9 @@ export default function Turnover() {
         })
       }
 
-      // 3. Online orders — channel = "platform @ channel (Online)" so it
-      //    visually distinguishes from Stream Counts on the same platform
+      // 3. Online orders — channel = "platform @ channel (Online)"
       for (const item of onlineItemsRes.data || []) {
-        const order = item.order
+        const order = onlineOrderById[item.order_id]
         if (!order || order.deleted) continue
         events.push({
           product_id: item.product_id,
@@ -151,7 +178,7 @@ export default function Turnover() {
       setSalesEvents(events)
     } catch (err) {
       console.error('Turnover load failed:', err)
-      addToast('Failed to load turnover data', 'error')
+      addToast(`Failed to load: ${err.message || 'unknown error'}`, 'error')
     } finally {
       setLoading(false)
     }
