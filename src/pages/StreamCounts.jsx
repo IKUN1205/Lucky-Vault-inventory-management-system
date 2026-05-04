@@ -350,6 +350,52 @@ export default function StreamCounts() {
         'success',
         streamCountId ? { action: { label: 'Undo', onClick: undo } } : undefined
       )
+
+      // Fire-and-forget Lark notification: brief to main group, detailed to
+      // the room's group. Never block the UI on this; failures are logged but
+      // never roll back the count.
+      try {
+        const roomName = locations.find(l => l.id === form.location_id)?.name || 'Unknown room'
+        const streamerName = users.find(u => u.id === form.streamer_id)?.name || 'Unknown'
+        const countedByName = users.find(u => u.id === form.counted_by_id)?.name || 'Unknown'
+
+        const formatProductName = (p) => {
+          if (!p) return 'Unknown product'
+          // Strip the trailing category from the product name to get the launch
+          // (matches the convention used in the rest of the app)
+          const launch = p.category && p.name
+            ? p.name.replace(new RegExp(`\\s*${p.category}\\s*$`, 'i'), '').trim() || p.name
+            : p.name || ''
+          return `${p.brand || '?'} | ${launch} | ${p.category || '?'} | ${p.language || '?'}`
+        }
+
+        const soldForLark = soldItems.map(i => ({
+          name: formatProductName(i.product),
+          quantity: i.sold
+        }))
+        const discrepancyForLark = discrepancyItems.map(i => ({
+          name: formatProductName(i.product),
+          extra: i.extra
+        }))
+
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'stream_count',
+            roomName,
+            streamerName,
+            countedByName,
+            totalSold,
+            totalDiscrepancies,
+            soldItems: soldForLark,
+            discrepancyItems: discrepancyForLark
+          })
+        }).catch(err => console.error('[lark-notify] stream_count request failed:', err))
+      } catch (err) {
+        console.error('[lark-notify] failed to build stream_count payload:', err)
+      }
+
       setStep(3)
     } catch (error) {
       console.error('Error submitting count:', error)

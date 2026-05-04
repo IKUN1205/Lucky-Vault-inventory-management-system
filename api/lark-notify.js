@@ -8,9 +8,18 @@
 //   - "receive"      : triggered after Receive on Intake to Master
 //   - "online_order" : triggered after Ship Order on Online Orders
 //   - "purchased"    : triggered after Log Purchase on Purchased Items
+//   - "stream_count" : triggered after Submit on Stream Counts (DUAL TARGET:
+//                      brief to main group, detailed to per-room group)
 //
 // New types live in the buildMessage switch — keep formatting in one place
 // so we never need to redeploy when wording changes.
+//
+// Per-room webhooks (Vercel env vars) — used by stream_count notifications:
+//   LARK_WEBHOOK_URL                       → main group (brief summary)
+//   LARK_WEBHOOK_STREAM_ROCKETSHQ          → TikTok RocketsHQ room group
+//   LARK_WEBHOOK_STREAM_PACKHEADS          → TikTok Packheads room group
+//   LARK_WEBHOOK_STREAM_LUCKYVAULTUS       → eBay LuckyVaultUS room group
+//   LARK_WEBHOOK_STREAM_SLABBIEPATTY       → eBay SlabbiePatty room group
 
 // Carrier → tracking URL template. Keep keys in sync with the dropdown in
 // PurchasedItems.jsx. "Other" / unknown carriers fall back to 17track which
@@ -40,6 +49,16 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
+  const body = req.body || {}
+  const type = body.type || 'move'
+
+  // stream_count fans out to BOTH the main group (brief) and the per-room
+  // group (detailed). Branch out so the dual-target logic doesn't pollute
+  // the simpler single-message path used by every other type.
+  if (type === 'stream_count') {
+    return handleStreamCount(body, res)
+  }
+
   const webhookUrl = process.env.LARK_WEBHOOK_URL
   if (!webhookUrl) {
     console.error('[lark-notify] LARK_WEBHOOK_URL is not set in Vercel env')
@@ -48,7 +67,7 @@ export default async function handler(req, res) {
 
   let messageText
   try {
-    messageText = buildMessage(req.body || {})
+    messageText = buildMessage(body)
   } catch (err) {
     console.error('[lark-notify] bad payload:', err)
     return res.status(400).json({ error: err.message || 'Invalid payload' })
@@ -76,6 +95,117 @@ export default async function handler(req, res) {
     console.error('[lark-notify] Failed to call Lark webhook:', err)
     return res.status(500).json({ error: 'Failed to call Lark webhook', message: String(err?.message || err) })
   }
+}
+
+// ---- stream_count: dual-target dispatch ----
+
+async function handleStreamCount(body, res) {
+  const totalSold = Number(body.totalSold) || 0
+  const totalDiscrepancies = Number(body.totalDiscrepancies) || 0
+
+  // Skip silently if there's nothing worth reporting (per user spec —
+  // counts of zero with no discrepancies just clutter the channels).
+  if (totalSold === 0 && totalDiscrepancies === 0) {
+    return res.status(200).json({ ok: true, skipped: 'no sales or discrepancies' })
+  }
+
+  const mainWebhook = process.env.LARK_WEBHOOK_URL
+  const roomWebhook = getRoomWebhook(body.roomName)
+
+  const sends = []
+  if (mainWebhook) {
+    sends.push({
+      target: 'main',
+      url: mainWebhook,
+      text: buildStreamCountBrief(body)
+    })
+  }
+  if (roomWebhook) {
+    sends.push({
+      target: 'room',
+      url: roomWebhook,
+      text: buildStreamCountDetailed(body)
+    })
+  }
+
+  if (sends.length === 0) {
+    console.error('[lark-notify] stream_count: no webhooks configured', body.roomName)
+    return res.status(500).json({ error: 'No webhooks configured (main + room both missing)' })
+  }
+
+  const results = await Promise.all(sends.map(async s => {
+    try {
+      const r = await fetch(s.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text: s.text } })
+      })
+      const text = await r.text()
+      return { target: s.target, ok: r.ok, status: r.status, response: text }
+    } catch (err) {
+      console.error(`[lark-notify] stream_count ${s.target} send failed:`, err)
+      return { target: s.target, ok: false, error: String(err?.message || err) }
+    }
+  }))
+
+  return res.status(200).json({ ok: results.every(r => r.ok), results })
+}
+
+// Match the room name (e.g. "Stream Room - TikTok RocketsHQ") to the right
+// env var. Substring matching is intentional — robust to small label changes
+// like "Stream Room — " (em dash) vs "Stream Room - " (hyphen).
+function getRoomWebhook(roomName) {
+  if (!roomName) return null
+  const n = String(roomName)
+  if (n.includes('RocketsHQ'))    return process.env.LARK_WEBHOOK_STREAM_ROCKETSHQ    || null
+  if (n.includes('Packheads'))    return process.env.LARK_WEBHOOK_STREAM_PACKHEADS    || null
+  if (n.includes('LuckyVaultUS')) return process.env.LARK_WEBHOOK_STREAM_LUCKYVAULTUS || null
+  if (n.includes('SlabbiePatty')) return process.env.LARK_WEBHOOK_STREAM_SLABBIEPATTY || null
+  return null
+}
+
+function buildStreamCountBrief(body) {
+  const { roomName, streamerName, countedByName, totalSold, totalDiscrepancies } = body
+  // Strip the "Stream Room - " prefix in the brief — main group already knows
+  // the context, shorter is better.
+  const room = (roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')
+  const lines = []
+  lines.push(`📋 Stream Count — ${room}`)
+  lines.push(`Counted by ${countedByName || '?'} · Now streaming: ${streamerName || '?'}`)
+  const sold = Number(totalSold) || 0
+  const disc = Number(totalDiscrepancies) || 0
+  let summary = `Sold last session: ${sold}`
+  if (disc > 0) summary += ` · ⚠️ +${disc} discrepancies`
+  lines.push(summary)
+  return lines.join('\n')
+}
+
+function buildStreamCountDetailed(body) {
+  const { roomName, streamerName, countedByName, soldItems = [], discrepancyItems = [], totalSold, totalDiscrepancies } = body
+  const lines = []
+  lines.push(`📋 Stream Count — ${roomName || 'Unknown room'}`)
+  lines.push(`Counted by: ${countedByName || '?'}`)
+  lines.push(`Now streaming: ${streamerName || '?'}`)
+  lines.push(`Time: ${nowUtcStamp()}`)
+
+  if (soldItems.length > 0) {
+    lines.push('')
+    const skuLabel = soldItems.length === 1 ? 'SKU' : 'SKUs'
+    lines.push(`📤 Sold during previous session: ${Number(totalSold) || 0} units / ${soldItems.length} ${skuLabel}`)
+    for (const item of soldItems) {
+      lines.push(`  • ${item.name || 'Unknown'} × ${item.quantity || 0}`)
+    }
+  }
+
+  if (discrepancyItems.length > 0) {
+    lines.push('')
+    lines.push(`⚠️ More than expected: +${Number(totalDiscrepancies) || 0} units (needs review)`)
+    for (const item of discrepancyItems) {
+      lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}`)
+    }
+  }
+
+  return lines.join('\n')
 }
 
 function buildMessage(body) {
