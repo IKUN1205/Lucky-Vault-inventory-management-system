@@ -18,6 +18,16 @@ const extractLaunchName = (fullName, category) => {
 const WINDOWS = [7, 30, 60, 90]
 const DEFAULT_WINDOW = 30
 
+// Online channels we always offer in the filter, even if Online Orders has no
+// rows yet. Keep in sync with PLATFORM_CHANNELS in OnlineOrders.jsx — same
+// "(Online)" suffix that the page tags onto event channels.
+const ONLINE_CHANNELS = [
+  'TikTok @ RocketsHQ (Online)',
+  'TikTok @ Packheads (Online)',
+  'eBay @ LuckyVaultUS (Online)',
+  'eBay @ SlabbiePatty (Online)'
+]
+
 // Status tag thresholds (computed from the SELECTED window's velocity)
 function classifyStatus(weeklyVelocity, daysLeft, hasStock, daysSinceLastSale) {
   if (!hasStock) return { tag: 'none', label: '—', color: 'text-gray-500' }
@@ -339,17 +349,46 @@ export default function Turnover() {
     launchList.forEach(l => l.skus.sort((a, b) => b.weeklyVel - a.weeklyVel))
 
     const brandsAvailable = [...new Set(products.map(p => p.brand).filter(Boolean))].sort()
-    // Distinct channels found in the (unfiltered) sales events. Sorted with
-    // Stream Rooms first, then Storefront, then Online channels — easier to scan.
-    const channelsAvailable = [...new Set(salesEvents.map(e => e.channel))].sort((a, b) => {
-      const rank = ch => ch.startsWith('Stream Room') ? 0 : ch === 'Storefront' ? 1 : 2
-      const ra = rank(a), rb = rank(b)
-      if (ra !== rb) return ra - rb
-      return a.localeCompare(b)
-    })
+
+    // ----- Build the channel filter dropdown options -----
+    // We want to show *every* configured channel even if it has 0 sales, so
+    // the user can confirm "yes, this room really sold nothing". Sources:
+    //   1. Every "Stream Room *" location in the locations table
+    //   2. Storefront (always)
+    //   3. The 4 online platform@channel combos from OnlineOrders.jsx
+    //   4. Anything else that shows up in salesEvents (defensive — covers
+    //      historical channels we didn't anticipate)
+    const sold90dByChannel = {}
+    for (const e of salesEvents) {
+      if (!e.date) continue
+      const eventDate = new Date(e.date)
+      const daysAgo = Math.floor((today - eventDate) / (1000 * 60 * 60 * 24))
+      if (daysAgo > 90) continue
+      sold90dByChannel[e.channel] = (sold90dByChannel[e.channel] || 0) + e.qty
+    }
+    const streamRoomChannels = locations
+      .filter(l => l.name && l.name.startsWith('Stream Room'))
+      .map(l => l.name)
+    const masterChannelSet = new Set([
+      ...streamRoomChannels,
+      'Storefront',
+      ...ONLINE_CHANNELS,
+      ...Object.keys(sold90dByChannel)
+    ])
+    const channelsAvailable = [...masterChannelSet]
+      .sort((a, b) => {
+        const rank = ch => ch.startsWith('Stream Room') ? 0 : ch === 'Storefront' ? 1 : 2
+        const ra = rank(a), rb = rank(b)
+        if (ra !== rb) return ra - rb
+        return a.localeCompare(b)
+      })
+      .map(ch => ({
+        value: ch,
+        sold90d: sold90dByChannel[ch] || 0
+      }))
 
     return { launches: launchList, brandsAvailable, channelsAvailable }
-  }, [products, inventory, salesEvents, window, filters, sortBy])
+  }, [products, inventory, salesEvents, locations, window, filters, sortBy])
 
   const toggleLaunch = (key) => {
     setExpanded(prev => {
@@ -454,7 +493,17 @@ export default function Turnover() {
             <label className="block text-sm font-medium text-gray-300 mb-2">Channel</label>
             <select value={filters.channel} onChange={e => setFilters(f => ({ ...f, channel: e.target.value }))}>
               <option value="">All channels</option>
-              {channelsAvailable.map(c => <option key={c} value={c}>{c}</option>)}
+              {channelsAvailable.map(c => (
+                <option
+                  key={c.value}
+                  value={c.value}
+                  // Native <option> can't really be styled, but we can hint
+                  // visually by appending "(0 sold)" so empty channels are
+                  // obvious in the list.
+                >
+                  {c.value} {c.sold90d > 0 ? `— ${c.sold90d} sold 90d` : '— 0 sold 90d'}
+                </option>
+              ))}
             </select>
           </div>
           <div>
