@@ -230,7 +230,13 @@ export default function MovedInventory() {
           quantity: item.quantity,
           cost_basis: cost,
           movement_type: 'Transfer',
-          notes: form.notes
+          notes: form.notes,
+          // moved_by_id: who PHYSICALLY moved the goods (selected in the UI,
+          // defaults to logged-in user but can be overridden). Distinct from
+          // created_by which Supabase fills with the logged-in account that
+          // submitted the record. They're often the same but can differ when
+          // e.g. an admin logs a movement on behalf of a warehouse worker.
+          moved_by_id: form.moved_by_id || null
         })
 
         await updateInventory(item.product_id, movedFromId, -item.quantity)
