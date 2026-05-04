@@ -27,23 +27,56 @@ import {
   LogOut
 } from 'lucide-react'
 
-const navItems = [
-  { path: '/', label: 'Dashboard', icon: Home },
-  { path: '/inventory', label: 'View Inventory', icon: Eye },
-  { path: '/move-inventory', label: 'Move Inventory', icon: ArrowRightLeft },
-  { path: '/online-orders', label: 'Online Orders', icon: ShoppingBag },
-  { path: '/manual-inventory', label: 'Manual Inventory', icon: PackagePlus },
-  { path: '/stream-counts', label: 'Stream Counts', icon: ClipboardList },
-  { path: '/platform-sales', label: 'Platform Sales', icon: TrendingUp },
-  { path: '/add-product', label: 'Add Product', icon: Plus },
-  { path: '/purchased-items', label: 'Purchased Items', icon: ShoppingCart },
-  { path: '/intake', label: 'Intake to Master', icon: Package },
-  { path: '/break-box', label: 'Break Box', icon: Box },
-  { path: '/expenses', label: 'Business Expenses', icon: Receipt },
-  { path: '/reports', label: 'Reports', icon: BarChart3 },
-  { path: '/turnover', label: 'Turnover', icon: Gauge },
-  { path: '/users', label: 'Team Management', icon: Users },
-  { path: '/high-value', label: 'High Value', icon: Star },
+// Sidebar grouped by workflow stage. Section headers render as small uppercase
+// labels above each block. Order roughly matches the operational lifecycle:
+// see what you have → receive → operate → sell → report → admin.
+const navSections = [
+  {
+    title: 'Overview',
+    items: [
+      { path: '/', label: 'Dashboard', icon: Home },
+      { path: '/inventory', label: 'View Inventory', icon: Eye },
+    ]
+  },
+  {
+    title: 'Receive',
+    items: [
+      { path: '/purchased-items', label: 'Purchased Items', icon: ShoppingCart },
+      { path: '/intake', label: 'Intake to Master', icon: Package },
+      { path: '/manual-inventory', label: 'Manual Inventory', icon: PackagePlus },
+      { path: '/add-product', label: 'Add Product', icon: Plus },
+    ]
+  },
+  {
+    title: 'Operations',
+    items: [
+      { path: '/move-inventory', label: 'Move Inventory', icon: ArrowRightLeft },
+      { path: '/break-box', label: 'Break Box', icon: Box },
+    ]
+  },
+  {
+    title: 'Sales',
+    items: [
+      { path: '/stream-counts', label: 'Stream Counts', icon: ClipboardList },
+      { path: '/platform-sales', label: 'Platform Sales', icon: TrendingUp },
+      { path: '/online-orders', label: 'Online Orders', icon: ShoppingBag },
+    ]
+  },
+  {
+    title: 'Reports',
+    items: [
+      { path: '/reports', label: 'Reports', icon: BarChart3 },
+      { path: '/turnover', label: 'Turnover', icon: Gauge },
+    ]
+  },
+  {
+    title: 'Admin',
+    items: [
+      { path: '/high-value', label: 'High Value', icon: Star },
+      { path: '/expenses', label: 'Business Expenses', icon: Receipt },
+      { path: '/users', label: 'Team Management', icon: Users },
+    ]
+  },
 ]
 
 export default function Layout({ children }) {
@@ -53,8 +86,15 @@ export default function Layout({ children }) {
 
   const isActive = (path) => location.pathname === path
 
-  // Filter nav items based on user permissions
-  const visibleNavItems = navItems.filter(item => hasAccess(item.path))
+  // Filter each section's items by user permissions, then drop sections that
+  // become empty (e.g. a streamer with no Admin access shouldn't see an empty
+  // "Admin" header).
+  const visibleSections = navSections
+    .map(section => ({
+      ...section,
+      items: section.items.filter(item => hasAccess(item.path))
+    }))
+    .filter(section => section.items.length > 0)
 
   const handleLogout = () => {
     if (confirm('Are you sure you want to logout?')) {
@@ -92,23 +132,33 @@ export default function Layout({ children }) {
           </Link>
         </div>
 
-        {/* Navigation */}
-        <nav className="p-4 space-y-1 overflow-y-auto flex-1">
-          {visibleNavItems.map((item) => (
-            <Link
-              key={item.path}
-              to={item.path}
-              onClick={() => setSidebarOpen(false)}
-              className={`
-                flex items-center gap-3 px-4 py-3 rounded-lg transition-all
-                ${isActive(item.path) 
-                  ? 'bg-vault-gold/10 text-vault-gold border border-vault-gold/30' 
-                  : 'text-gray-400 hover:bg-vault-surface hover:text-white'}
-              `}
-            >
-              <item.icon size={20} />
-              <span className="text-sm font-medium">{item.label}</span>
-            </Link>
+        {/* Navigation — rendered as sections with small uppercase headers.
+            Tighter row padding (py-2) since we have more visual structure now. */}
+        <nav className="p-3 overflow-y-auto flex-1">
+          {visibleSections.map((section, sectionIdx) => (
+            <div key={section.title} className={sectionIdx > 0 ? 'mt-4' : ''}>
+              <div className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                {section.title}
+              </div>
+              <div className="space-y-0.5">
+                {section.items.map((item) => (
+                  <Link
+                    key={item.path}
+                    to={item.path}
+                    onClick={() => setSidebarOpen(false)}
+                    className={`
+                      flex items-center gap-3 px-3 py-2 rounded-lg transition-all
+                      ${isActive(item.path)
+                        ? 'bg-vault-gold/10 text-vault-gold border border-vault-gold/30'
+                        : 'text-gray-400 hover:bg-vault-surface hover:text-white'}
+                    `}
+                  >
+                    <item.icon size={18} />
+                    <span className="text-sm font-medium">{item.label}</span>
+                  </Link>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
 
