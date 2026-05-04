@@ -71,9 +71,12 @@ export default function Turnover() {
           .from('stream_counts')
           .select('id, count_time, location_id')
           .gte('count_time', cutoff),
+        // storefront_sales: location_id may not exist in this DB (schema drift
+        // between app code and actual columns). Just pull the essentials and
+        // attribute every storefront sale to a single "Storefront" channel.
         supabase
           .from('storefront_sales')
-          .select('product_id, quantity, date, location_id, sale_type')
+          .select('product_id, quantity, date, sale_type')
           .gte('date', cutoffDate),
         supabase
           .from('online_orders')
@@ -147,8 +150,9 @@ export default function Turnover() {
         })
       }
 
-      // 2. Storefront — channel = location name (e.g. Front Store).
-      //    Filter sale_type in JS in case the column is missing/NULL on older rows.
+      // 2. Storefront — single "Storefront" channel (no location attribution
+      //    available in this schema). Filter sale_type in JS in case the
+      //    column is missing/NULL on older rows.
       for (const s of storefrontRes.data || []) {
         if (s.sale_type && s.sale_type !== 'Product') continue
         if (!s.product_id) continue
@@ -156,7 +160,7 @@ export default function Turnover() {
           product_id: s.product_id,
           qty: s.quantity,
           date: s.date,
-          channel: locById[s.location_id] || 'Storefront'
+          channel: 'Storefront'
         })
       }
 
