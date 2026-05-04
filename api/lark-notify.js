@@ -171,7 +171,9 @@ function buildStreamCountBrief(body) {
   const room = (roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')
   const lines = []
   lines.push(`📋 Stream Count — ${room}`)
-  lines.push(`Counted by ${countedByName || '?'} · Now streaming: ${streamerName || '?'}`)
+  // streamer_id = previous streamer (the one whose sales we're recording).
+  // counted_by_id = current streamer taking over (also the one counting).
+  lines.push(`Sold by ${streamerName || '?'} · Counted by ${countedByName || '?'} (now streaming)`)
   const sold = Number(totalSold) || 0
   const disc = Number(totalDiscrepancies) || 0
   let summary = `Sold last session: ${sold}`
@@ -184,8 +186,8 @@ function buildStreamCountDetailed(body) {
   const { roomName, streamerName, countedByName, soldItems = [], discrepancyItems = [], totalSold, totalDiscrepancies } = body
   const lines = []
   lines.push(`📋 Stream Count — ${roomName || 'Unknown room'}`)
-  lines.push(`Counted by: ${countedByName || '?'}`)
-  lines.push(`Now streaming: ${streamerName || '?'}`)
+  lines.push(`Sold by: ${streamerName || '?'} (previous session)`)
+  lines.push(`Counted by: ${countedByName || '?'} (now streaming)`)
   lines.push(`Time: ${nowUtcStamp()}`)
 
   if (soldItems.length > 0) {
