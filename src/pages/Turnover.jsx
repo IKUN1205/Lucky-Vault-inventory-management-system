@@ -13,8 +13,9 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
-// 3 time windows compared side-by-side
-const WINDOWS = [30, 60, 90]
+// Time windows compared side-by-side. 7d added so users can spot week-over-week
+// trend changes early; 30/60/90 are the longer baselines.
+const WINDOWS = [7, 30, 60, 90]
 const DEFAULT_WINDOW = 30
 
 // Status tag thresholds (computed from the SELECTED window's velocity)
@@ -46,7 +47,7 @@ export default function Turnover() {
   const [salesEvents, setSalesEvents] = useState([]) // unified [{product_id, qty, date, channel}]
 
   const [window, setWindow] = useState(DEFAULT_WINDOW)
-  const [filters, setFilters] = useState({ brand: '', type: '', language: '', search: '' })
+  const [filters, setFilters] = useState({ brand: '', type: '', language: '', search: '', channel: '' })
   const [expanded, setExpanded] = useState(new Set())  // launch keys
   const [sortBy, setSortBy] = useState('velocity')     // velocity | sold | stock | daysLeft
 
@@ -191,7 +192,7 @@ export default function Turnover() {
   // ---- Aggregation ----
   // For each product, compute: sold (per window), perChannel (per window), lastSaleDate
   // Then group by launch.
-  const { launches, brandsAvailable } = useMemo(() => {
+  const { launches, brandsAvailable, channelsAvailable } = useMemo(() => {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
 
@@ -207,13 +208,20 @@ export default function Turnover() {
       perProduct[p.id] = {
         product: p,
         stock: stockByProduct[p.id] || 0,
-        sold: { 30: 0, 60: 0, 90: 0 },
-        byChannel: { 30: {}, 60: {}, 90: {} },
+        sold: { 7: 0, 30: 0, 60: 0, 90: 0 },
+        byChannel: { 7: {}, 30: {}, 60: {}, 90: {} },
         lastSaleDate: null
       }
     }
 
-    for (const e of salesEvents) {
+    // If a channel filter is active, all per-product/launch metrics reflect
+    // ONLY that channel's contribution. Stock stays total because online
+    // orders aren't tied to a specific source location.
+    const filteredEvents = filters.channel
+      ? salesEvents.filter(e => e.channel === filters.channel)
+      : salesEvents
+
+    for (const e of filteredEvents) {
       const agg = perProduct[e.product_id]
       if (!agg || !e.date) continue
       const eventDate = new Date(e.date)
@@ -248,7 +256,8 @@ export default function Turnover() {
     })
 
     // Filter
-    const filtered = finalized.filter(({ product }) => {
+    const filtered = finalized.filter((f) => {
+      const product = f.product
       if (filters.brand && product.brand !== filters.brand) return false
       if (filters.type && product.type !== filters.type) return false
       if (filters.language && product.language !== filters.language) return false
@@ -256,9 +265,14 @@ export default function Turnover() {
         const haystack = `${product.brand} ${product.name} ${product.category} ${product.language}`.toLowerCase()
         if (!haystack.includes(filters.search.toLowerCase())) return false
       }
-      // Hide products with no stock AND no recent sales — they're noise
-      if (product.stock === 0 && finalized.find(f => f.product.id === product.id)?.sold[90] === 0) {
-        return false
+      // When a channel filter is active, only show products that actually had
+      // sales in that channel within 90 days — otherwise we'd show every SKU
+      // with stock saying "0 sold", which is noise.
+      if (filters.channel) {
+        if (f.sold[90] === 0) return false
+      } else {
+        // No channel filter: hide products with no stock AND no recent sales
+        if (f.stock === 0 && f.sold[90] === 0) return false
       }
       return true
     })
@@ -275,8 +289,8 @@ export default function Turnover() {
           launchName,
           skus: [],
           stock: 0,
-          sold: { 30: 0, 60: 0, 90: 0 },
-          byChannel: { 30: {}, 60: {}, 90: {} },
+          sold: { 7: 0, 30: 0, 60: 0, 90: 0 },
+          byChannel: { 7: {}, 30: {}, 60: {}, 90: {} },
           lastSaleDate: null
         }
       }
@@ -325,8 +339,16 @@ export default function Turnover() {
     launchList.forEach(l => l.skus.sort((a, b) => b.weeklyVel - a.weeklyVel))
 
     const brandsAvailable = [...new Set(products.map(p => p.brand).filter(Boolean))].sort()
+    // Distinct channels found in the (unfiltered) sales events. Sorted with
+    // Stream Rooms first, then Storefront, then Online channels — easier to scan.
+    const channelsAvailable = [...new Set(salesEvents.map(e => e.channel))].sort((a, b) => {
+      const rank = ch => ch.startsWith('Stream Room') ? 0 : ch === 'Storefront' ? 1 : 2
+      const ra = rank(a), rb = rank(b)
+      if (ra !== rb) return ra - rb
+      return a.localeCompare(b)
+    })
 
-    return { launches: launchList, brandsAvailable }
+    return { launches: launchList, brandsAvailable, channelsAvailable }
   }, [products, inventory, salesEvents, window, filters, sortBy])
 
   const toggleLaunch = (key) => {
@@ -382,25 +404,28 @@ export default function Turnover() {
 
       {/* Filters */}
       <div className="card mb-4">
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">Time Window</label>
-            <div className="flex bg-vault-dark rounded-lg p-1">
-              {WINDOWS.map(w => (
-                <button
-                  key={w}
-                  onClick={() => setWindow(w)}
-                  className={`flex-1 px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                    window === w
-                      ? 'bg-vault-gold text-vault-dark'
-                      : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  {w}d
-                </button>
-              ))}
-            </div>
+        {/* Row 1: Time window (full row width on its own — most prominent) */}
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-300 mb-2">Time Window</label>
+          <div className="flex bg-vault-dark rounded-lg p-1 max-w-md">
+            {WINDOWS.map(w => (
+              <button
+                key={w}
+                onClick={() => setWindow(w)}
+                className={`flex-1 px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+                  window === w
+                    ? 'bg-vault-gold text-vault-dark'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                {w}d
+              </button>
+            ))}
           </div>
+        </div>
+
+        {/* Row 2: Slicing filters */}
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Brand</label>
             <select value={filters.brand} onChange={e => setFilters(f => ({ ...f, brand: e.target.value }))}>
@@ -426,6 +451,13 @@ export default function Turnover() {
             </select>
           </div>
           <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Channel</label>
+            <select value={filters.channel} onChange={e => setFilters(f => ({ ...f, channel: e.target.value }))}>
+              <option value="">All channels</option>
+              {channelsAvailable.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Search</label>
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
@@ -439,6 +471,13 @@ export default function Turnover() {
             </div>
           </div>
         </div>
+
+        {filters.channel && (
+          <p className="text-xs text-yellow-400 mt-3">
+            ⚠️ Filtered to <span className="font-semibold">{filters.channel}</span> — Sold/velocity reflect this channel only.
+            Stock is total across all locations (online channels can't be tied to a specific location).
+          </p>
+        )}
 
         <div className="flex justify-between items-center mt-4 pt-4 border-t border-vault-border">
           <div className="text-sm text-gray-400">
