@@ -14,6 +14,7 @@ const ALL_PAGES = [
   { path: '/manual-inventory', label: 'Manual Inventory' },
   { path: '/stream-counts', label: 'Stream Counts' },
   { path: '/platform-sales', label: 'Platform Sales' },
+  { path: '/storefront-sale', label: 'Storefront Sales' },
   { path: '/add-product', label: 'Add Product' },
   { path: '/purchased-items', label: 'Purchased Items' },
   { path: '/intake', label: 'Intake to Master' },

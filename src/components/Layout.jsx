@@ -23,6 +23,7 @@ import {
   Link2,
   Users,
   ShoppingBag,
+  Store,
   Gauge,
   LogOut
 } from 'lucide-react'
@@ -60,6 +61,7 @@ const navSections = [
       { path: '/stream-counts', label: 'Stream Counts', icon: ClipboardList },
       { path: '/platform-sales', label: 'Platform Sales', icon: TrendingUp },
       { path: '/online-orders', label: 'Online Orders', icon: ShoppingBag },
+      { path: '/storefront-sale', label: 'Storefront Sales', icon: Store },
     ]
   },
   {
