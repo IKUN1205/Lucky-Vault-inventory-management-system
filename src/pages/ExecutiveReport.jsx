@@ -151,6 +151,9 @@ export default function ExecutiveReport() {
       // ===== Outflow aggregation =====
       let outStream = 0, outStorefront = 0, outOnline = 0, outPlatform = 0
       const productOutflow = new Map() // product_id -> { cost, qty, channels:Set }
+      // Per-room breakdown for stream outflow — owner wants to see which room
+      // moved the most so he knows where the cost-of-goods is leaving from.
+      const streamByRoom = new Map() // locationName -> cost
 
       const addOutflow = (productId, qty, cost, channel) => {
         if (!productId || qty <= 0) return
@@ -168,6 +171,9 @@ export default function ExecutiveReport() {
         const cost = sold * productAvgCost(item.product_id)
         outStream += cost
         addOutflow(item.product_id, sold, cost, 'Stream')
+        const locId = scLocationMap.get(item.stream_count_id)
+        const roomName = locationMap.get(locId)?.name || 'Unknown room'
+        streamByRoom.set(roomName, (streamByRoom.get(roomName) || 0) + cost)
       }
 
       // Storefront: only Itemized has product_id and pre-computed cost_basis.
@@ -293,7 +299,14 @@ export default function ExecutiveReport() {
         period: getPeriod().label,
         invValue,
         invByLocation: Array.from(invByLocation.entries()).sort((a, b) => b[1] - a[1]),
-        outflow: { stream: outStream, storefront: outStorefront, online: outOnline, platform: outPlatform, total: outTotal },
+        outflow: {
+          stream: outStream,
+          storefront: outStorefront,
+          online: outOnline,
+          platform: outPlatform,
+          total: outTotal,
+          streamByRoom: Array.from(streamByRoom.entries()).sort((a, b) => b[1] - a[1]),
+        },
         inflow: { total: inTotal, byVendor: Array.from(inflowByVendor.entries()).sort((a, b) => b[1] - a[1]) },
         top5,
         deadStock,
@@ -390,6 +403,16 @@ export default function ExecutiveReport() {
           </h3>
           <div className="space-y-2 text-sm">
             <Row icon={<Tv size={14} />} label="Stream rooms" value={fmt(data?.outflow?.stream)} />
+            {data?.outflow?.streamByRoom?.length > 0 && (
+              <div className="pl-6 space-y-1 border-l-2 border-vault-border ml-2">
+                {data.outflow.streamByRoom.map(([roomName, value]) => (
+                  <div key={roomName} className="flex items-center justify-between text-xs">
+                    <span className="text-gray-400 truncate">↳ {roomName.replace(/^Stream Room\s*-\s*/, '')}</span>
+                    <span className="text-gray-300">{fmt(value)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <Row icon={<Store size={14} />} label="Storefront" value={fmt(data?.outflow?.storefront)} />
             <Row icon={<ShoppingBag size={14} />} label="Online orders" value={fmt(data?.outflow?.online)} />
             <Row icon={<TrendingUp size={14} />} label="Platform sales" value={fmt(data?.outflow?.platform)} />
