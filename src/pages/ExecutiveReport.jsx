@@ -255,6 +255,9 @@ export default function ExecutiveReport() {
       }
       const allEntries = Array.from(productOutflow.entries())
         .sort((a, b) => b[1].cost - a[1].cost)
+      // Owner asked for both an overall view and a per-market drilldown.
+      // Total = 5 across all languages; each market = 5 within its own slice.
+      const top5All = allEntries.slice(0, 5).map(buildTopRow)
       const top5JP = allEntries
         .filter(([pid]) => productMap.get(pid)?.language === 'JP')
         .slice(0, 5)
@@ -370,8 +373,10 @@ export default function ExecutiveReport() {
           cost30d: d.cost,
           stock: totalStockByProduct.get(pid) || 0,
         }))
+      const popularAll = popularRows.slice(0, 10)
       const popularJP = popularRows.filter(r => r.product?.language === 'JP').slice(0, 8)
       const popularEN = popularRows.filter(r => r.product?.language === 'EN').slice(0, 8)
+      const popularCN = popularRows.filter(r => r.product?.language === 'CN').slice(0, 8)
 
       setData({
         period: getPeriod().label,
@@ -389,9 +394,9 @@ export default function ExecutiveReport() {
           streamByRoom: Array.from(streamByRoom.entries()).sort((a, b) => b[1].cost - a[1].cost),
         },
         inflow: { total: inTotal, byVendor: Array.from(inflowByVendor.entries()).sort((a, b) => b[1] - a[1]) },
-        top5JP, top5EN, top5CN,
+        top5All, top5JP, top5EN, top5CN,
         deadStock,
-        popularJP, popularEN,
+        popularAll, popularJP, popularEN, popularCN,
       })
     } catch (err) {
       console.error('Error loading executive report:', err)
@@ -549,14 +554,13 @@ export default function ExecutiveReport() {
         </div>
       </div>
 
-      {/* Top 5 outflow products — JP and US side-by-side, plus CN below if any */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Top5Card title="Top 5 outflow — JP (Japan)" rows={data?.top5JP} fmt={fmt} accent="🇯🇵" />
-        <Top5Card title="Top 5 outflow — EN (US)" rows={data?.top5EN} fmt={fmt} accent="🇺🇸" />
+      {/* Top 5 outflow products — Total (full width), then JP/US/CN side-by-side */}
+      <Top5Card title="Top 5 outflow — Overall" rows={data?.top5All} fmt={fmt} accent="🌐" />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <Top5Card title="JP (Japan)" rows={data?.top5JP} fmt={fmt} accent="🇯🇵" />
+        <Top5Card title="EN (US)" rows={data?.top5EN} fmt={fmt} accent="🇺🇸" />
+        <Top5Card title="CN (China)" rows={data?.top5CN} fmt={fmt} accent="🇨🇳" />
       </div>
-      {data?.top5CN?.length > 0 && (
-        <Top5Card title="Top 5 outflow — CN (China)" rows={data.top5CN} fmt={fmt} accent="🇨🇳" />
-      )}
 
       {/* Inflow detail */}
       {data?.inflow?.byVendor?.length > 0 && (
@@ -572,10 +576,12 @@ export default function ExecutiveReport() {
         </div>
       )}
 
-      {/* Popular products (last 30 days) — JP and EN side-by-side */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <PopularCard title="🔥 Hot products — JP (last 30 days)" rows={data?.popularJP} fmt={fmt} />
-        <PopularCard title="🔥 Hot products — EN/US (last 30 days)" rows={data?.popularEN} fmt={fmt} />
+      {/* Hot products (last 30 days) — Overall first, then per-language */}
+      <PopularCard title="🔥 Hot products — Overall (last 30 days)" rows={data?.popularAll} fmt={fmt} />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <PopularCard title="🇯🇵 Hot products — JP" rows={data?.popularJP} fmt={fmt} />
+        <PopularCard title="🇺🇸 Hot products — EN/US" rows={data?.popularEN} fmt={fmt} />
+        <PopularCard title="🇨🇳 Hot products — CN" rows={data?.popularCN} fmt={fmt} />
       </div>
 
       {/* Dead stock — kept separately. Useful for write-off / clearance decisions. */}
