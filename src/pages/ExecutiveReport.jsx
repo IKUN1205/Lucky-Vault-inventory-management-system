@@ -594,13 +594,14 @@ export default function ExecutiveReport() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-sm max-h-80 overflow-y-auto">
             {data.deadStock.map((d, i) => (
-              <div key={i} className="flex items-center justify-between py-1 border-b border-vault-border/50 last:border-b-0">
+              <div key={i} className="flex items-center justify-between py-1.5 border-b border-vault-border/50 last:border-b-0">
                 <div className="min-w-0">
                   <div className="text-white truncate">{d.product?.name || 'Unknown'}</div>
-                  <div className="text-xs text-gray-500">{d.product?.brand} · {d.product?.language} · {d.qty} units</div>
+                  <div className="text-xs text-gray-500">{d.product?.brand} · {d.product?.language} · {fmt(d.value)}</div>
                 </div>
                 <div className="text-right ml-3 flex-shrink-0">
-                  <div className="text-white font-medium">{fmt(d.value)}</div>
+                  <div className="text-white font-bold">{d.qty}</div>
+                  <div className="text-xs text-gray-500">units</div>
                 </div>
               </div>
             ))}
