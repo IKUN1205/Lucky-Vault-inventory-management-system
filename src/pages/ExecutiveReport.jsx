@@ -11,6 +11,8 @@ import {
   Store,
   ShoppingBag,
   BarChart3,
+  ChevronRight,
+  ChevronDown,
 } from 'lucide-react'
 
 // Cost-only executive report. The owner asked for a daily / weekly summary
@@ -554,13 +556,18 @@ export default function ExecutiveReport() {
         </div>
       </div>
 
-      {/* Top 5 outflow products — Total (full width), then JP/US/CN side-by-side */}
+      {/* Top 5 outflow products — Overall always visible, regional breakdown
+          collapsed by default. Eric's feedback: "Gary just wants the most
+          important info, can't pick out the priorities when everything is
+          shown at once". So we layer it: top-line first, drill down for more. */}
       <Top5Card title="Top 5 outflow — Overall" rows={data?.top5All} fmt={fmt} accent="🌐" />
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Top5Card title="JP (Japan)" rows={data?.top5JP} fmt={fmt} accent="🇯🇵" />
-        <Top5Card title="EN (US)" rows={data?.top5EN} fmt={fmt} accent="🇺🇸" />
-        <Top5Card title="CN (China)" rows={data?.top5CN} fmt={fmt} accent="🇨🇳" />
-      </div>
+      <Collapsible label="Show regional breakdown (JP / EN / CN)">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <Top5Card title="JP (Japan)" rows={data?.top5JP} fmt={fmt} accent="🇯🇵" />
+          <Top5Card title="EN (US)" rows={data?.top5EN} fmt={fmt} accent="🇺🇸" />
+          <Top5Card title="CN (China)" rows={data?.top5CN} fmt={fmt} accent="🇨🇳" />
+        </div>
+      </Collapsible>
 
       {/* Inflow detail */}
       {data?.inflow?.byVendor?.length > 0 && (
@@ -576,38 +583,50 @@ export default function ExecutiveReport() {
         </div>
       )}
 
-      {/* Hot products (last 30 days) — Overall first, then per-language */}
+      {/* Hot products (last 30 days) — same layered pattern as Top 5 */}
       <PopularCard title="🔥 Hot products — Overall (last 30 days)" rows={data?.popularAll} fmt={fmt} />
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <PopularCard title="🇯🇵 Hot products — JP" rows={data?.popularJP} fmt={fmt} />
-        <PopularCard title="🇺🇸 Hot products — EN/US" rows={data?.popularEN} fmt={fmt} />
-        <PopularCard title="🇨🇳 Hot products — CN" rows={data?.popularCN} fmt={fmt} />
-      </div>
+      <Collapsible label="Show regional breakdown (JP / EN / CN)">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <PopularCard title="🇯🇵 Hot products — JP" rows={data?.popularJP} fmt={fmt} />
+          <PopularCard title="🇺🇸 Hot products — EN/US" rows={data?.popularEN} fmt={fmt} />
+          <PopularCard title="🇨🇳 Hot products — CN" rows={data?.popularCN} fmt={fmt} />
+        </div>
+      </Collapsible>
 
-      {/* Dead stock — kept separately. Useful for write-off / clearance decisions. */}
-      <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-        <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
-          <Skull size={18} className="text-purple-400" /> Dead stock — no outflow in 30 days
-        </h3>
-        {!data?.deadStock?.length ? (
-          <p className="text-gray-500 text-sm">No dead stock 🎉</p>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-sm max-h-80 overflow-y-auto">
-            {data.deadStock.map((d, i) => (
-              <div key={i} className="flex items-center justify-between py-1.5 border-b border-vault-border/50 last:border-b-0">
-                <div className="min-w-0">
-                  <div className="text-white truncate">{d.product?.name || 'Unknown'}</div>
-                  <div className="text-xs text-gray-500">{d.product?.brand} · {d.product?.language} · {fmt(d.value)}</div>
+      {/* Dead stock — collapsed by default. It's a long list and not always
+          actionable; the ones who need it can expand it. */}
+      <Collapsible
+        label={
+          <span className="flex items-center gap-2">
+            <Skull size={16} className="text-purple-400" />
+            Dead stock — no outflow in 30 days
+            {data?.deadStock?.length > 0 && (
+              <span className="text-xs text-gray-500">({data.deadStock.length} items)</span>
+            )}
+          </span>
+        }
+      >
+        <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+          {!data?.deadStock?.length ? (
+            <p className="text-gray-500 text-sm">No dead stock 🎉</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-sm max-h-80 overflow-y-auto">
+              {data.deadStock.map((d, i) => (
+                <div key={i} className="flex items-center justify-between py-1.5 border-b border-vault-border/50 last:border-b-0">
+                  <div className="min-w-0">
+                    <div className="text-white truncate">{d.product?.name || 'Unknown'}</div>
+                    <div className="text-xs text-gray-500">{d.product?.brand} · {d.product?.language} · {fmt(d.value)}</div>
+                  </div>
+                  <div className="text-right ml-3 flex-shrink-0">
+                    <div className="text-white font-bold">{d.qty}</div>
+                    <div className="text-xs text-gray-500">units</div>
+                  </div>
                 </div>
-                <div className="text-right ml-3 flex-shrink-0">
-                  <div className="text-white font-bold">{d.qty}</div>
-                  <div className="text-xs text-gray-500">units</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Collapsible>
     </div>
   )
 }
@@ -689,6 +708,27 @@ function PopularCard({ title, rows, fmt }) {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// Collapsible wrapper. Default: closed. Click the header to toggle.
+// Used to hide regional breakdowns / dead-stock detail behind a click so the
+// boss-facing first-paint stays focused on top-line numbers.
+function Collapsible({ label, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-4 py-2.5 bg-vault-surface/60 hover:bg-vault-surface border border-vault-border rounded-lg text-sm text-gray-300 hover:text-white transition-all"
+      >
+        {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        <span className="flex-1 text-left">{label}</span>
+        {!open && <span className="text-xs text-gray-500">click to expand</span>}
+      </button>
+      {open && <div className="mt-3">{children}</div>}
     </div>
   )
 }
