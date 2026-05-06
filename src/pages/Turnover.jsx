@@ -165,7 +165,7 @@ export default function Turnover() {
       //    available in this schema). Filter sale_type in JS in case the
       //    column is missing/NULL on older rows.
       for (const s of storefrontRes.data || []) {
-        if (s.sale_type && s.sale_type !== 'Product') continue
+        if (s.sale_type && s.sale_type !== 'Itemized') continue
         if (!s.product_id) continue
         events.push({
           product_id: s.product_id,

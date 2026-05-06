@@ -186,7 +186,7 @@ export default function StorefrontSale() {
       // Log the sale
       const sale = await createStorefrontSale({
         date: productForm.date,
-        sale_type: 'Product',
+        sale_type: 'Itemized',
         product_id: prodId,
         location_id: locId,
         quantity: qty,
