@@ -24,6 +24,7 @@ import PlatformSales from './pages/PlatformSales'
 import ProductMapping from './pages/ProductMapping'
 import UserManagement from './pages/UserManagement'
 import Turnover from './pages/Turnover'
+import ExecutiveReport from './pages/ExecutiveReport'
 
 // Components
 import Layout from './components/Layout'
@@ -107,6 +108,9 @@ function AppRoutes() {
       } />
       <Route path="/turnover" element={
         <ProtectedRoute path="/turnover"><Layout><Turnover /></Layout></ProtectedRoute>
+      } />
+      <Route path="/executive-report" element={
+        <ProtectedRoute path="/executive-report"><Layout><ExecutiveReport /></Layout></ProtectedRoute>
       } />
       <Route path="/product-mapping" element={
         <ProtectedRoute path="/product-mapping"><Layout><ProductMapping /></Layout></ProtectedRoute>

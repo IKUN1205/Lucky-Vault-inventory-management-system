@@ -22,6 +22,7 @@ const ALL_PAGES = [
   { path: '/expenses', label: 'Business Expenses' },
   { path: '/reports', label: 'Reports' },
   { path: '/turnover', label: 'Turnover' },
+  { path: '/executive-report', label: 'Executive Report' },
   { path: '/users', label: 'Team Management' },
   { path: '/high-value', label: 'High Value (Separate)' },
 ]
