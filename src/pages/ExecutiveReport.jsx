@@ -19,6 +19,15 @@ import {
 // that ignores revenue and profit (someone else handles those numbers) — this
 // page reports inventory value, what flowed in, what flowed out, top movers,
 // dead stock, and low-stock alerts, all in cost-basis dollars.
+
+// Display labels for language codes. Falls back to the raw code if unknown.
+const LANG_LABEL = {
+  EN: 'EN — US/English',
+  JP: 'JP — Japan',
+  CN: 'CN — China',
+  KR: 'KR — Korea',
+  Unknown: 'Unknown',
+}
 export default function ExecutiveReport() {
   const [view, setView] = useState('daily') // 'daily' | 'weekly'
   const [data, setData] = useState(null)
@@ -139,21 +148,32 @@ export default function ExecutiveReport() {
       }
 
       // ===== Inventory snapshot =====
+      // Track value two ways: by physical location and by product language.
+      // Eric (the boss's lieutenant) specifically asked for JP vs US split,
+      // because cost levels differ a lot per market and it tells him where
+      // the cash is parked.
       let invValue = 0
       const invByLocation = new Map()
+      const invByLanguage = new Map()
       for (const i of invRes.data || []) {
         const cost = parseFloat(i.avg_cost_basis || 0) * (i.quantity || 0)
         invValue += cost
         const locName = locationMap.get(i.location_id)?.name || 'Unknown'
         invByLocation.set(locName, (invByLocation.get(locName) || 0) + cost)
+        const lang = productMap.get(i.product_id)?.language || 'Unknown'
+        invByLanguage.set(lang, (invByLanguage.get(lang) || 0) + cost)
       }
 
       // ===== Outflow aggregation =====
       let outStream = 0, outStorefront = 0, outOnline = 0, outPlatform = 0
+      // Units tracked separately from cost so Eric can see "一周用货量" — total
+      // pieces leaving the warehouse, not just dollars. Platform sales don't
+      // expose unit counts in the current schema, so unitsPlatform stays 0.
+      let unitsStream = 0, unitsStorefront = 0, unitsOnline = 0
       const productOutflow = new Map() // product_id -> { cost, qty, channels:Set }
       // Per-room breakdown for stream outflow — owner wants to see which room
       // moved the most so he knows where the cost-of-goods is leaving from.
-      const streamByRoom = new Map() // locationName -> cost
+      const streamByRoom = new Map() // locationName -> { cost, units }
 
       const addOutflow = (productId, qty, cost, channel) => {
         if (!productId || qty <= 0) return
@@ -170,10 +190,12 @@ export default function ExecutiveReport() {
         if (sold <= 0) continue
         const cost = sold * productAvgCost(item.product_id)
         outStream += cost
+        unitsStream += sold
         addOutflow(item.product_id, sold, cost, 'Stream')
         const locId = scLocationMap.get(item.stream_count_id)
         const roomName = locationMap.get(locId)?.name || 'Unknown room'
-        streamByRoom.set(roomName, (streamByRoom.get(roomName) || 0) + cost)
+        const cur = streamByRoom.get(roomName) || { cost: 0, units: 0 }
+        streamByRoom.set(roomName, { cost: cur.cost + cost, units: cur.units + sold })
       }
 
       // Storefront: only Itemized has product_id and pre-computed cost_basis.
@@ -182,6 +204,7 @@ export default function ExecutiveReport() {
       for (const s of sfRes.data || []) {
         const cost = parseFloat(s.cost_basis || 0)
         outStorefront += cost
+        unitsStorefront += s.quantity || 0
         if (s.sale_type !== 'Bulk' && s.product_id) {
           addOutflow(s.product_id, s.quantity || 0, cost, 'Storefront')
         }
@@ -193,6 +216,7 @@ export default function ExecutiveReport() {
         const unit = parseFloat(it.unit_cost || it.cost_basis || 0) || productAvgCost(it.product_id)
         const cost = qty * unit
         outOnline += cost
+        unitsOnline += qty
         addOutflow(it.product_id, qty, cost, 'Online')
       }
 
@@ -204,6 +228,7 @@ export default function ExecutiveReport() {
       }
 
       const outTotal = outStream + outStorefront + outOnline + outPlatform
+      const unitsTotal = unitsStream + unitsStorefront + unitsOnline
 
       // Top 5 by outflow cost
       const top5 = Array.from(productOutflow.entries())
@@ -299,13 +324,16 @@ export default function ExecutiveReport() {
         period: getPeriod().label,
         invValue,
         invByLocation: Array.from(invByLocation.entries()).sort((a, b) => b[1] - a[1]),
+        invByLanguage: Array.from(invByLanguage.entries()).sort((a, b) => b[1] - a[1]),
         outflow: {
           stream: outStream,
           storefront: outStorefront,
           online: outOnline,
           platform: outPlatform,
           total: outTotal,
-          streamByRoom: Array.from(streamByRoom.entries()).sort((a, b) => b[1] - a[1]),
+          unitsStream, unitsStorefront, unitsOnline,
+          unitsTotal,
+          streamByRoom: Array.from(streamByRoom.entries()).sort((a, b) => b[1].cost - a[1].cost),
         },
         inflow: { total: inTotal, byVendor: Array.from(inflowByVendor.entries()).sort((a, b) => b[1] - a[1]) },
         top5,
@@ -381,10 +409,11 @@ export default function ExecutiveReport() {
         </div>
         <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
           <div className="flex items-center gap-2 text-red-400 text-sm mb-1">
-            <TrendingDown size={16} /> Outflow (cost)
+            <TrendingDown size={16} /> Outflow
           </div>
           <div className="text-2xl font-bold text-white">{fmt(data?.outflow?.total)}</div>
-          <div className="text-xs text-gray-500 mt-1">stream + storefront + online + platform</div>
+          <div className="text-sm text-gray-300 mt-1">{(data?.outflow?.unitsTotal || 0).toLocaleString()} units</div>
+          <div className="text-xs text-gray-500 mt-0.5">stream + storefront + online + platform</div>
         </div>
         <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
           <div className="flex items-center gap-2 text-green-400 text-sm mb-1">
@@ -395,29 +424,46 @@ export default function ExecutiveReport() {
         </div>
       </div>
 
-      {/* Outflow breakdown + Inventory by location */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Outflow breakdown + Inventory by location + Inventory by language */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
           <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
             <TrendingDown size={18} className="text-red-400" /> Outflow by channel
           </h3>
           <div className="space-y-2 text-sm">
-            <Row icon={<Tv size={14} />} label="Stream rooms" value={fmt(data?.outflow?.stream)} />
+            <Row
+              icon={<Tv size={14} />}
+              label="Stream rooms"
+              value={fmt(data?.outflow?.stream)}
+              sub={`${(data?.outflow?.unitsStream || 0).toLocaleString()} units`}
+            />
             {data?.outflow?.streamByRoom?.length > 0 && (
               <div className="pl-6 space-y-1 border-l-2 border-vault-border ml-2">
-                {data.outflow.streamByRoom.map(([roomName, value]) => (
+                {data.outflow.streamByRoom.map(([roomName, val]) => (
                   <div key={roomName} className="flex items-center justify-between text-xs">
                     <span className="text-gray-400 truncate">↳ {roomName.replace(/^Stream Room\s*-\s*/, '')}</span>
-                    <span className="text-gray-300">{fmt(value)}</span>
+                    <span className="text-gray-300">
+                      {fmt(val.cost)} <span className="text-gray-500">· {(val.units || 0).toLocaleString()}u</span>
+                    </span>
                   </div>
                 ))}
               </div>
             )}
-            <Row icon={<Store size={14} />} label="Storefront" value={fmt(data?.outflow?.storefront)} />
-            <Row icon={<ShoppingBag size={14} />} label="Online orders" value={fmt(data?.outflow?.online)} />
+            <Row
+              icon={<Store size={14} />}
+              label="Storefront"
+              value={fmt(data?.outflow?.storefront)}
+              sub={`${(data?.outflow?.unitsStorefront || 0).toLocaleString()} units`}
+            />
+            <Row
+              icon={<ShoppingBag size={14} />}
+              label="Online orders"
+              value={fmt(data?.outflow?.online)}
+              sub={`${(data?.outflow?.unitsOnline || 0).toLocaleString()} units`}
+            />
             <Row icon={<TrendingUp size={14} />} label="Platform sales" value={fmt(data?.outflow?.platform)} />
             <div className="border-t border-vault-border pt-2 mt-2">
-              <Row label="Total" value={fmt(data?.outflow?.total)} bold />
+              <Row label="Total" value={fmt(data?.outflow?.total)} sub={`${(data?.outflow?.unitsTotal || 0).toLocaleString()} units`} bold />
             </div>
           </div>
         </div>
@@ -429,6 +475,22 @@ export default function ExecutiveReport() {
           <div className="space-y-2 text-sm">
             {data?.invByLocation?.map(([name, value]) => (
               <Row key={name} label={name} value={fmt(value)} sub={`${((value / (data?.invValue || 1)) * 100).toFixed(1)}%`} />
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+          <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
+            <Package size={18} className="text-blue-400" /> Inventory by language / market
+          </h3>
+          <div className="space-y-2 text-sm">
+            {data?.invByLanguage?.map(([lang, value]) => (
+              <Row
+                key={lang}
+                label={LANG_LABEL[lang] || lang}
+                value={fmt(value)}
+                sub={`${((value / (data?.invValue || 1)) * 100).toFixed(1)}%`}
+              />
             ))}
           </div>
         </div>
