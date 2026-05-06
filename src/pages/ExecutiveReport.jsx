@@ -1,12 +1,10 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import {
-  Calendar,
   TrendingDown,
   TrendingUp,
   Package,
   Skull,
-  AlertTriangle,
   MapPin,
   ShoppingCart,
   Tv,
@@ -170,30 +168,39 @@ export default function ExecutiveReport() {
       // pieces leaving the warehouse, not just dollars. Platform sales don't
       // expose unit counts in the current schema, so unitsPlatform stays 0.
       let unitsStream = 0, unitsStorefront = 0, unitsOnline = 0
-      const productOutflow = new Map() // product_id -> { cost, qty, channels:Set }
+      // product_id -> { cost, qty, channels: Map(channelLabel -> { cost, qty }) }
+      // Tracking per-channel breakdown so the top-5 list can show stream-room
+      // mix as percentages (Eric's request: "百分之多少是哪个直播间").
+      const productOutflow = new Map()
       // Per-room breakdown for stream outflow — owner wants to see which room
       // moved the most so he knows where the cost-of-goods is leaving from.
       const streamByRoom = new Map() // locationName -> { cost, units }
 
-      const addOutflow = (productId, qty, cost, channel) => {
+      const addOutflow = (productId, qty, cost, channelLabel) => {
         if (!productId || qty <= 0) return
-        const cur = productOutflow.get(productId) || { cost: 0, qty: 0, channels: new Set() }
+        const cur = productOutflow.get(productId) || { cost: 0, qty: 0, channels: new Map() }
         cur.cost += cost
         cur.qty += qty
-        cur.channels.add(channel)
+        const ch = cur.channels.get(channelLabel) || { cost: 0, qty: 0 }
+        ch.cost += cost
+        ch.qty += qty
+        cur.channels.set(channelLabel, ch)
         productOutflow.set(productId, cur)
       }
 
-      // Stream rooms: items where actual < expected => sold during stream
+      // Stream rooms: items where actual < expected => sold during stream.
+      // Pass the short room name (sans "Stream Room - " prefix) as the channel
+      // label so top-5 can show "Packheads 60% · LuckyVaultUS 40%".
       for (const item of scItems) {
         const sold = (item.expected_qty || 0) - (item.actual_qty || 0)
         if (sold <= 0) continue
         const cost = sold * productAvgCost(item.product_id)
         outStream += cost
         unitsStream += sold
-        addOutflow(item.product_id, sold, cost, 'Stream')
         const locId = scLocationMap.get(item.stream_count_id)
         const roomName = locationMap.get(locId)?.name || 'Unknown room'
+        const shortRoom = roomName.replace(/^Stream Room\s*-\s*/, '')
+        addOutflow(item.product_id, sold, cost, shortRoom)
         const cur = streamByRoom.get(roomName) || { cost: 0, units: 0 }
         streamByRoom.set(roomName, { cost: cur.cost + cost, units: cur.units + sold })
       }
@@ -230,16 +237,36 @@ export default function ExecutiveReport() {
       const outTotal = outStream + outStorefront + outOnline + outPlatform
       const unitsTotal = unitsStream + unitsStorefront + unitsOnline
 
-      // Top 5 by outflow cost
-      const top5 = Array.from(productOutflow.entries())
+      // Build top-5 with per-channel percentages, then split by language.
+      // Eric specifically asked for JP and US best sellers separately —
+      // different markets, different cost structures, different decisions.
+      const buildTopRow = ([pid, d]) => {
+        const product = productMap.get(pid)
+        // Top channels for this product, sorted by cost
+        const chArr = Array.from(d.channels.entries())
+          .sort((a, b) => b[1].cost - a[1].cost)
+          .map(([label, info]) => ({
+            label,
+            pct: d.cost > 0 ? (info.cost / d.cost) * 100 : 0,
+            cost: info.cost,
+            qty: info.qty,
+          }))
+        return { product, cost: d.cost, qty: d.qty, channels: chArr }
+      }
+      const allEntries = Array.from(productOutflow.entries())
         .sort((a, b) => b[1].cost - a[1].cost)
+      const top5JP = allEntries
+        .filter(([pid]) => productMap.get(pid)?.language === 'JP')
         .slice(0, 5)
-        .map(([pid, d]) => ({
-          product: productMap.get(pid),
-          cost: d.cost,
-          qty: d.qty,
-          channels: Array.from(d.channels).join(', '),
-        }))
+        .map(buildTopRow)
+      const top5EN = allEntries
+        .filter(([pid]) => productMap.get(pid)?.language === 'EN')
+        .slice(0, 5)
+        .map(buildTopRow)
+      const top5CN = allEntries
+        .filter(([pid]) => productMap.get(pid)?.language === 'CN')
+        .slice(0, 5)
+        .map(buildTopRow)
 
       // ===== Inflow =====
       let inTotal = 0
@@ -259,14 +286,27 @@ export default function ExecutiveReport() {
       const deadCutoffISO = deadCutoff.toISOString()
       const deadCutoffDate = deadCutoff.toLocaleDateString('en-CA')
 
-      const [deadSc, deadSf, deadOo, deadPs] = await Promise.all([
+      const [deadSc, deadSf, deadOo] = await Promise.all([
         supabase.from('stream_counts').select('id').gte('count_time', deadCutoffISO).eq('deleted', false),
-        supabase.from('storefront_sales').select('product_id').gte('date', deadCutoffDate).eq('deleted', false),
+        supabase.from('storefront_sales')
+          .select('product_id, quantity, cost_basis')
+          .gte('date', deadCutoffDate).eq('deleted', false),
         supabase.from('online_orders').select('id').gte('date', deadCutoffDate),
-        supabase.from('platform_sales').select('id').gte('date', deadCutoffDate),
       ])
 
       const movedSet = new Set()
+      // Track 30-day quantities so the Hot Products card can rank by volume.
+      // Eric wanted "热门产品" defined as "sold a lot in the last 30 days" —
+      // this map gives us exactly that.
+      const moved30d = new Map() // product_id -> { units, cost }
+      const bumpMoved = (pid, qty, cost) => {
+        if (!pid || qty <= 0) return
+        movedSet.add(pid)
+        const cur = moved30d.get(pid) || { units: 0, cost: 0 }
+        cur.units += qty
+        cur.cost += cost
+        moved30d.set(pid, cur)
+      }
       // Stream items in the 30-day window
       if (deadSc.data?.length) {
         const ids = deadSc.data.map(c => c.id)
@@ -275,14 +315,24 @@ export default function ExecutiveReport() {
           .select('product_id, expected_qty, actual_qty')
           .in('stream_count_id', ids)
         for (const it of r.data || []) {
-          if ((it.expected_qty || 0) > (it.actual_qty || 0) && it.product_id) movedSet.add(it.product_id)
+          const sold = (it.expected_qty || 0) - (it.actual_qty || 0)
+          if (sold > 0 && it.product_id) bumpMoved(it.product_id, sold, sold * productAvgCost(it.product_id))
         }
       }
-      for (const s of deadSf.data || []) if (s.product_id) movedSet.add(s.product_id)
+      for (const s of deadSf.data || []) {
+        if (s.product_id) bumpMoved(s.product_id, s.quantity || 0, parseFloat(s.cost_basis || 0))
+      }
       if (deadOo.data?.length) {
         const ids = deadOo.data.map(o => o.id)
-        const r = await supabase.from('online_order_items').select('product_id').in('online_order_id', ids)
-        for (const it of r.data || []) if (it.product_id) movedSet.add(it.product_id)
+        const r = await supabase.from('online_order_items')
+          .select('product_id, quantity, unit_cost, cost_basis')
+          .in('online_order_id', ids)
+        for (const it of r.data || []) {
+          if (!it.product_id) continue
+          const qty = it.quantity || 0
+          const unit = parseFloat(it.unit_cost || it.cost_basis || 0) || productAvgCost(it.product_id)
+          bumpMoved(it.product_id, qty, qty * unit)
+        }
       }
       // Platform sales don't expose product-level data in the current schema —
       // we conservatively skip them rather than mark all platform-sold items
@@ -302,23 +352,26 @@ export default function ExecutiveReport() {
         .sort((a, b) => b.value - a.value)
         .slice(0, 15)
 
-      // ===== Low stock alerts =====
-      // Per-row qty < 5, ignoring Master Inventory (running low at Master is
-      // a procurement signal, not an immediate alert — we care about empty
-      // shelves at sales locations).
-      const lowStock = (invRes.data || [])
-        .filter(i => {
-          if (i.quantity <= 0 || i.quantity >= 5) return false
-          const locName = locationMap.get(i.location_id)?.name || ''
-          return !/master/i.test(locName)
-        })
-        .map(i => ({
-          product: productMap.get(i.product_id),
-          location: locationMap.get(i.location_id)?.name,
-          quantity: i.quantity,
+      // ===== Popular products (last 30 days, by units) =====
+      // Replaces the old Low Stock card. Eric pointed out that the same
+      // products kept showing up there (static state, not actionable). What
+      // he actually wants is "what's hot right now" — top movers in the
+      // 30-day window, split by language so JP / US best-sellers are visible
+      // at a glance.
+      const totalStockByProduct = new Map() // product_id -> total qty across locations
+      for (const i of invRes.data || []) {
+        totalStockByProduct.set(i.product_id, (totalStockByProduct.get(i.product_id) || 0) + (i.quantity || 0))
+      }
+      const popularRows = Array.from(moved30d.entries())
+        .sort((a, b) => b[1].units - a[1].units)
+        .map(([pid, d]) => ({
+          product: productMap.get(pid),
+          units30d: d.units,
+          cost30d: d.cost,
+          stock: totalStockByProduct.get(pid) || 0,
         }))
-        .sort((a, b) => a.quantity - b.quantity)
-        .slice(0, 12)
+      const popularJP = popularRows.filter(r => r.product?.language === 'JP').slice(0, 8)
+      const popularEN = popularRows.filter(r => r.product?.language === 'EN').slice(0, 8)
 
       setData({
         period: getPeriod().label,
@@ -336,9 +389,9 @@ export default function ExecutiveReport() {
           streamByRoom: Array.from(streamByRoom.entries()).sort((a, b) => b[1].cost - a[1].cost),
         },
         inflow: { total: inTotal, byVendor: Array.from(inflowByVendor.entries()).sort((a, b) => b[1] - a[1]) },
-        top5,
+        top5JP, top5EN, top5CN,
         deadStock,
-        lowStock,
+        popularJP, popularEN,
       })
     } catch (err) {
       console.error('Error loading executive report:', err)
@@ -496,36 +549,14 @@ export default function ExecutiveReport() {
         </div>
       </div>
 
-      {/* Top 5 outflow products */}
-      <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-        <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
-          <BarChart3 size={18} className="text-vault-gold" /> Top 5 outflow products (by cost)
-        </h3>
-        {!data?.top5?.length ? (
-          <p className="text-gray-500 text-sm">No outflow in this period.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-gray-400 text-xs uppercase tracking-wider">
-                <tr><th className="text-left pb-2">Product</th><th className="text-right pb-2">Qty</th><th className="text-right pb-2">Cost</th><th className="text-left pb-2 pl-4">Channels</th></tr>
-              </thead>
-              <tbody>
-                {data.top5.map((row, i) => (
-                  <tr key={i} className="border-t border-vault-border">
-                    <td className="py-2 text-white">
-                      {row.product?.name || 'Unknown'}
-                      <span className="text-xs text-gray-500 ml-2">{row.product?.language}</span>
-                    </td>
-                    <td className="py-2 text-right text-gray-300">{row.qty}</td>
-                    <td className="py-2 text-right text-white font-medium">{fmt(row.cost)}</td>
-                    <td className="py-2 pl-4 text-gray-400 text-xs">{row.channels}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      {/* Top 5 outflow products — JP and US side-by-side, plus CN below if any */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Top5Card title="Top 5 outflow — JP (Japan)" rows={data?.top5JP} fmt={fmt} accent="🇯🇵" />
+        <Top5Card title="Top 5 outflow — EN (US)" rows={data?.top5EN} fmt={fmt} accent="🇺🇸" />
       </div>
+      {data?.top5CN?.length > 0 && (
+        <Top5Card title="Top 5 outflow — CN (China)" rows={data.top5CN} fmt={fmt} accent="🇨🇳" />
+      )}
 
       {/* Inflow detail */}
       {data?.inflow?.byVendor?.length > 0 && (
@@ -541,54 +572,116 @@ export default function ExecutiveReport() {
         </div>
       )}
 
-      {/* Dead stock + Low stock */}
+      {/* Popular products (last 30 days) — JP and EN side-by-side */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-          <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
-            <Skull size={18} className="text-purple-400" /> Dead stock — no outflow in 30 days
-          </h3>
-          {!data?.deadStock?.length ? (
-            <p className="text-gray-500 text-sm">No dead stock 🎉</p>
-          ) : (
-            <div className="space-y-1.5 text-sm max-h-80 overflow-y-auto">
-              {data.deadStock.map((d, i) => (
-                <div key={i} className="flex items-center justify-between py-1 border-b border-vault-border/50 last:border-b-0">
-                  <div className="min-w-0">
-                    <div className="text-white truncate">{d.product?.name || 'Unknown'}</div>
-                    <div className="text-xs text-gray-500">{d.product?.brand} · {d.product?.language} · {d.qty} units</div>
-                  </div>
-                  <div className="text-right ml-3 flex-shrink-0">
-                    <div className="text-white font-medium">{fmt(d.value)}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-          <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
-            <AlertTriangle size={18} className="text-yellow-400" /> Low stock — under 5 at sales location
-          </h3>
-          {!data?.lowStock?.length ? (
-            <p className="text-gray-500 text-sm">All sales locations stocked above 5 ✅</p>
-          ) : (
-            <div className="space-y-1.5 text-sm max-h-80 overflow-y-auto">
-              {data.lowStock.map((d, i) => (
-                <div key={i} className="flex items-center justify-between py-1 border-b border-vault-border/50 last:border-b-0">
-                  <div className="min-w-0">
-                    <div className="text-white truncate">{d.product?.name || 'Unknown'}</div>
-                    <div className="text-xs text-gray-500">{d.location} · {d.product?.language}</div>
-                  </div>
-                  <div className="text-right ml-3 flex-shrink-0">
-                    <div className={`font-bold ${d.quantity <= 1 ? 'text-red-400' : 'text-yellow-400'}`}>{d.quantity}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <PopularCard title="🔥 Hot products — JP (last 30 days)" rows={data?.popularJP} fmt={fmt} />
+        <PopularCard title="🔥 Hot products — EN/US (last 30 days)" rows={data?.popularEN} fmt={fmt} />
       </div>
+
+      {/* Dead stock — kept separately. Useful for write-off / clearance decisions. */}
+      <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+        <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
+          <Skull size={18} className="text-purple-400" /> Dead stock — no outflow in 30 days
+        </h3>
+        {!data?.deadStock?.length ? (
+          <p className="text-gray-500 text-sm">No dead stock 🎉</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-sm max-h-80 overflow-y-auto">
+            {data.deadStock.map((d, i) => (
+              <div key={i} className="flex items-center justify-between py-1 border-b border-vault-border/50 last:border-b-0">
+                <div className="min-w-0">
+                  <div className="text-white truncate">{d.product?.name || 'Unknown'}</div>
+                  <div className="text-xs text-gray-500">{d.product?.brand} · {d.product?.language} · {d.qty} units</div>
+                </div>
+                <div className="text-right ml-3 flex-shrink-0">
+                  <div className="text-white font-medium">{fmt(d.value)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Top-5 outflow card with per-channel percentage breakdown.
+// Eric requested seeing "百分之多少是哪个直播间" — channel mix as percentages,
+// not raw counts. We show up to the top 3 channels per product so the line
+// stays readable; channels beyond that are grouped as "others".
+function Top5Card({ title, rows, fmt, accent }) {
+  return (
+    <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+      <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
+        <BarChart3 size={18} className="text-vault-gold" />
+        <span className="mr-1">{accent}</span>
+        {title}
+      </h3>
+      {!rows?.length ? (
+        <p className="text-gray-500 text-sm">No outflow in this period.</p>
+      ) : (
+        <div className="space-y-3">
+          {rows.map((r, i) => {
+            const topCh = r.channels.slice(0, 3)
+            const others = r.channels.slice(3)
+            const othersPct = others.reduce((sum, c) => sum + c.pct, 0)
+            return (
+              <div key={i} className="border-b border-vault-border/50 pb-2 last:border-b-0 last:pb-0">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="text-white text-sm flex-1 min-w-0">
+                    <span className="font-medium">{r.product?.name || 'Unknown'}</span>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div className="text-white font-semibold text-sm">{fmt(r.cost)}</div>
+                    <div className="text-xs text-gray-500">{r.qty} units</div>
+                  </div>
+                </div>
+                <div className="text-xs text-gray-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                  {topCh.map((c, j) => (
+                    <span key={j}>
+                      <span className="text-gray-500">{c.label}:</span>{' '}
+                      <span className="text-gray-300">{c.pct.toFixed(0)}%</span>
+                    </span>
+                  ))}
+                  {others.length > 0 && (
+                    <span className="text-gray-500">+ {others.length} others ({othersPct.toFixed(0)}%)</span>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Hot products in the last 30 days, ranked by units moved out.
+// Replaced the old Low-Stock card per Eric's feedback — he found that one
+// repeated the same names every day (static state) and wanted instead a
+// pulse on what's actually selling.
+function PopularCard({ title, rows, fmt }) {
+  return (
+    <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+      <h3 className="font-semibold text-white mb-3">{title}</h3>
+      {!rows?.length ? (
+        <p className="text-gray-500 text-sm">No outflow in the last 30 days.</p>
+      ) : (
+        <div className="space-y-1.5 text-sm max-h-80 overflow-y-auto">
+          {rows.map((r, i) => (
+            <div key={i} className="flex items-center justify-between py-1 border-b border-vault-border/50 last:border-b-0">
+              <div className="min-w-0">
+                <div className="text-white truncate">{r.product?.name || 'Unknown'}</div>
+                <div className="text-xs text-gray-500">in stock: {r.stock} · cost moved: {fmt(r.cost30d)}</div>
+              </div>
+              <div className="text-right ml-3 flex-shrink-0">
+                <div className="text-white font-bold">{r.units30d}</div>
+                <div className="text-xs text-gray-500">units / 30d</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
