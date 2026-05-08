@@ -13,12 +13,21 @@ import {
   BarChart3,
   ChevronRight,
   ChevronDown,
+  Calendar,
 } from 'lucide-react'
 
-// Cost-only executive report. The owner asked for a daily / weekly summary
-// that ignores revenue and profit (someone else handles those numbers) — this
-// page reports inventory value, what flowed in, what flowed out, top movers,
-// dead stock, and low-stock alerts, all in cost-basis dollars.
+// Cost-only executive report. The owner asked for a daily / weekly / monthly
+// summary that ignores revenue and profit (someone else handles those numbers)
+// — this page reports inventory value, what flowed in, what flowed out, top
+// movers, dead stock, all in cost-basis dollars.
+//
+// View hierarchy (per Eric/Gary feedback):
+//   - Daily   = a specific calendar day (defaults to yesterday, calendar
+//               picker lets you scrub back). Lean view — top cards + outflow
+//               breakdown + Top 5. No "hot products" / "dead stock" because
+//               their windows wouldn't match a single day.
+//   - Weekly  = trailing 7 days. Adds Hot Products (7-day window).
+//   - Monthly = trailing 30 days. Adds Hot Products (30d) + Dead Stock (30d).
 
 // Display labels for language codes. Falls back to the raw code if unknown.
 const LANG_LABEL = {
@@ -28,37 +37,50 @@ const LANG_LABEL = {
   KR: 'KR — Korea',
   Unknown: 'Unknown',
 }
+
+// Default the daily picker to yesterday in browser-local time.
+const yesterdayISODate = () => {
+  const d = new Date()
+  d.setDate(d.getDate() - 1)
+  return d.toLocaleDateString('en-CA') // YYYY-MM-DD
+}
+
 export default function ExecutiveReport() {
-  const [view, setView] = useState('daily') // 'daily' | 'weekly'
+  const [view, setView] = useState('daily') // 'daily' | 'weekly' | 'monthly'
+  const [selectedDate, setSelectedDate] = useState(yesterdayISODate())
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
   useEffect(() => {
     load()
-  }, [view])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, selectedDate])
 
-  // Period selection. "Daily" = yesterday in browser-local time (the team is
-  // PST so this matches their workday). "Weekly" = trailing 7 days (today
-  // back). For date-only columns we compare YYYY-MM-DD strings; for timestamp
-  // columns we use ISO instants.
+  // Period selection.
+  //   daily   = the single selected calendar day
+  //   weekly  = trailing 7 days ending today
+  //   monthly = trailing 30 days ending today
+  // For date-only columns we compare YYYY-MM-DD strings; for timestamp columns
+  // we use ISO instants.
   const getPeriod = () => {
     const now = new Date()
     if (view === 'daily') {
-      const yesterday = new Date(now)
-      yesterday.setDate(yesterday.getDate() - 1)
-      const start = new Date(yesterday); start.setHours(0, 0, 0, 0)
-      const end = new Date(yesterday); end.setHours(23, 59, 59, 999)
-      return { start, end, label: yesterday.toLocaleDateString('en-CA') }
+      // selectedDate is YYYY-MM-DD in local time.
+      const [y, m, d] = selectedDate.split('-').map(Number)
+      const start = new Date(y, m - 1, d, 0, 0, 0, 0)
+      const end = new Date(y, m - 1, d, 23, 59, 59, 999)
+      return { start, end, label: selectedDate }
     }
+    const days = view === 'weekly' ? 7 : 30
     const start = new Date(now)
-    start.setDate(start.getDate() - 6)
+    start.setDate(start.getDate() - (days - 1))
     start.setHours(0, 0, 0, 0)
     const end = new Date(now)
     end.setHours(23, 59, 59, 999)
     return {
       start, end,
-      label: `${start.toLocaleDateString('en-CA')} → ${end.toLocaleDateString('en-CA')}`,
+      label: `${start.toLocaleDateString('en-CA')} → ${end.toLocaleDateString('en-CA')} (${days}d)`,
     }
   }
 
@@ -155,6 +177,7 @@ export default function ExecutiveReport() {
       let invValue = 0
       const invByLocation = new Map()
       const invByLanguage = new Map()
+      const totalStockByProduct = new Map() // product_id -> total qty
       for (const i of invRes.data || []) {
         const cost = parseFloat(i.avg_cost_basis || 0) * (i.quantity || 0)
         invValue += cost
@@ -162,6 +185,7 @@ export default function ExecutiveReport() {
         invByLocation.set(locName, (invByLocation.get(locName) || 0) + cost)
         const lang = productMap.get(i.product_id)?.language || 'Unknown'
         invByLanguage.set(lang, (invByLanguage.get(lang) || 0) + cost)
+        totalStockByProduct.set(i.product_id, (totalStockByProduct.get(i.product_id) || 0) + (i.quantity || 0))
       }
 
       // ===== Outflow aggregation =====
@@ -257,21 +281,16 @@ export default function ExecutiveReport() {
       }
       const allEntries = Array.from(productOutflow.entries())
         .sort((a, b) => b[1].cost - a[1].cost)
-      // Owner asked for both an overall view and a per-market drilldown.
-      // Total = 5 across all languages; each market = 5 within its own slice.
       const top5All = allEntries.slice(0, 5).map(buildTopRow)
       const top5JP = allEntries
         .filter(([pid]) => productMap.get(pid)?.language === 'JP')
-        .slice(0, 5)
-        .map(buildTopRow)
+        .slice(0, 5).map(buildTopRow)
       const top5EN = allEntries
         .filter(([pid]) => productMap.get(pid)?.language === 'EN')
-        .slice(0, 5)
-        .map(buildTopRow)
+        .slice(0, 5).map(buildTopRow)
       const top5CN = allEntries
         .filter(([pid]) => productMap.get(pid)?.language === 'CN')
-        .slice(0, 5)
-        .map(buildTopRow)
+        .slice(0, 5).map(buildTopRow)
 
       // ===== Inflow =====
       let inTotal = 0
@@ -283,102 +302,45 @@ export default function ExecutiveReport() {
         inflowByVendor.set(vendor, (inflowByVendor.get(vendor) || 0) + cost)
       }
 
-      // ===== Dead stock (no outflow in last 30 days) =====
-      // Look 30 days back across every outflow channel, build a set of moved
-      // product_ids, then subtract from products that currently have stock.
-      const deadCutoff = new Date()
-      deadCutoff.setDate(deadCutoff.getDate() - 30)
-      const deadCutoffISO = deadCutoff.toISOString()
-      const deadCutoffDate = deadCutoff.toLocaleDateString('en-CA')
-
-      const [deadSc, deadSf, deadOo] = await Promise.all([
-        supabase.from('stream_counts').select('id').gte('count_time', deadCutoffISO).eq('deleted', false),
-        supabase.from('storefront_sales')
-          .select('product_id, quantity, cost_basis')
-          .gte('date', deadCutoffDate).eq('deleted', false),
-        supabase.from('online_orders').select('id').gte('date', deadCutoffDate),
-      ])
-
-      const movedSet = new Set()
-      // Track 30-day quantities so the Hot Products card can rank by volume.
-      // Eric wanted "热门产品" defined as "sold a lot in the last 30 days" —
-      // this map gives us exactly that.
-      const moved30d = new Map() // product_id -> { units, cost }
-      const bumpMoved = (pid, qty, cost) => {
-        if (!pid || qty <= 0) return
-        movedSet.add(pid)
-        const cur = moved30d.get(pid) || { units: 0, cost: 0 }
-        cur.units += qty
-        cur.cost += cost
-        moved30d.set(pid, cur)
-      }
-      // Stream items in the 30-day window
-      if (deadSc.data?.length) {
-        const ids = deadSc.data.map(c => c.id)
-        const r = await supabase
-          .from('stream_count_items')
-          .select('product_id, expected_qty, actual_qty')
-          .in('stream_count_id', ids)
-        for (const it of r.data || []) {
-          const sold = (it.expected_qty || 0) - (it.actual_qty || 0)
-          if (sold > 0 && it.product_id) bumpMoved(it.product_id, sold, sold * productAvgCost(it.product_id))
-        }
-      }
-      for (const s of deadSf.data || []) {
-        if (s.product_id) bumpMoved(s.product_id, s.quantity || 0, parseFloat(s.cost_basis || 0))
-      }
-      if (deadOo.data?.length) {
-        const ids = deadOo.data.map(o => o.id)
-        const r = await supabase.from('online_order_items')
-          .select('product_id, quantity, unit_cost, cost_basis')
-          .in('online_order_id', ids)
-        for (const it of r.data || []) {
-          if (!it.product_id) continue
-          const qty = it.quantity || 0
-          const unit = parseFloat(it.unit_cost || it.cost_basis || 0) || productAvgCost(it.product_id)
-          bumpMoved(it.product_id, qty, qty * unit)
-        }
-      }
-      // Platform sales don't expose product-level data in the current schema —
-      // we conservatively skip them rather than mark all platform-sold items
-      // as having moved (would risk hiding real dead stock).
-
-      // Build dead stock list: products with quantity > 0 not in movedSet
-      const deadByProduct = new Map() // product_id -> { qty, value }
-      for (const i of invRes.data || []) {
-        if (movedSet.has(i.product_id)) continue
-        const cur = deadByProduct.get(i.product_id) || { qty: 0, value: 0 }
-        cur.qty += (i.quantity || 0)
-        cur.value += parseFloat(i.avg_cost_basis || 0) * (i.quantity || 0)
-        deadByProduct.set(i.product_id, cur)
-      }
-      const deadStock = Array.from(deadByProduct.entries())
-        .map(([pid, d]) => ({ product: productMap.get(pid), qty: d.qty, value: d.value }))
-        .sort((a, b) => b.value - a.value)
-        .slice(0, 15)
-
-      // ===== Popular products (last 30 days, by units) =====
-      // Replaces the old Low Stock card. Eric pointed out that the same
-      // products kept showing up there (static state, not actionable). What
-      // he actually wants is "what's hot right now" — top movers in the
-      // 30-day window, split by language so JP / US best-sellers are visible
-      // at a glance.
-      const totalStockByProduct = new Map() // product_id -> total qty across locations
-      for (const i of invRes.data || []) {
-        totalStockByProduct.set(i.product_id, (totalStockByProduct.get(i.product_id) || 0) + (i.quantity || 0))
-      }
-      const popularRows = Array.from(moved30d.entries())
-        .sort((a, b) => b[1].units - a[1].units)
+      // ===== Hot products (current view's window, by units) =====
+      // Eric's feedback: hot products should match the report's own window.
+      // So in weekly view it's "top 5 movers in the last 7 days", in monthly
+      // it's "top 5 in the last 30 days". Daily view doesn't show this card
+      // (the window's too short to be meaningful).
+      const popularEntries = Array.from(productOutflow.entries())
+        .sort((a, b) => b[1].qty - a[1].qty)
         .map(([pid, d]) => ({
           product: productMap.get(pid),
-          units30d: d.units,
-          cost30d: d.cost,
+          units: d.qty,
+          cost: d.cost,
           stock: totalStockByProduct.get(pid) || 0,
         }))
-      const popularAll = popularRows.slice(0, 10)
-      const popularJP = popularRows.filter(r => r.product?.language === 'JP').slice(0, 8)
-      const popularEN = popularRows.filter(r => r.product?.language === 'EN').slice(0, 8)
-      const popularCN = popularRows.filter(r => r.product?.language === 'CN').slice(0, 8)
+      const popularAll = popularEntries.slice(0, 5)
+      const popularJP = popularEntries.filter(r => r.product?.language === 'JP').slice(0, 5)
+      const popularEN = popularEntries.filter(r => r.product?.language === 'EN').slice(0, 5)
+      const popularCN = popularEntries.filter(r => r.product?.language === 'CN').slice(0, 5)
+
+      // ===== Dead stock (no outflow in last 30 days) =====
+      // Only computed in monthly view since the concept doesn't apply to
+      // shorter windows ("dead in the last 7 days" isn't really dead). When
+      // view is monthly, productOutflow already covers 30 days, so we reuse
+      // it as the "moved" set and skip the second query entirely.
+      let deadStock = []
+      if (view === 'monthly') {
+        const movedSet = new Set(productOutflow.keys())
+        const deadByProduct = new Map()
+        for (const i of invRes.data || []) {
+          if (movedSet.has(i.product_id)) continue
+          const cur = deadByProduct.get(i.product_id) || { qty: 0, value: 0 }
+          cur.qty += (i.quantity || 0)
+          cur.value += parseFloat(i.avg_cost_basis || 0) * (i.quantity || 0)
+          deadByProduct.set(i.product_id, cur)
+        }
+        deadStock = Array.from(deadByProduct.entries())
+          .map(([pid, d]) => ({ product: productMap.get(pid), qty: d.qty, value: d.value }))
+          .sort((a, b) => b.value - a.value)
+          .slice(0, 15)
+      }
 
       setData({
         period: getPeriod().label,
@@ -397,8 +359,8 @@ export default function ExecutiveReport() {
         },
         inflow: { total: inTotal, byVendor: Array.from(inflowByVendor.entries()).sort((a, b) => b[1] - a[1]) },
         top5All, top5JP, top5EN, top5CN,
-        deadStock,
         popularAll, popularJP, popularEN, popularCN,
+        deadStock,
       })
     } catch (err) {
       console.error('Error loading executive report:', err)
@@ -409,6 +371,10 @@ export default function ExecutiveReport() {
   }
 
   const fmt = (n) => `$${(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+  // Window-dependent visibility flags — drives the conditional sections below.
+  const showHotProducts = view !== 'daily'
+  const showDeadStock = view === 'monthly'
 
   if (loading) {
     return (
@@ -438,35 +404,60 @@ export default function ExecutiveReport() {
           <p className="text-gray-400 mt-1">Cost-basis view of inventory, inflow, outflow</p>
           <p className="text-xs text-gray-500 mt-1">Period: {data?.period}</p>
         </div>
-        <div className="flex gap-2 bg-vault-surface rounded-lg p-1 border border-vault-border">
-          <button
-            onClick={() => setView('daily')}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
-              view === 'daily' ? 'bg-vault-gold text-vault-dark' : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            Daily
-          </button>
-          <button
-            onClick={() => setView('weekly')}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
-              view === 'weekly' ? 'bg-vault-gold text-vault-dark' : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            Weekly (last 7 days)
-          </button>
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="flex gap-2 bg-vault-surface rounded-lg p-1 border border-vault-border">
+            <button
+              onClick={() => setView('daily')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                view === 'daily' ? 'bg-vault-gold text-vault-dark' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Daily
+            </button>
+            <button
+              onClick={() => setView('weekly')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                view === 'weekly' ? 'bg-vault-gold text-vault-dark' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Weekly
+            </button>
+            <button
+              onClick={() => setView('monthly')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                view === 'monthly' ? 'bg-vault-gold text-vault-dark' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Monthly
+            </button>
+          </div>
+          {view === 'daily' && (
+            <div className="flex items-center gap-2 bg-vault-surface border border-vault-border rounded-lg px-3 py-1.5">
+              <Calendar size={14} className="text-vault-gold" />
+              <input
+                type="date"
+                value={selectedDate}
+                max={yesterdayISODate()}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="bg-transparent text-white text-sm focus:outline-none cursor-pointer"
+              />
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Top-line cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-          <div className="flex items-center gap-2 text-gray-400 text-sm mb-1">
-            <Package size={16} /> Total Inventory Value
-          </div>
-          <div className="text-2xl font-bold text-white">{fmt(data?.invValue)}</div>
-          <div className="text-xs text-gray-500 mt-1">across all locations, at cost</div>
+      {/* Total Inventory Value — separated from the period-bound flow cards.
+          State (snapshot) ≠ Flow (period). Eric: keep them visually distinct. */}
+      <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+        <div className="flex items-center gap-2 text-gray-400 text-sm mb-1">
+          <Package size={16} /> Total Inventory Value
         </div>
+        <div className="text-3xl font-bold text-white">{fmt(data?.invValue)}</div>
+        <div className="text-xs text-gray-500 mt-1">across all locations, at cost · current snapshot</div>
+      </div>
+
+      {/* Period flow: Outflow vs Inflow */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
           <div className="flex items-center gap-2 text-red-400 text-sm mb-1">
             <TrendingDown size={16} /> Outflow
@@ -583,50 +574,59 @@ export default function ExecutiveReport() {
         </div>
       )}
 
-      {/* Hot products (last 30 days) — same layered pattern as Top 5 */}
-      <PopularCard title="🔥 Hot products — Overall (last 30 days)" rows={data?.popularAll} fmt={fmt} />
-      <Collapsible label="Show regional breakdown (JP / EN / CN)">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <PopularCard title="🇯🇵 Hot products — JP" rows={data?.popularJP} fmt={fmt} />
-          <PopularCard title="🇺🇸 Hot products — EN/US" rows={data?.popularEN} fmt={fmt} />
-          <PopularCard title="🇨🇳 Hot products — CN" rows={data?.popularCN} fmt={fmt} />
-        </div>
-      </Collapsible>
-
-      {/* Dead stock — collapsed by default. It's a long list and not always
-          actionable; the ones who need it can expand it. */}
-      <Collapsible
-        label={
-          <span className="flex items-center gap-2">
-            <Skull size={16} className="text-purple-400" />
-            Dead stock — no outflow in 30 days
-            {data?.deadStock?.length > 0 && (
-              <span className="text-xs text-gray-500">({data.deadStock.length} items)</span>
-            )}
-          </span>
-        }
-      >
-        <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-          {!data?.deadStock?.length ? (
-            <p className="text-gray-500 text-sm">No dead stock 🎉</p>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-sm max-h-80 overflow-y-auto">
-              {data.deadStock.map((d, i) => (
-                <div key={i} className="flex items-center justify-between py-1.5 border-b border-vault-border/50 last:border-b-0">
-                  <div className="min-w-0">
-                    <div className="text-white truncate">{d.product?.name || 'Unknown'}</div>
-                    <div className="text-xs text-gray-500">{d.product?.brand} · {d.product?.language} · {fmt(d.value)}</div>
-                  </div>
-                  <div className="text-right ml-3 flex-shrink-0">
-                    <div className="text-white font-bold">{d.qty}</div>
-                    <div className="text-xs text-gray-500">units</div>
-                  </div>
-                </div>
-              ))}
+      {/* Hot products — only in weekly / monthly. Window matches the view. */}
+      {showHotProducts && (
+        <>
+          <PopularCard
+            title={`🔥 Hot products — Overall (${view === 'weekly' ? 'last 7 days' : 'last 30 days'})`}
+            rows={data?.popularAll}
+            fmt={fmt}
+          />
+          <Collapsible label="Show regional breakdown (JP / EN / CN)">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <PopularCard title="🇯🇵 JP" rows={data?.popularJP} fmt={fmt} />
+              <PopularCard title="🇺🇸 EN/US" rows={data?.popularEN} fmt={fmt} />
+              <PopularCard title="🇨🇳 CN" rows={data?.popularCN} fmt={fmt} />
             </div>
-          )}
-        </div>
-      </Collapsible>
+          </Collapsible>
+        </>
+      )}
+
+      {/* Dead stock — monthly only. Long list, collapsed by default. */}
+      {showDeadStock && (
+        <Collapsible
+          label={
+            <span className="flex items-center gap-2">
+              <Skull size={16} className="text-purple-400" />
+              Dead stock — no outflow in 30 days
+              {data?.deadStock?.length > 0 && (
+                <span className="text-xs text-gray-500">({data.deadStock.length} items)</span>
+              )}
+            </span>
+          }
+        >
+          <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+            {!data?.deadStock?.length ? (
+              <p className="text-gray-500 text-sm">No dead stock 🎉</p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-sm">
+                {data.deadStock.map((d, i) => (
+                  <div key={i} className="flex items-center justify-between py-1.5 border-b border-vault-border/50 last:border-b-0">
+                    <div className="min-w-0">
+                      <div className="text-white truncate">{d.product?.name || 'Unknown'}</div>
+                      <div className="text-xs text-gray-500">{d.product?.brand} · {d.product?.language} · {fmt(d.value)}</div>
+                    </div>
+                    <div className="text-right ml-3 flex-shrink-0">
+                      <div className="text-white font-bold">{d.qty}</div>
+                      <div className="text-xs text-gray-500">units</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Collapsible>
+      )}
     </div>
   )
 }
@@ -682,32 +682,49 @@ function Top5Card({ title, rows, fmt, accent }) {
   )
 }
 
-// Hot products in the last 30 days, ranked by units moved out.
-// Replaced the old Low-Stock card per Eric's feedback — he found that one
-// repeated the same names every day (static state) and wanted instead a
-// pulse on what's actually selling.
+// Hot products — top 5, ranked by units moved out in the current view's
+// window. Each row is rendered as a labeled progress bar where #1 is 100%
+// and the rest scale relative to it. This makes "how much #1 dominates"
+// readable at a glance without parsing the numbers.
 function PopularCard({ title, rows, fmt }) {
+  if (!rows?.length) {
+    return (
+      <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+        <h3 className="font-semibold text-white mb-3">{title}</h3>
+        <p className="text-gray-500 text-sm">No outflow in this period.</p>
+      </div>
+    )
+  }
+  const max = rows[0]?.units || 1
   return (
     <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-      <h3 className="font-semibold text-white mb-3">{title}</h3>
-      {!rows?.length ? (
-        <p className="text-gray-500 text-sm">No outflow in the last 30 days.</p>
-      ) : (
-        <div className="space-y-1.5 text-sm max-h-80 overflow-y-auto">
-          {rows.map((r, i) => (
-            <div key={i} className="flex items-center justify-between py-1 border-b border-vault-border/50 last:border-b-0">
-              <div className="min-w-0">
-                <div className="text-white truncate">{r.product?.name || 'Unknown'}</div>
-                <div className="text-xs text-gray-500">in stock: {r.stock} · cost moved: {fmt(r.cost30d)}</div>
+      <h3 className="font-semibold text-white mb-4">{title}</h3>
+      <div className="space-y-3.5">
+        {rows.map((r, i) => {
+          const pct = Math.max(2, (r.units / max) * 100) // floor at 2% so bar is always visible
+          return (
+            <div key={i}>
+              <div className="flex items-center justify-between mb-1.5 gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xs font-bold text-vault-gold w-5 text-center flex-shrink-0">{i + 1}</span>
+                  <span className="text-white text-sm truncate">{r.product?.name || 'Unknown'}</span>
+                </div>
+                <div className="flex items-baseline gap-1 flex-shrink-0">
+                  <span className="text-white font-bold text-base">{r.units.toLocaleString()}</span>
+                  <span className="text-xs text-gray-500">units</span>
+                </div>
               </div>
-              <div className="text-right ml-3 flex-shrink-0">
-                <div className="text-white font-bold">{r.units30d}</div>
-                <div className="text-xs text-gray-500">units / 30d</div>
+              <div className="ml-7 w-[calc(100%-1.75rem)] bg-vault-darker rounded-full h-2 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-vault-gold to-amber-500 rounded-full transition-all"
+                  style={{ width: `${pct}%` }}
+                />
               </div>
+              <div className="text-xs text-gray-500 mt-1 ml-7">in stock: {r.stock} · {fmt(r.cost)} moved</div>
             </div>
-          ))}
-        </div>
-      )}
+          )
+        })}
+      </div>
     </div>
   )
 }
