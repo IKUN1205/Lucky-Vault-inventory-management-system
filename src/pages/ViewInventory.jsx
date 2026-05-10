@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { fetchInventory, fetchLocations, supabase } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
-import { Eye, Package, Search, Edit2, Save, X, Trash2 } from 'lucide-react'
+import { Eye, Package, Search, Edit2, Save, X, Trash2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 
 // Helper to get currency based on language
 const getCurrency = (language) => {
@@ -33,10 +33,26 @@ export default function ViewInventory() {
   const [searchTerm, setSearchTerm] = useState('')
   const [filters, setFilters] = useState({
     brand: '',
-    type: ''
+    type: '',
+    language: '', // '' = all, 'JP' | 'EN' | 'CN' | 'KR'
   })
+  // Sort state — { field, direction }. Click a column header to sort by it;
+  // click again to flip asc/desc. Sort is applied within each location group
+  // so "highest-value first" works the way you'd expect per shelf.
+  const [sort, setSort] = useState({ field: 'totalValue', direction: 'desc' })
   const [editingId, setEditingId] = useState(null)
   const [editForm, setEditForm] = useState({ quantity: '', avg_cost_basis: '' })
+
+  // Toggle sort: same column = flip direction; different column = start desc
+  // (descending is the more useful default for $ and qty — biggest first).
+  const handleSort = (field) => {
+    setSort(prev => {
+      if (prev.field === field) {
+        return { field, direction: prev.direction === 'desc' ? 'asc' : 'desc' }
+      }
+      return { field, direction: 'desc' }
+    })
+  }
 
   useEffect(() => {
     loadData()
@@ -129,6 +145,7 @@ export default function ViewInventory() {
   const filteredInventory = inventory.filter(inv => {
     if (filters.brand && inv.product?.brand !== filters.brand) return false
     if (filters.type && inv.product?.type !== filters.type) return false
+    if (filters.language && inv.product?.language !== filters.language) return false
     if (searchTerm) {
       const search = searchTerm.toLowerCase()
       const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
@@ -140,6 +157,48 @@ export default function ViewInventory() {
     }
     return true
   })
+
+  // Sort comparator. Returns the value used for ordering for the given field.
+  // Strings get lower-cased so case-insensitive sort is consistent.
+  const sortValue = (inv, field) => {
+    const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
+    switch (field) {
+      case 'launchName':  return (launchName || '').toLowerCase()
+      case 'brand':       return (inv.product?.brand || '').toLowerCase()
+      case 'productType': return (inv.product?.category || '').toLowerCase()
+      case 'sealed':      return (inv.product?.type || '').toLowerCase()
+      case 'language':    return (inv.product?.language || '').toLowerCase()
+      case 'qty':         return inv.quantity || 0
+      case 'avgCost':     return inv.avg_cost_basis || 0
+      case 'totalValue':  return (inv.quantity || 0) * (inv.avg_cost_basis || 0)
+      default:            return 0
+    }
+  }
+
+  const sortItems = (items) => {
+    const sorted = [...items].sort((a, b) => {
+      const av = sortValue(a, sort.field)
+      const bv = sortValue(b, sort.field)
+      if (typeof av === 'number' && typeof bv === 'number') {
+        return sort.direction === 'desc' ? bv - av : av - bv
+      }
+      // String comparison
+      if (av < bv) return sort.direction === 'desc' ? 1 : -1
+      if (av > bv) return sort.direction === 'desc' ? -1 : 1
+      return 0
+    })
+    return sorted
+  }
+
+  // Tiny arrow indicator next to sortable column headers.
+  const SortArrow = ({ field }) => {
+    if (sort.field !== field) {
+      return <ArrowUpDown size={12} className="inline-block ml-1 text-gray-600" />
+    }
+    return sort.direction === 'desc'
+      ? <ArrowDown size={12} className="inline-block ml-1 text-vault-gold" />
+      : <ArrowUp size={12} className="inline-block ml-1 text-vault-gold" />
+  }
 
   // Group by location
   const groupedByLocation = filteredInventory.reduce((acc, inv) => {
@@ -191,7 +250,7 @@ export default function ViewInventory() {
 
       {/* Filters */}
       <div className="card mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Location</label>
             <select
@@ -204,7 +263,7 @@ export default function ViewInventory() {
               ))}
             </select>
           </div>
-          
+
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Brand</label>
             <select
@@ -217,7 +276,23 @@ export default function ViewInventory() {
               <option value="Other">Other</option>
             </select>
           </div>
-          
+
+          {/* Language / market filter — JP vs EN vs CN. Asked for explicitly:
+              owner often wants to look at one market's stock at a time. */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Language / Market</label>
+            <select
+              value={filters.language}
+              onChange={(e) => setFilters(f => ({ ...f, language: e.target.value }))}
+            >
+              <option value="">All Markets</option>
+              <option value="JP">🇯🇵 JP — Japan</option>
+              <option value="EN">🇺🇸 EN — US/English</option>
+              <option value="CN">🇨🇳 CN — China</option>
+              <option value="KR">🇰🇷 KR — Korea</option>
+            </select>
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Sealed/Unsealed</label>
             <select
@@ -229,7 +304,7 @@ export default function ViewInventory() {
               <option value="Pack">Pack (Unsealed)</option>
             </select>
           </div>
-          
+
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Search</label>
             <div className="relative">
@@ -290,20 +365,36 @@ export default function ViewInventory() {
               <table className="w-full">
                 <thead>
                   <tr className="text-left text-gray-400 text-sm border-b border-vault-border">
-                    <th className="pb-3 font-medium">LAUNCH NAME</th>
-                    <th className="pb-3 font-medium">BRAND</th>
-                    <th className="pb-3 font-medium">PRODUCT TYPE</th>
-                    <th className="pb-3 font-medium">SEALED</th>
-                    <th className="pb-3 font-medium">LANG</th>
-                    <th className="pb-3 font-medium text-right">QTY</th>
-                    <th className="pb-3 font-medium text-right">AVG COST</th>
+                    <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('launchName')}>
+                      LAUNCH NAME<SortArrow field="launchName" />
+                    </th>
+                    <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('brand')}>
+                      BRAND<SortArrow field="brand" />
+                    </th>
+                    <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('productType')}>
+                      PRODUCT TYPE<SortArrow field="productType" />
+                    </th>
+                    <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('sealed')}>
+                      SEALED<SortArrow field="sealed" />
+                    </th>
+                    <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('language')}>
+                      LANG<SortArrow field="language" />
+                    </th>
+                    <th className="pb-3 font-medium text-right cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('qty')}>
+                      QTY<SortArrow field="qty" />
+                    </th>
+                    <th className="pb-3 font-medium text-right cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('avgCost')}>
+                      AVG COST<SortArrow field="avgCost" />
+                    </th>
                     <th className="pb-3 font-medium text-center">CURRENCY</th>
-                    <th className="pb-3 font-medium text-right">TOTAL VALUE</th>
+                    <th className="pb-3 font-medium text-right cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('totalValue')}>
+                      TOTAL VALUE<SortArrow field="totalValue" />
+                    </th>
                     <th className="pb-3 font-medium text-right">ACTIONS</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-vault-border">
-                  {items.map(inv => {
+                  {sortItems(items).map(inv => {
                     const isEditing = editingId === inv.id
                     const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
                     const currency = getCurrency(inv.product?.language)
