@@ -6,8 +6,8 @@ import { Eye, Package, Search, Edit2, Save, X, Trash2, ArrowUp, ArrowDown, Arrow
 
 // All cost values stored in inventory.avg_cost_basis are USD-denominated —
 // they're converted at acquisition time using the rates in src/lib/supabase.js.
-// So the displayed currency is always USD regardless of the product's market.
-const getCurrency = () => 'USD'
+// The CURRENCY column was removed since it was always "USD" and added no info;
+// the per-location header carries an "All values in USD" hint instead.
 
 // Helper to extract Launch Name from full product name
 // e.g., "Raging Surf Booster Box" -> "Raging Surf"
@@ -351,6 +351,7 @@ export default function ViewInventory() {
                   {locationName}
                 </h2>
                 <span className="text-gray-400 text-sm">({locationItems} items)</span>
+                <span className="text-gray-600 text-xs">· all values in USD</span>
               </div>
               <span className="text-vault-gold font-semibold">
                 ${locationTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -382,7 +383,6 @@ export default function ViewInventory() {
                     <th className="pb-3 font-medium text-right cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('avgCost')}>
                       AVG COST<SortArrow field="avgCost" />
                     </th>
-                    <th className="pb-3 font-medium text-center">CURRENCY</th>
                     <th className="pb-3 font-medium text-right cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('totalValue')}>
                       TOTAL VALUE<SortArrow field="totalValue" />
                     </th>
@@ -393,8 +393,7 @@ export default function ViewInventory() {
                   {sortItems(items).map(inv => {
                     const isEditing = editingId === inv.id
                     const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
-                    const currency = getCurrency(inv.product?.language)
-                    
+
                     return (
                       <tr key={inv.id} className="hover:bg-vault-dark/50">
                         <td className="py-3 font-medium text-white">{launchName}</td>
@@ -437,7 +436,6 @@ export default function ViewInventory() {
                             <span className="text-gray-400">${inv.avg_cost_basis?.toFixed(2) || '0.00'}</span>
                           )}
                         </td>
-                        <td className="py-3 text-center text-gray-500 text-sm">{currency}</td>
                         <td className="py-3 text-right text-vault-gold font-medium">
                           ${(inv.quantity * (inv.avg_cost_basis || 0)).toFixed(2)}
                         </td>
