@@ -4,14 +4,10 @@ import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { Eye, Package, Search, Edit2, Save, X, Trash2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 
-// Helper to get currency based on language
-const getCurrency = (language) => {
-  switch(language) {
-    case 'JP': return 'YEN'
-    case 'CN': return 'RMB'
-    default: return 'USD'
-  }
-}
+// All cost values stored in inventory.avg_cost_basis are USD-denominated —
+// they're converted at acquisition time using the rates in src/lib/supabase.js.
+// So the displayed currency is always USD regardless of the product's market.
+const getCurrency = () => 'USD'
 
 // Helper to extract Launch Name from full product name
 // e.g., "Raging Surf Booster Box" -> "Raging Surf"
