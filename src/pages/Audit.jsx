@@ -510,9 +510,18 @@ export default function Audit() {
           streamers: Array.from(p.streamers.entries()).sort((a, b) => b[1].qty - a[1].qty),
         })
       }
-      // Flagged rows on top, then by absolute diff
+      // Sort by suspicion priority:
+      //   1. Flagged + negative diff (system > platform): direct theft signal.
+      //      Inventory left the shelf without a corresponding sale.
+      //   2. Flagged + positive diff (platform > system): either lazy stream
+      //      counts OR theft hidden by overstating remaining qty. Mixed
+      //      signal — still worth investigating but less direct.
+      //   3. Unflagged (|diff| < threshold): probably just noise.
+      // Within each bucket, larger absolute diff comes first.
       rows.sort((a, b) => {
-        if (a.flagged !== b.flagged) return a.flagged ? -1 : 1
+        const bucket = (r) => !r.flagged ? 2 : (r.diff < 0 ? 0 : 1)
+        const bA = bucket(a), bB = bucket(b)
+        if (bA !== bB) return bA - bB
         return Math.abs(b.diff) - Math.abs(a.diff)
       })
 
@@ -1038,11 +1047,23 @@ function ReportView({ report, fmt }) {
 
       {/* Product comparison */}
       <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-        <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
+        <h3 className="font-semibold text-white mb-2 flex items-center gap-2">
           <ShieldCheck size={18} className="text-vault-gold" />
           Product-level reconciliation
           <span className="text-xs text-gray-500 ml-1">({rows.length} products · {range.start} → {range.end})</span>
         </h3>
+        {/* Sort-order legend. Sorted by suspicion: negative diffs (direct
+            theft signal) first, then positive diffs (mixed signal). */}
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 mb-3">
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 rounded bg-red-500/30"></span>
+            <strong className="text-red-300">Negative diff</strong> = system &gt; platform · likely missing inventory
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 rounded bg-yellow-500/30"></span>
+            <strong className="text-yellow-300">Positive diff</strong> = platform &gt; system · likely missing stream counts
+          </span>
+        </div>
         {rows.length === 0 ? (
           <p className="text-gray-500 text-sm">No platform sales or system outflow in this period.</p>
         ) : (
@@ -1058,10 +1079,19 @@ function ReportView({ report, fmt }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map(r => (
-                  <tr key={r.product_id} className={`border-b border-vault-border/50 ${r.flagged ? 'bg-red-500/5' : ''}`}>
+                {rows.map(r => {
+                  // Visual severity: negative flagged = strong red (direct
+                  // theft signal); positive flagged = yellow (mixed signal,
+                  // could be lazy counts); unflagged = no tint.
+                  const rowClass = !r.flagged ? ''
+                    : r.diff < 0 ? 'bg-red-500/10'
+                    : 'bg-yellow-500/5'
+                  const iconClass = !r.flagged ? ''
+                    : r.diff < 0 ? 'text-red-400' : 'text-yellow-400'
+                  return (
+                  <tr key={r.product_id} className={`border-b border-vault-border/50 ${rowClass}`}>
                     <td className="py-2.5 text-white">
-                      {r.flagged && <AlertTriangle size={14} className="inline mr-1.5 -mt-0.5 text-red-400" />}
+                      {r.flagged && <AlertTriangle size={14} className={`inline mr-1.5 -mt-0.5 ${iconClass}`} />}
                       {r.product?.name || '(unknown product)'}
                       {r.product?.language && <span className="text-gray-500 ml-2 text-xs">[{r.product.language}]</span>}
                     </td>
@@ -1069,8 +1099,9 @@ function ReportView({ report, fmt }) {
                     <td className="py-2.5 text-right text-white font-medium">{r.system_qty.toLocaleString()}</td>
                     <td className={`py-2.5 text-right font-bold ${
                       r.diff === 0 ? 'text-green-400'
-                        : r.flagged ? 'text-red-400'
-                          : r.diff > 0 ? 'text-yellow-400' : 'text-blue-400'
+                        : r.flagged && r.diff < 0 ? 'text-red-400'    // theft signal
+                          : r.flagged ? 'text-yellow-400'             // lazy / mixed
+                            : r.diff > 0 ? 'text-yellow-300' : 'text-blue-300'
                     }`}>
                       {r.diff > 0 ? '+' : ''}{r.diff.toLocaleString()}
                     </td>
@@ -1081,7 +1112,8 @@ function ReportView({ report, fmt }) {
                       </td>
                     )}
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
