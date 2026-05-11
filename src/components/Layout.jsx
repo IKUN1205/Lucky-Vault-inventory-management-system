@@ -25,7 +25,8 @@ import {
   ShoppingBag,
   Store,
   Gauge,
-  LogOut
+  LogOut,
+  ShieldCheck
 } from 'lucide-react'
 
 // Sidebar grouped by workflow stage. Section headers render as small uppercase
@@ -77,6 +78,7 @@ const navSections = [
     items: [
       { path: '/high-value', label: 'High Value', icon: Star },
       { path: '/expenses', label: 'Business Expenses', icon: Receipt },
+      { path: '/audit', label: 'Sales Audit', icon: ShieldCheck },
       { path: '/users', label: 'Team Management', icon: Users },
     ]
   },

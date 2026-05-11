@@ -25,6 +25,7 @@ import ProductMapping from './pages/ProductMapping'
 import UserManagement from './pages/UserManagement'
 import Turnover from './pages/Turnover'
 import ExecutiveReport from './pages/ExecutiveReport'
+import Audit from './pages/Audit'
 
 // Components
 import Layout from './components/Layout'
@@ -117,6 +118,9 @@ function AppRoutes() {
       } />
       <Route path="/users" element={
         <ProtectedRoute path="/users"><Layout><UserManagement /></Layout></ProtectedRoute>
+      } />
+      <Route path="/audit" element={
+        <ProtectedRoute path="/audit"><Layout><Audit /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
