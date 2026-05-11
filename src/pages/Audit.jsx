@@ -34,7 +34,10 @@ import {
 
 // ----- Constants --------------------------------------------------------
 const PLATFORM = 'packheads'
-const PACKHEADS_LOCATION = 'Stream Room - Packheads'
+// Default stream room the audit compares against. The user can override
+// this with the dropdown — useful when auditing a different stream room
+// (RocketsHQ, Whatnot, etc.) without code changes.
+const DEFAULT_LOCATION = 'Stream Room - TikTok Packheads'
 
 // ----- CSV parsing helpers ----------------------------------------------
 
@@ -152,7 +155,8 @@ export default function Audit() {
   // Reference data — fetched once on mount
   const [products, setProducts] = useState([])
   const [existingMappings, setExistingMappings] = useState({}) // external_name → { product_id, ignore }
-  const [packheadsLocationId, setPackheadsLocationId] = useState(null)
+  const [streamRooms, setStreamRooms] = useState([]) // [{ id, name }, ...]
+  const [auditLocationId, setAuditLocationId] = useState(null) // user's chosen stream room id
   const [loading, setLoading] = useState(true)
   const [pageError, setPageError] = useState(null)
 
@@ -199,15 +203,27 @@ export default function Audit() {
       const [prodRes, mapRes, locRes] = await Promise.all([
         supabase.from('products').select('id, name, brand, language').order('name'),
         supabase.from('platform_product_mappings').select('external_name, product_id, ignore').eq('platform', PLATFORM),
-        supabase.from('locations').select('id, name').eq('name', PACKHEADS_LOCATION).maybeSingle(),
+        // Pull every stream room location so the user can pick which one
+        // to audit against. ilike with 'stream' to filter out warehouse /
+        // storefront locations.
+        supabase.from('locations').select('id, name').ilike('name', '%stream%').order('name'),
       ])
       if (prodRes.error) throw prodRes.error
       if (mapRes.error) throw mapRes.error
+      if (locRes.error) throw locRes.error
       setProducts(prodRes.data || [])
       const mp = {}
       for (const m of mapRes.data || []) mp[m.external_name] = { product_id: m.product_id, ignore: m.ignore }
       setExistingMappings(mp)
-      setPackheadsLocationId(locRes.data?.id || null)
+
+      const rooms = locRes.data || []
+      setStreamRooms(rooms)
+      // Pick the best default: exact match, then anything containing
+      // "packheads", then the first stream room we find. Falls back to
+      // null so the warning banner fires.
+      const exact = rooms.find(r => r.name === DEFAULT_LOCATION)
+      const fuzzy = rooms.find(r => /packheads/i.test(r.name))
+      setAuditLocationId((exact || fuzzy || rooms[0])?.id || null)
     } catch (err) {
       console.error(err)
       setPageError(err.message || 'Failed to load reference data')
@@ -430,15 +446,15 @@ export default function Audit() {
         platformByStreamer.set(sName, ts)
       }
 
-      // ---- System side (stream_count_items where location = Packheads) ----
+      // ---- System side (stream_count_items where location = chosen audit room) ----
       const systemByProduct = new Map()
-      if (packheadsLocationId) {
+      if (auditLocationId) {
         const startISO = new Date(`${reportStart}T00:00:00`).toISOString()
         const endISO = new Date(`${reportEnd}T23:59:59`).toISOString()
         const { data: streamCounts } = await supabase
           .from('stream_counts')
           .select('id')
-          .eq('location_id', packheadsLocationId)
+          .eq('location_id', auditLocationId)
           .eq('deleted', false)
           .gte('count_time', startISO)
           .lte('count_time', endISO)
@@ -556,13 +572,12 @@ export default function Audit() {
         </p>
       </div>
 
-      {!packheadsLocationId && (
+      {streamRooms.length === 0 && (
         <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 text-yellow-200 text-sm flex items-start gap-2">
           <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
           <div>
-            <strong>Warning:</strong> No location named "{PACKHEADS_LOCATION}" exists in the system.
-            Reports will show platform sales but the "system outflow" column will be 0 for every product.
-            Make sure the Packheads stream room is registered as a location.
+            <strong>Warning:</strong> No stream-room locations found in the system.
+            Reports will show platform sales but the "system outflow" column will be 0.
           </div>
         </div>
       )}
@@ -801,6 +816,22 @@ export default function Audit() {
               </button>
             </div>
           )}
+        </div>
+
+        {/* Stream room picker — the location whose stream_count_items
+            we compare against the platform CSV. */}
+        <div className="mb-3">
+          <label className="block text-xs text-gray-400 mb-1">Compare against stream room</label>
+          <select
+            value={auditLocationId || ''}
+            onChange={(e) => setAuditLocationId(e.target.value || null)}
+            className="w-full px-3 py-2 bg-vault-darker border border-vault-border rounded-lg text-white text-sm focus:outline-none focus:border-vault-gold"
+          >
+            {streamRooms.length === 0 && <option value="">No stream rooms found</option>}
+            {streamRooms.map(r => (
+              <option key={r.id} value={r.id}>{r.name}</option>
+            ))}
+          </select>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
