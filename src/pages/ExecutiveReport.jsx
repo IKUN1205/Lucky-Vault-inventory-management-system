@@ -104,8 +104,12 @@ export default function ExecutiveReport() {
         supabase.from('inventory').select('product_id, location_id, quantity, avg_cost_basis').gt('quantity', 0),
         supabase.from('products').select('id, name, brand, language, type, category'),
         supabase.from('locations').select('id, name'),
+        // Column names match the real schema: `quantity_purchased` and
+        // `cost_usd` — not `quantity` / `unit_cost` / `total_cost`. The old
+        // names silently returned undefined via Supabase's permissive client,
+        // so the Inflow card on this report had been stuck at $0.
         supabase.from('acquisitions')
-          .select('id, product_id, quantity, unit_cost, total_cost, date_purchased, vendor:vendors(name)')
+          .select('id, product_id, quantity_purchased, cost_usd, date_purchased, vendor:vendors(name)')
           .gte('date_purchased', startDate).lte('date_purchased', endDate),
         supabase.from('stream_counts')
           .select('id, location_id, count_time')
@@ -115,10 +119,14 @@ export default function ExecutiveReport() {
           .select('id, product_id, quantity, cost_basis, sale_type, date')
           .gte('date', startDate).lte('date', endDate)
           .eq('deleted', false),
+        // Exclude soft-deleted rows so undone orders / platform sales don't
+        // keep inflating the outflow numbers on the executive report.
         supabase.from('platform_sales')
-          .select('id, channel, date, cost'),
+          .select('id, channel, date, cost, deleted')
+          .eq('deleted', false),
         supabase.from('online_orders')
-          .select('id, channel, date'),
+          .select('id, channel, date, deleted')
+          .eq('deleted', false),
       ])
 
       // Filter platform_sales / online_orders by date in JS — Supabase
@@ -139,10 +147,13 @@ export default function ExecutiveReport() {
       let ooItems = []
       if (onlineInPeriod.length) {
         const ids = onlineInPeriod.map(o => o.id)
+        // The FK column on online_order_items is `order_id`, not
+        // `online_order_id`. The old (wrong) name made this query return
+        // nothing — Online channel was always 0 in the report.
         const r = await supabase
           .from('online_order_items')
-          .select('online_order_id, product_id, quantity, unit_cost, cost_basis')
-          .in('online_order_id', ids)
+          .select('order_id, product_id, quantity, unit_cost, cost_basis')
+          .in('order_id', ids)
         ooItems = r.data || []
       }
 
@@ -293,10 +304,14 @@ export default function ExecutiveReport() {
         .slice(0, 5).map(buildTopRow)
 
       // ===== Inflow =====
+      // Acquisitions stores cost as cost_usd (already converted to USD at
+      // intake time using the rates in src/lib/supabase.js). The previous
+      // code looked for nonexistent `total_cost` / `unit_cost` columns and
+      // so Inflow was permanently $0 on this report.
       let inTotal = 0
       const inflowByVendor = new Map()
       for (const a of acqRes.data || []) {
-        const cost = parseFloat(a.total_cost || 0) || (parseFloat(a.unit_cost || 0) * (a.quantity || 0))
+        const cost = parseFloat(a.cost_usd || 0)
         inTotal += cost
         const vendor = a.vendor?.name || 'Unknown'
         inflowByVendor.set(vendor, (inflowByVendor.get(vendor) || 0) + cost)

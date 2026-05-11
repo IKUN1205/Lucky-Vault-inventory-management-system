@@ -24,6 +24,16 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
+  // Both verifyUser (session restore) and login (fresh PIN entry) honour
+  // both `active` and `can_login`. The users schema has both — `active`
+  // marks a kept-but-frozen account, `can_login` is the more granular
+  // "can this person use the app right now" toggle. Previously only
+  // `active` was checked, so a user with `can_login=false` could still
+  // sign in, defeating the purpose of the column.
+  //
+  // can_login is checked in JS after the fetch (rather than as a filter)
+  // so legacy rows where the column is NULL are treated as "allowed" —
+  // only an explicit `false` blocks access.
   const verifyUser = async (userId) => {
     try {
       const { data, error } = await supabase
@@ -32,8 +42,8 @@ export function AuthProvider({ children }) {
         .eq('id', userId)
         .eq('active', true)
         .single()
-      
-      if (data && !error) {
+
+      if (data && !error && data.can_login !== false) {
         setUser(data)
         localStorage.setItem('luckyvault_user', JSON.stringify(data))
       } else {
@@ -54,9 +64,12 @@ export function AuthProvider({ children }) {
         .eq('pin', pin)
         .eq('active', true)
         .single()
-      
+
       if (error || !data) {
         return { success: false, error: 'Invalid PIN' }
+      }
+      if (data.can_login === false) {
+        return { success: false, error: 'Account is disabled — contact your admin.' }
       }
 
       setUser(data)

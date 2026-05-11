@@ -5,7 +5,10 @@ import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { Users, Plus, Edit2, Trash2, Save, X, UserPlus, Key, RefreshCw, Check } from 'lucide-react'
 
-// All available pages with labels
+// All available pages with labels. Keep in sync with the routes declared in
+// src/App.jsx and the sidebar items in src/components/Layout.jsx — every
+// route the user might want to grant access to should appear here so admins
+// can actually toggle it from Team Management.
 const ALL_PAGES = [
   { path: '/', label: 'Dashboard' },
   { path: '/inventory', label: 'View Inventory' },
@@ -23,6 +26,8 @@ const ALL_PAGES = [
   { path: '/reports', label: 'Reports' },
   { path: '/turnover', label: 'Turnover' },
   { path: '/executive-report', label: 'Executive Report' },
+  { path: '/audit', label: 'Sales Audit' },
+  { path: '/product-mapping', label: 'Product Mapping' },
   { path: '/users', label: 'Team Management' },
   { path: '/high-value', label: 'High Value (Separate)' },
 ]

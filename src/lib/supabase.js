@@ -329,14 +329,36 @@ export const updateInventory = async (productId, locationId, quantityChange, new
   
   if (existing) {
     const newQuantity = existing.quantity + quantityChange
-    const updateData = { 
+    const updateData = {
       quantity: newQuantity,
       last_updated: new Date().toISOString()
     }
     if (newAvgCost !== null) {
-      updateData.avg_cost_basis = newAvgCost
+      // Weighted-average cost basis.
+      //
+      //  - quantityChange > 0  (we're ADDING stock at newAvgCost):
+      //      new cost = (oldQty * oldCost + addedQty * newAvgCost) / newQty
+      //    This preserves the historical cost of stock already in the bin
+      //    instead of clobbering it with the latest batch's price.
+      //  - quantityChange <= 0 (we're REMOVING stock — sale, transfer-out,
+      //    break, etc.): the cost basis of what's left doesn't change.
+      //    Cost basis tracks what we *paid* for the remaining units; an
+      //    outflow event doesn't repurchase them.
+      //  - oldQty <= 0 (edge case: bin was empty / negative): no history
+      //    to weight against — just adopt the incoming cost.
+      //
+      // Prior behaviour was a hard overwrite, which silently corrupted
+      // avg_cost_basis on every intake / move / break and made downstream
+      // cost-of-goods and inventory-value figures unreliable.
+      if (quantityChange > 0 && newQuantity > 0) {
+        const oldQty = existing.quantity || 0
+        const oldCost = parseFloat(existing.avg_cost_basis || 0)
+        updateData.avg_cost_basis = oldQty > 0
+          ? (oldQty * oldCost + quantityChange * newAvgCost) / newQuantity
+          : newAvgCost
+      }
     }
-    
+
     const { data, error } = await supabase
       .from('inventory')
       .update(updateData)
