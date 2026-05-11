@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Lucky Vault — Operations Manual</title>
+<style>
+  :root {
+    --vault-darker: #0a0a14;
+    --vault-dark: #131426;
+    --vault-surface: #1c1d33;
+    --vault-border: #2a2b47;
+    --vault-gold: #d4a017;
+    --vault-gold-bright: #e8b620;
+    --green: #10b981;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-500: #6b7280;
+    --gray-700: #374151;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #ffffff;
+    color: #1f2937;
+    margin: 0;
+    padding: 24px;
+    line-height: 1.65;
+  }
+
+  .container {
+    max-width: 920px;
+    margin: 0 auto;
+  }
+
+  /* ===== Cover ===== */
+  h1.cover {
+    font-size: 38px;
+    color: var(--vault-darker);
+    margin: 0 0 6px;
+    border-bottom: 4px solid var(--vault-gold);
+    padding-bottom: 14px;
+    letter-spacing: -0.5px;
+  }
+  .subtitle {
+    color: var(--gray-500);
+    font-size: 16px;
+    margin: 0 0 24px;
+  }
+  .stamp {
+    display: inline-block;
+    background: var(--vault-gold);
+    color: #fff;
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 1px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    margin-right: 8px;
+  }
+
+  .intro-card {
+    background: #fff8e1;
+    border: 1px solid var(--vault-gold);
+    border-left: 6px solid var(--vault-gold);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin: 24px 0 32px;
+    font-size: 15px;
+  }
+  .intro-card strong { color: #92400e; }
+
+  /* ===== TOC ===== */
+  nav.toc {
+    background: #f9fafb;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin-bottom: 36px;
+  }
+  nav.toc h2 {
+    margin: 0 0 12px;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--vault-darker);
+    font-size: 18px;
+  }
+  nav.toc ol {
+    margin: 0;
+    padding-left: 22px;
+    column-count: 2;
+    column-gap: 32px;
+  }
+  nav.toc li {
+    padding: 3px 0;
+    break-inside: avoid;
+  }
+  nav.toc a {
+    color: var(--vault-darker);
+    text-decoration: none;
+    font-size: 14px;
+  }
+  nav.toc a:hover {
+    color: var(--vault-gold);
+    text-decoration: underline;
+  }
+
+  /* ===== Sections ===== */
+  section {
+    margin-bottom: 48px;
+    page-break-inside: avoid;
+  }
+  h2 {
+    font-size: 26px;
+    color: var(--vault-darker);
+    margin: 0 0 6px;
+    padding: 12px 16px;
+    background: linear-gradient(90deg, #fef3c7 0%, #ffffff 100%);
+    border-left: 6px solid var(--vault-gold);
+    border-radius: 4px;
+    scroll-margin-top: 20px;
+  }
+  h2 .num {
+    color: var(--vault-gold);
+    font-weight: 800;
+    margin-right: 8px;
+  }
+  h3 {
+    font-size: 19px;
+    color: var(--vault-darker);
+    margin: 28px 0 10px;
+    border-bottom: 1px dashed var(--gray-300);
+    padding-bottom: 4px;
+    scroll-margin-top: 20px;
+  }
+  h4 {
+    font-size: 16px;
+    color: var(--gray-700);
+    margin: 18px 0 8px;
+  }
+
+  /* ===== Step list ===== */
+  ol.steps {
+    counter-reset: step;
+    list-style: none;
+    padding-left: 0;
+    margin: 12px 0;
+  }
+  ol.steps > li {
+    position: relative;
+    padding: 10px 12px 10px 50px;
+    margin-bottom: 8px;
+    background: #f9fafb;
+    border-left: 3px solid var(--vault-gold);
+    border-radius: 0 6px 6px 0;
+  }
+  ol.steps > li::before {
+    counter-increment: step;
+    content: counter(step);
+    position: absolute;
+    left: 12px;
+    top: 10px;
+    width: 28px;
+    height: 28px;
+    line-height: 28px;
+    text-align: center;
+    background: var(--vault-gold);
+    color: #fff;
+    font-weight: 700;
+    border-radius: 50%;
+    font-size: 14px;
+  }
+
+  /* ===== Callouts ===== */
+  .rule {
+    background: linear-gradient(90deg, #fff8e1 0%, #ffffff 100%);
+    border-left: 5px solid var(--vault-gold);
+    padding: 14px 18px;
+    border-radius: 4px;
+    margin: 16px 0;
+    font-weight: 500;
+    font-size: 15.5px;
+  }
+  .rule strong { color: #92400e; }
+
+  .warn {
+    background: #fef3c7;
+    border-left: 4px solid var(--amber);
+    padding: 12px 16px;
+    border-radius: 4px;
+    margin: 14px 0;
+    color: #78350f;
+    font-size: 14.5px;
+  }
+  .info {
+    background: #dbeafe;
+    border-left: 4px solid #3b82f6;
+    padding: 12px 16px;
+    border-radius: 4px;
+    margin: 14px 0;
+    color: #1e3a8a;
+    font-size: 14.5px;
+  }
+  .danger {
+    background: #fee2e2;
+    border-left: 4px solid var(--red);
+    padding: 12px 16px;
+    border-radius: 4px;
+    margin: 14px 0;
+    color: #7f1d1d;
+    font-size: 14.5px;
+  }
+  .success {
+    background: #d1fae5;
+    border-left: 4px solid var(--green);
+    padding: 12px 16px;
+    border-radius: 4px;
+    margin: 14px 0;
+    color: #065f46;
+    font-size: 14.5px;
+  }
+
+  /* ===== Tables ===== */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14.5px;
+    background: #fff;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  th {
+    background: var(--vault-darker);
+    color: #fff;
+    text-align: left;
+    padding: 10px 14px;
+    font-weight: 600;
+    font-size: 13.5px;
+  }
+  td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--gray-200);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:nth-child(even) td { background: #fafafa; }
+
+  /* ===== Role cards ===== */
+  .role-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    margin: 16px 0 8px;
+  }
+  .role-card {
+    background: #fff;
+    border: 1px solid var(--gray-200);
+    border-top: 4px solid var(--vault-gold);
+    border-radius: 8px;
+    padding: 14px 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .role-card .name {
+    font-weight: 700;
+    color: var(--vault-darker);
+    margin-bottom: 6px;
+    font-size: 15px;
+  }
+  .role-card .pages {
+    font-size: 13px;
+    color: var(--gray-700);
+    line-height: 1.5;
+  }
+  .role-card .pages strong { color: var(--vault-gold); }
+
+  /* ===== Page reference ===== */
+  .page-ref {
+    background: #f9fafb;
+    border: 1px solid var(--gray-200);
+    border-left: 4px solid var(--vault-gold);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 10px 0;
+  }
+  .page-ref .page-name {
+    font-weight: 700;
+    color: var(--vault-darker);
+    font-size: 15px;
+  }
+  .page-ref .page-desc { font-size: 14px; color: var(--gray-700); margin: 4px 0; }
+  .page-ref .page-when {
+    font-size: 13px;
+    color: var(--vault-gold);
+    margin-top: 4px;
+  }
+  .page-ref .page-when strong { color: #92400e; }
+
+  /* ===== Code / labels ===== */
+  code, kbd {
+    background: #f3f4f6;
+    border: 1px solid var(--gray-300);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    color: #1f2937;
+  }
+
+  ul, ol { padding-left: 24px; }
+  ul li, ol li { margin: 4px 0; }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--gray-200);
+    margin: 36px 0;
+  }
+
+  /* ===== Print ===== */
+  @media print {
+    body { padding: 12px; font-size: 12.5px; }
+    .container { max-width: none; }
+    h2 { page-break-after: avoid; }
+    section { page-break-inside: auto; }
+    nav.toc { page-break-after: always; }
+    a { color: inherit; text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ===== COVER ===== -->
+  <header>
+    <h1 class="cover">Lucky Vault — Operations Manual</h1>
+    <p class="subtitle">
+      <span class="stamp">v1.0</span>
+      For everyone on the Lucky Vault team. Last updated 2026-05-11.
+    </p>
+  </header>
+
+  <div class="intro-card">
+    <strong>The single most important rule:</strong>
+    Every time a physical box moves, opens, or sells, somebody clicks something in this system.
+    If you skip the click, the system can't tell the difference between "moved to another room" and "stolen."
+  </div>
+
+  <!-- ===== TOC ===== -->
+  <nav class="toc">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#sec-start">Getting Started</a></li>
+      <li><a href="#sec-role">Find Your Role</a></li>
+      <li><a href="#sec-workflows">Daily Workflows by Role</a>
+        <ol style="column-count: 1; padding-left: 16px;">
+          <li><a href="#wf-streamer">Streamer</a></li>
+          <li><a href="#wf-shipper">Shipper</a></li>
+          <li><a href="#wf-warehouse">Warehouse</a></li>
+          <li><a href="#wf-store">Store Staff</a></li>
+          <li><a href="#wf-manager">Manager</a></li>
+        </ol>
+      </li>
+      <li><a href="#sec-pages">Page-by-Page Reference</a></li>
+      <li><a href="#sec-audit">The Audit &amp; Reconcile System</a></li>
+      <li><a href="#sec-best">Best Practices — Six Commandments</a></li>
+      <li><a href="#sec-issues">Common Issues &amp; How to Fix Them</a></li>
+      <li><a href="#sec-glossary">Glossary</a></li>
+    </ol>
+  </nav>
+
+  <!-- ===== 1. GETTING STARTED ===== -->
+  <section id="sec-start">
+    <h2><span class="num">1.</span>Getting Started</h2>
+
+    <h3>Logging in</h3>
+    <ol class="steps">
+      <li>Go to the Lucky Vault URL on your phone, tablet, or computer.</li>
+      <li>Enter your <strong>4-digit PIN</strong>. If you don't have one, ask your manager.</li>
+      <li>You'll land on the <strong>Dashboard</strong>.</li>
+    </ol>
+
+    <p>If your PIN doesn't work:</p>
+    <ul>
+      <li>Make sure you're typing all 4 digits.</li>
+      <li>The PIN is set by an admin. If you forgot it, ask them to look it up or set a new one.</li>
+      <li>If the screen says <em>"Access Denied"</em> after login, your account exists but doesn't have permission for the page you opened. Ask an admin to grant it in <strong>Team Management</strong>.</li>
+    </ul>
+
+    <h3>What you see after login</h3>
+    <ul>
+      <li><strong>Sidebar (left)</strong> — every page you have permission for, grouped by stage: Overview · Receive · Operations · Sales · Reports · Admin.</li>
+      <li><strong>Top right</strong> — your name and a logout icon.</li>
+      <li><strong>Main area</strong> — whichever page is open.</li>
+    </ul>
+
+    <h3>Switching pages</h3>
+    <p>Click any item in the sidebar. On mobile, tap the menu icon at the top-left.</p>
+  </section>
+
+  <!-- ===== 2. FIND YOUR ROLE ===== -->
+  <section id="sec-role">
+    <h2><span class="num">2.</span>Find Your Role</h2>
+
+    <div class="role-grid">
+      <div class="role-card">
+        <div class="name">🎬 Streamer</div>
+        <div class="pages">Main pages: <strong>Stream Counts</strong> → <strong>Reconcile</strong></div>
+      </div>
+      <div class="role-card">
+        <div class="name">📦 Shipper / Order packer</div>
+        <div class="pages">Main page: <strong>Online Orders</strong></div>
+      </div>
+      <div class="role-card">
+        <div class="name">🏗️ Warehouse</div>
+        <div class="pages">Main pages: <strong>Purchased Items</strong> → <strong>Intake to Master</strong> → <strong>Move Inventory</strong> → <strong>Break Box</strong></div>
+      </div>
+      <div class="role-card">
+        <div class="name">🏪 Store staff</div>
+        <div class="pages">Main page: <strong>Storefront Sales</strong></div>
+      </div>
+      <div class="role-card">
+        <div class="name">👔 Manager / Owner</div>
+        <div class="pages">Main pages: <strong>Executive Report</strong>, <strong>Sales Audit</strong>, <strong>Reports</strong>, <strong>Turnover</strong>, <strong>Team Management</strong></div>
+      </div>
+    </div>
+
+    <p style="color: var(--gray-500); font-size: 14px;">
+      You'll still see other pages in the sidebar — feel free to look around, but only the pages above are part of your daily job.
+    </p>
+  </section>
+
+  <!-- ===== 3. WORKFLOWS ===== -->
+  <section id="sec-workflows">
+    <h2><span class="num">3.</span>Daily Workflows by Role</h2>
+
+    <!-- Streamer -->
+    <h3 id="wf-streamer">🎬 Streamer Workflow</h3>
+    <p>
+      You are the live-stream host. You sell sealed product on TikTok to viewers. Your job in the system is to <strong>count what's left</strong> before each new stream — this tells the system how much you sold during the previous stream — and to <strong>reconcile</strong> that count against TikTok's own sales numbers.
+    </p>
+
+    <h4>Before your stream (every single time)</h4>
+    <ol class="steps">
+      <li>Walk to your stream room shelf.</li>
+      <li>Open <strong>Stream Counts</strong> in the sidebar.</li>
+      <li>Click <strong>Start New Count</strong>.</li>
+      <li>Select <strong>Stream Room</strong> (your room), <strong>Streamer</strong> (the person who streamed <em>last</em>), <strong>Counted by</strong> (yourself).</li>
+      <li>The system shows every product the inventory says should be on your shelf, with the expected quantity.</li>
+      <li>Walk down the shelf. For each product, count the physical units left and type that number.</li>
+      <li>Click <strong>Submit Count</strong>.</li>
+    </ol>
+    <p>The system computes "sold" for each product as <code>expected - actual</code>, decrements inventory, and posts a brief summary to the room's Lark group.</p>
+
+    <h4>Right after submitting — Reconcile</h4>
+    <ol class="steps">
+      <li>In Reconcile, click <strong>Open TikTok Seller Center</strong>. A new tab opens.</li>
+      <li>In TikTok: click <strong>Filter</strong> → set <strong>LIVE session</strong> to the show you just finished → click the <strong>download ⬇️</strong> icon. A CSV downloads.</li>
+      <li>Drag the CSV onto the <strong>Drop CSV here</strong> area in Reconcile.</li>
+      <li>Wait a second — you'll see a per-product diff table.</li>
+      <li>Click <strong>Send to Lark</strong>. The diff goes to the room group so the manager can see it.</li>
+    </ol>
+
+    <div class="warn">
+      If the diff has any 🚨 red rows (system &gt; TikTok), you have inventory that left the shelf without a sale. <strong>Discuss with your manager immediately</strong> — don't wait.
+    </div>
+
+    <h4>Things to avoid</h4>
+    <ul>
+      <li>❌ Don't take boxes off the shelf "to display" without putting them back before the count.</li>
+      <li>❌ Don't take boxes home — even temporarily.</li>
+      <li>❌ Don't skip a count and "just guess" later — that's the single biggest source of inventory drift.</li>
+    </ul>
+
+    <!-- Shipper -->
+    <h3 id="wf-shipper">📦 Shipper Workflow</h3>
+    <p>You receive customer orders that aren't sold during a live stream (online orders from eBay, the website, etc.) and ship them out.</p>
+
+    <h4>When a customer order comes in</h4>
+    <ol class="steps">
+      <li>Pull the product from the right location.</li>
+      <li>Open <strong>Online Orders</strong> in the sidebar.</li>
+      <li>Click <strong>+ New Order</strong>.</li>
+      <li>Fill in: Date · Platform/Channel · Order # · Customer · Source location · Handled by · Tracking.</li>
+      <li>Add each line item (product + quantity) to the cart.</li>
+      <li>Click <strong>Ship Order</strong>.</li>
+    </ol>
+
+    <div class="danger">
+      ❌ Don't ship without recording — even if you're in a rush. The whole audit system breaks if shipments aren't logged.<br>
+      ❌ Don't pick the wrong source location. If you took the box from Front Store, set source = Front Store, not Master Inventory.
+    </div>
+
+    <!-- Warehouse -->
+    <h3 id="wf-warehouse">🏗️ Warehouse Workflow</h3>
+    <p>You receive new shipments from vendors and prepare inventory for streamers / shippers / store.</p>
+
+    <h4>When a new shipment arrives</h4>
+    <ol class="steps">
+      <li>Open <strong>Purchased Items</strong>.</li>
+      <li>Click <strong>+ New Purchase</strong>.</li>
+      <li>Fill in vendor, date, brand, currency, cost. Add each product + quantity to the cart.</li>
+      <li>Click <strong>Log Purchase</strong>.</li>
+    </ol>
+    <p>The purchase is recorded but inventory <strong>isn't added to any room yet</strong>. That's the next step.</p>
+
+    <h4>Intaking purchased items into Master Inventory</h4>
+    <ol class="steps">
+      <li>Open <strong>Intake to Master</strong>.</li>
+      <li>Find the purchase you logged.</li>
+      <li>For each line, confirm the quantity received (may be less than ordered if damaged), then click <strong>Receive</strong>.</li>
+    </ol>
+    <p>This adds the boxes to Master Inventory at the correct cost basis.</p>
+
+    <h4>Moving inventory between locations</h4>
+    <ol class="steps">
+      <li>Open <strong>Move Inventory</strong>.</li>
+      <li><strong>From</strong> — where the box currently is.</li>
+      <li><strong>To</strong> — where you're moving it.</li>
+      <li><strong>Moved by</strong> — who is physically doing the move.</li>
+      <li>Pick products + quantities for the cart, then <strong>Submit Move</strong>.</li>
+    </ol>
+    <div class="danger">
+      <strong>Critical:</strong> if you carry a box from Master to a stream room and skip this step, the system thinks it's still in Master. The streamer will count their shelf, find a box they "shouldn't have," and the audit will look like inventory appeared out of nowhere. <strong>Log every move.</strong>
+    </div>
+
+    <h4>Breaking sealed product (Box → Packs)</h4>
+    <ol class="steps">
+      <li>Open <strong>Break Box</strong>.</li>
+      <li><strong>Sealed product</strong> — pick the booster box.</li>
+      <li><strong>Pack product</strong> — pick the pack SKU it breaks into.</li>
+      <li><strong>Boxes broken</strong> — how many.</li>
+      <li><strong>Packs created</strong> — usually auto-fills from box config; verify.</li>
+      <li><strong>Location</strong> — where the break happened.</li>
+      <li>Click <strong>Break</strong>.</li>
+    </ol>
+
+    <!-- Store -->
+    <h3 id="wf-store">🏪 Store Staff Workflow</h3>
+    <ol class="steps">
+      <li>Open <strong>Storefront Sales</strong>.</li>
+      <li>Click <strong>+ New Sale</strong>.</li>
+      <li>Set Date (today), Sale type ("Itemized" — use Bulk only as a last resort), Payment method.</li>
+      <li>Add each product + qty + price to the cart.</li>
+      <li>Click <strong>Submit Sale</strong>.</li>
+    </ol>
+    <div class="warn">
+      ❌ Don't use "Bulk" if you can avoid it. Bulk sales aren't tied to products, so they can't appear in audits. Itemized whenever possible.<br>
+      ❌ Don't log a sale "later." Log as it happens, or write it down and log within the hour.
+    </div>
+
+    <!-- Manager -->
+    <h3 id="wf-manager">👔 Manager Workflow</h3>
+
+    <h4>Daily (5 min)</h4>
+    <ol class="steps">
+      <li>Open <strong>Executive Report</strong> → switch to <strong>Daily</strong> view.</li>
+      <li>Check yesterday's inventory value, outflow, inflow, top 5 products.</li>
+      <li>Scan Lark for any stream-count discrepancy alerts.</li>
+    </ol>
+
+    <h4>Weekly (30 min)</h4>
+    <ol class="steps">
+      <li>Executive Report → <strong>Weekly</strong> view. Same checks but for last 7 days.</li>
+      <li><strong>Sales Audit</strong> — upload the week's TikTok LIVE-only CSV. Walk through flagged products with red diffs.</li>
+      <li><strong>Turnover</strong> — look at slow-movers (high stock sitting &gt; 60 days = working-capital problem).</li>
+    </ol>
+
+    <h4>Monthly (1 hour)</h4>
+    <ol class="steps">
+      <li>Executive Report → <strong>Monthly</strong> view.</li>
+      <li>Check <strong>Dead Stock</strong> section.</li>
+      <li><strong>Reports</strong> — pull monthly cost-of-goods.</li>
+      <li><strong>Business Expenses</strong> — reconcile against bank statements.</li>
+      <li><strong>High Value</strong> — physical-count single-card / graded items.</li>
+    </ol>
+  </section>
+
+  <!-- ===== 4. PAGE REFERENCE ===== -->
+  <section id="sec-pages">
+    <h2><span class="num">4.</span>Page-by-Page Reference</h2>
+
+    <h3>Overview</h3>
+
+    <div class="page-ref">
+      <div class="page-name">Dashboard</div>
+      <div class="page-desc">Home screen. Headline numbers: total inventory value, recent activity, alerts.</div>
+      <div class="page-when"><strong>When to use:</strong> quick gut check at start of day.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">View Inventory</div>
+      <div class="page-desc">Browse every SKU at every location with filters (Location, Brand, Language, Sealed/Unsealed, Search).</div>
+      <div class="page-when"><strong>When to use:</strong> "How much of X do we have?" or "Where is X?"</div>
+    </div>
+
+    <h3>Receive</h3>
+
+    <div class="page-ref">
+      <div class="page-name">Purchased Items</div>
+      <div class="page-desc">Log purchase orders from vendors. <strong>Doesn't add inventory</strong> — that's Intake's job. Tracks cost, currency, tracking, expected vs received.</div>
+      <div class="page-when"><strong>When to use:</strong> as soon as you place an order or boxes arrive on the loading dock.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Intake to Master</div>
+      <div class="page-desc">Receive the physical boxes from a logged purchase into Master Inventory at the right cost basis.</div>
+      <div class="page-when"><strong>When to use:</strong> when real boxes arrive in the warehouse.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Manual Inventory</div>
+      <div class="page-desc">Add inventory directly without going through Purchased Items → Intake. Use sparingly — only for one-off items, adjustments, or things you can't fit into the normal flow.</div>
+      <div class="page-when"><strong>When to use:</strong> a consignment box arrives, or a manager asks you to correct a miscount.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Add Product</div>
+      <div class="page-desc">Create a brand-new SKU in the catalog.</div>
+      <div class="page-when"><strong>When to use:</strong> new product not in our system yet. Don't create duplicates — search first.</div>
+    </div>
+
+    <h3>Operations</h3>
+
+    <div class="page-ref">
+      <div class="page-name">Move Inventory</div>
+      <div class="page-desc">Transfer stock between locations. The most-used page in the warehouse.</div>
+      <div class="page-when"><strong>When to use:</strong> every time a physical box changes rooms.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Break Box</div>
+      <div class="page-desc">Open a sealed box and convert it into pack SKUs. Decrements sealed, increments packs.</div>
+      <div class="page-when"><strong>When to use:</strong> cracking sealed product to sell packs separately.</div>
+    </div>
+
+    <h3>Sales</h3>
+
+    <div class="page-ref">
+      <div class="page-name">Stream Counts</div>
+      <div class="page-desc">Pre-stream physical count. Records what's left from the previous stream → system computes what sold.</div>
+      <div class="page-when"><strong>When to use:</strong> every time before going live.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Platform Sales</div>
+      <div class="page-desc">Aggregated lump-sum sales by platform/channel. Used when you don't have a per-line export.</div>
+      <div class="page-when"><strong>When to use:</strong> rarely. Most platform sales should come through Online Orders or get caught by Audit/Reconcile.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Online Orders</div>
+      <div class="page-desc">Per-order ship-out tracker. Records date, platform, channel, customer, products, source location, tracking.</div>
+      <div class="page-when"><strong>When to use:</strong> every time you pack and ship a non-live order.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Storefront Sales</div>
+      <div class="page-desc">Walk-in retail sales at the physical store.</div>
+      <div class="page-when"><strong>When to use:</strong> every store transaction.</div>
+    </div>
+
+    <h3>Reports</h3>
+
+    <div class="page-ref">
+      <div class="page-name">Reports</div>
+      <div class="page-desc">Detailed report builder. Pull acquisitions, stream counts, business expenses, or summaries with date filters.</div>
+      <div class="page-when"><strong>When to use:</strong> bookkeeper / accountant needs raw data.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Turnover</div>
+      <div class="page-desc">Working-capital and inventory-velocity view. Shows what's selling, what's sitting, sell-through rates.</div>
+      <div class="page-when"><strong>When to use:</strong> weekly / monthly capital discussions.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Executive Report</div>
+      <div class="page-desc">Top-line cost-basis view for the owner. Inventory value + inflow/outflow + Top 5 movers + Hot Products + Dead Stock. Daily / Weekly / Monthly.</div>
+      <div class="page-when"><strong>When to use:</strong> every morning by the manager. Anytime by the owner.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Sales Audit</div>
+      <div class="page-desc">Reconciliation tool. Upload a TikTok orders CSV; compare against in-system stream-room outflow per product to detect missing inventory.</div>
+      <div class="page-when"><strong>When to use:</strong> weekly minimum, after every TikTok export.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Reconcile (per-stream)</div>
+      <div class="page-desc">Lightweight version of Sales Audit, triggered from a single stream count. Compares one stream's outflow against one LIVE session's TikTok orders.</div>
+      <div class="page-when"><strong>When to use:</strong> right after every Packheads stream count.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Product Mapping</div>
+      <div class="page-desc">Manage the table that maps TikTok product names to our system product IDs. Used by Audit/Reconcile.</div>
+      <div class="page-when"><strong>When to use:</strong> when Audit/Reconcile says a product is unmapped.</div>
+    </div>
+
+    <h3>Admin</h3>
+
+    <div class="page-ref">
+      <div class="page-name">High Value</div>
+      <div class="page-desc">Track individually-serialized / high-dollar items (graded slabs, single cards over a threshold) with movement and price history.</div>
+      <div class="page-when"><strong>When to use:</strong> logging a graded slab in/out, or updating market price.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Business Expenses</div>
+      <div class="page-desc">Log non-inventory costs (rent, fees, salaries, shipping supplies, etc.).</div>
+      <div class="page-when"><strong>When to use:</strong> every business expense, every time.</div>
+    </div>
+
+    <div class="page-ref">
+      <div class="page-name">Team Management</div>
+      <div class="page-desc">User accounts and permissions. Set someone's role, PIN, allowed pages, allowed stream rooms.</div>
+      <div class="page-when"><strong>When to use:</strong> new hire, role change, someone forgot their PIN. <strong style="color: var(--red);">Admin-only.</strong></div>
+    </div>
+  </section>
+
+  <!-- ===== 5. AUDIT ===== -->
+  <section id="sec-audit">
+    <h2><span class="num">5.</span>The Audit &amp; Reconcile System</h2>
+
+    <p>
+      This is the core anti-shrinkage feature. It compares <strong>what TikTok says was sold</strong> against <strong>what our system says left the shelf</strong>.
+    </p>
+
+    <h3>Two flavors</h3>
+    <table>
+      <thead>
+        <tr><th>Tool</th><th>Trigger</th><th>Frequency</th><th>Use it for</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Reconcile (per-stream)</strong></td>
+          <td>Right after a stream count</td>
+          <td>Every stream</td>
+          <td>Catching theft / mis-record same-day</td>
+        </tr>
+        <tr>
+          <td><strong>Sales Audit</strong></td>
+          <td>Manual, with a multi-day TikTok export</td>
+          <td>Weekly</td>
+          <td>Cross-stream patterns, trend tracking</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>How a healthy reconcile looks</h3>
+    <div class="success">
+      Totals — TikTok 593 · Count 590 · Diff <strong>+3</strong><br>
+      ✅ All products match within ±5
+    </div>
+    <p>If TikTok and the count agree to within 5 units across every product, everything's accounted for. Move on.</p>
+
+    <h3>How a problem reconcile looks</h3>
+    <div class="danger">
+      ⚠️ 3 products off by 5+:<br>
+      &nbsp;&nbsp;• Limit Over Collection: TikTok 3 · Count 24 · <strong>-21</strong><br>
+      &nbsp;&nbsp;• OP-14 Azure Seas Seven: TikTok 14 · Count 30 · <strong>-16</strong><br>
+      &nbsp;&nbsp;• White Flare Booster Pack: TikTok 145 · Count 60 · <strong>+85</strong>
+    </div>
+
+    <h4>Negative diff (TikTok &lt; Count) — the dangerous one</h4>
+    <p>
+      <em>System says 24 left the shelf. TikTok says only 3 were sold. Where did the other 21 go?</em>
+    </p>
+    <p>This is the <strong>direct theft signal</strong>. Items physically left the room and no sale was recorded. Possible causes, least to most worrying:</p>
+    <ol>
+      <li><strong>Unrecorded Break Box</strong> — somebody cracked a sealed box without clicking Break Box. Track down who streamed that night and ask.</li>
+      <li><strong>Unrecorded Move</strong> — somebody walked the boxes to another room without logging a Move. Check if another room has phantom inventory.</li>
+      <li><strong>Stolen</strong> — the boxes left the company.</li>
+    </ol>
+    <div class="rule">
+      <strong>Action:</strong> physical count the SKU across all rooms today. If real total matches system total, it's #1 or #2. If real total is less, it's #3.
+    </div>
+
+    <h4>Positive diff (TikTok &gt; Count) — the noisy one</h4>
+    <p><em>TikTok says 145 sold. Count says only 60 left the shelf. Where did the extra 85 come from?</em></p>
+    <p>Most often this is:</p>
+    <ul>
+      <li><strong>Lazy stream count</strong> — the streamer didn't count carefully or skipped some SKUs.</li>
+      <li><strong>Items appeared from somewhere</strong> — packs from a Break Box at another room, or an unrecorded Move IN.</li>
+    </ul>
+    <p>Less commonly:</p>
+    <ul>
+      <li><strong>Theft hidden by overstating remaining inventory</strong> — the streamer counted "actual" too high to mask what they took. Requires physical verification.</li>
+    </ul>
+    <div class="rule">
+      <strong>Action:</strong> Talk to the streamer first. If the conversation doesn't explain it, physical count.
+    </div>
+
+    <h3>Investigation checklist for any flagged product</h3>
+    <ol class="steps">
+      <li>Open <strong>View Inventory</strong> and search the product. Note system stock at each location.</li>
+      <li>Physically count the product at every reachable location today.</li>
+      <li>Compare physical total vs system total:
+        <ul>
+          <li>Equal → procedure failure (someone didn't log a move/break). Coach them.</li>
+          <li>Physical &lt; system → <strong>real loss</strong>. Time to investigate seriously.</li>
+        </ul>
+      </li>
+      <li>Open <strong>Sales Audit</strong> and pull the detail of every event for the product over the last 30 days.</li>
+      <li>Look for the operator names on Move events near the time of the loss.</li>
+    </ol>
+  </section>
+
+  <!-- ===== 6. BEST PRACTICES ===== -->
+  <section id="sec-best">
+    <h2><span class="num">6.</span>Best Practices — Read This Twice</h2>
+
+    <h3>The Six Commandments</h3>
+    <div class="rule"><strong>1.</strong> Log every physical movement. No box leaves your hands without somebody clicking something.</div>
+    <div class="rule"><strong>2.</strong> Count before the next stream, every time. Skipped counts hide problems.</div>
+    <div class="rule"><strong>3.</strong> Use Move Inventory for cross-room transfers. Not "I'll do it later." Now.</div>
+    <div class="rule"><strong>4.</strong> Use Break Box when you break a box. Both the sealed decrement and the pack increment need to be in the system.</div>
+    <div class="rule"><strong>5.</strong> Don't take inventory home. Not "to look at," not "for a stream tomorrow," not anything.</div>
+    <div class="rule"><strong>6.</strong> Reconcile after every stream. Same-day discovery &gt; weekly cleanup.</div>
+
+    <h3>When you screw up — and you will</h3>
+    <p>You will:</p>
+    <ul>
+      <li>Mis-count something</li>
+      <li>Forget to log a move</li>
+      <li>Click submit too early</li>
+    </ul>
+    <p>That's fine. <strong>Tell your manager immediately.</strong> Errors caught fast cost nothing. Errors caught a month later cost trust and money.</p>
+    <p>Most pages have an <strong>Undo</strong> button on the last action you took. Use it before it scrolls away.</p>
+
+    <h3>Pace yourself</h3>
+    <p>If a process feels too slow:</p>
+    <ul>
+      <li><strong>Stream counts:</strong> split the count between 2 people — one reads the shelf, one types.</li>
+      <li><strong>Online orders:</strong> batch-pack first, then sit down and log everything in 10 minutes instead of one-at-a-time.</li>
+      <li><strong>Reconcile:</strong> keep the TikTok Seller Center tab open in your browser; the export takes 15 seconds when you're set up.</li>
+    </ul>
+  </section>
+
+  <!-- ===== 7. ISSUES ===== -->
+  <section id="sec-issues">
+    <h2><span class="num">7.</span>Common Issues &amp; How to Fix Them</h2>
+
+    <h4>"Page says 'Access Denied'"</h4>
+    <p>Your account doesn't have permission. Ask an admin to grant it in <strong>Team Management</strong> → your user → Allowed pages.</p>
+
+    <h4>"I can't find a product when adding to cart"</h4>
+    <ul>
+      <li>Check spelling.</li>
+      <li>Try just the base name without "Booster Box" / "Pack."</li>
+      <li>The product might not exist yet. Ask a manager to add it in <strong>Add Product</strong>.</li>
+    </ul>
+
+    <h4>"I logged a sale / move / count wrong"</h4>
+    <ul>
+      <li>Find it in the relevant page (most have a recent-activity list).</li>
+      <li>Click <strong>Undo</strong> on the row. The system reverses inventory effects.</li>
+      <li>If Undo isn't available (too old), tell your manager.</li>
+    </ul>
+
+    <h4>"Stream count expected quantity looks wrong"</h4>
+    <p>Inventory was decremented somewhere you weren't expecting. Common causes:</p>
+    <ul>
+      <li>An online order shipped from your room and adjusted inventory.</li>
+      <li>A Move Inventory took stock out of your room.</li>
+      <li>A previous count was wrong and this count is fixing it.</li>
+    </ul>
+    <p>If the gap is big (&gt;10), pause and tell your manager before submitting. Otherwise just count physical truthfully — the system will record the diff.</p>
+
+    <h4>"Reconcile shows 'unmapped products'"</h4>
+    <p>TikTok has product names like <code>NIKKE Booster Box - GODDESS OF VICTORY (English)</code>. Our system has them as <code>NIKKE Goddess of Victory Booster Box (Weiss Schwarz)</code>. The mapping table connects the two.</p>
+    <ol>
+      <li>Open <strong>Sales Audit</strong>.</li>
+      <li>Find the unmapped product.</li>
+      <li>Pick the matching system product from the dropdown.</li>
+      <li>Mapping is saved forever — every future audit/reconcile uses it automatically.</li>
+    </ol>
+
+    <h4>"Lark notification didn't show up"</h4>
+    <ul>
+      <li>Check the right Lark group (per-stream-room messages go to per-room groups, not the main one).</li>
+      <li>If still nothing after 30 seconds, ask the admin to check the webhook config.</li>
+    </ul>
+
+    <h4>"Audit shows a huge diff (50+)"</h4>
+    <p>Before assuming theft:</p>
+    <ol>
+      <li>Are you using the <strong>LIVE-only</strong> TikTok export? Filter by LIVE session before exporting. If you exported all orders, online orders inflate the platform side.</li>
+      <li>Did anyone forget stream counts that week? Skipped counts make the system side artificially low.</li>
+      <li>Any recent Break Box events that weren't logged?</li>
+    </ol>
+    <p>After checking those, treat the remaining diff as real and physical-count.</p>
+  </section>
+
+  <!-- ===== 8. GLOSSARY ===== -->
+  <section id="sec-glossary">
+    <h2><span class="num">8.</span>Glossary</h2>
+    <table>
+      <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><strong>SKU</strong></td><td>Stock-Keeping Unit. One product.</td></tr>
+        <tr><td><strong>Sealed product</strong></td><td>A box that hasn't been opened. The whole box is a SKU.</td></tr>
+        <tr><td><strong>Pack product</strong></td><td>Individual packs cracked from a sealed box. Different SKU from the sealed box.</td></tr>
+        <tr><td><strong>Master Inventory</strong></td><td>The main warehouse location. Default destination when you Intake a purchase.</td></tr>
+        <tr><td><strong>Front Store</strong></td><td>The retail storefront's stock. Sourced from Master.</td></tr>
+        <tr><td><strong>Stream Room</strong></td><td>A room each streamer streams from. Has its own physical shelf.</td></tr>
+        <tr><td><strong>Stream count</strong></td><td>The pre-stream act of counting what's on the stream-room shelf.</td></tr>
+        <tr><td><strong>Expected qty</strong></td><td>What the system thinks should be on the shelf.</td></tr>
+        <tr><td><strong>Actual qty</strong></td><td>What you physically count on the shelf.</td></tr>
+        <tr><td><strong>Diff (in a count)</strong></td><td><code>expected - actual</code>. Positive = items left the shelf. Negative = found more than expected.</td></tr>
+        <tr><td><strong>Diff (in audit)</strong></td><td><code>platform - system</code>. Positive = TikTok sold more than count recorded. Negative = count showed more outflow than TikTok did.</td></tr>
+        <tr><td><strong>Outflow</strong></td><td>Anything that left inventory: sale, move out, break box.</td></tr>
+        <tr><td><strong>Inflow</strong></td><td>Anything that added inventory: purchase, move in.</td></tr>
+        <tr><td><strong>Cost basis</strong></td><td>What we paid per unit, in USD. Different from sale price.</td></tr>
+        <tr><td><strong>Lark</strong></td><td>The team's group-chat app. The system pushes notifications to specific groups.</td></tr>
+        <tr><td><strong>LIVE session (TikTok)</strong></td><td>A single TikTok live show. Each one has its own ID. Filter by LIVE session before exporting.</td></tr>
+        <tr><td><strong>Reconcile</strong></td><td>Comparing one stream's count against one LIVE session's TikTok orders.</td></tr>
+        <tr><td><strong>Audit</strong></td><td>Multi-day reconciliation across many products and many streams.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <hr>
+  <p style="color: var(--gray-500); font-size: 13.5px; text-align: center;">
+    If something doesn't match this manual, the manual is wrong. Tell the manager so we can fix it.<br>
+    Trust the screen, then tell us.<br>
+    <em>Last updated 2026-05-11</em>
+  </p>
+
+</div>
+</body>
+</html>
