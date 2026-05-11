@@ -168,6 +168,12 @@ export default function Audit() {
   const [pendingMappings, setPendingMappings] = useState({}) // external_name → product_id | 'IGNORE'
   const [searchQuery, setSearchQuery] = useState('')
   const [parseError, setParseError] = useState(null)
+  // Date filter for the mapping panel. The CSV often spans many months but
+  // the user only wants to map "current era" products — anything that hasn't
+  // sold since X is probably a discontinued SKU not in our system. Default
+  // to the report start date so user sees only what they're about to audit.
+  const [mapFilterStart, setMapFilterStart] = useState('2026-05-01')
+  const [mapFilterEnd, setMapFilterEnd] = useState('')   // empty = no upper bound
 
   // Import state
   const [importing, setImporting] = useState(false)
@@ -249,11 +255,38 @@ export default function Audit() {
   }
 
   // ---- Step 2: mapping ----
-  const uniqueNames = useMemo(() => {
+  // Per-product stats so we can filter / sort by sale activity. Each product
+  // gets { count, firstDate, lastDate } — the user uses this to decide what
+  // to map (probably "things sold recently") vs. ignore (old SKUs).
+  const productStats = useMemo(() => {
+    const m = new Map() // external_name → { count, firstDate, lastDate }
+    for (const r of parsedRecords) {
+      const cur = m.get(r.external_name) || { count: 0, firstDate: r.sale_date, lastDate: r.sale_date }
+      cur.count += 1
+      if (r.sale_date < cur.firstDate) cur.firstDate = r.sale_date
+      if (r.sale_date > cur.lastDate) cur.lastDate = r.sale_date
+      m.set(r.external_name, cur)
+    }
+    return m
+  }, [parsedRecords])
+
+  const allUniqueNames = useMemo(() => {
     const set = new Set()
     for (const r of parsedRecords) set.add(r.external_name)
     return Array.from(set).sort()
   }, [parsedRecords])
+
+  // Names that fall within the user's mapping-date filter. Only these are
+  // shown for mapping; anything outside is treated as "not your problem".
+  const uniqueNames = useMemo(() => {
+    return allUniqueNames.filter(name => {
+      const s = productStats.get(name)
+      if (!s) return false
+      if (mapFilterStart && s.lastDate < mapFilterStart) return false   // entire range is before filter
+      if (mapFilterEnd && s.firstDate > mapFilterEnd) return false      // entire range is after filter
+      return true
+    })
+  }, [allUniqueNames, productStats, mapFilterStart, mapFilterEnd])
 
   const unmappedNames = useMemo(() => uniqueNames.filter(n => !pendingMappings[n]), [uniqueNames, pendingMappings])
 
@@ -262,6 +295,17 @@ export default function Audit() {
     const q = searchQuery.toLowerCase()
     return uniqueNames.filter(n => n.toLowerCase().includes(q))
   }, [uniqueNames, searchQuery])
+
+  // How many records will actually be imported, based on what's mapped.
+  // Unmapped products → skipped entirely. Ignore'd → also skipped.
+  const importPreviewCount = useMemo(() => {
+    let n = 0
+    for (const r of parsedRecords) {
+      const v = pendingMappings[r.external_name]
+      if (v && v !== 'IGNORE') n++
+    }
+    return n
+  }, [parsedRecords, pendingMappings])
 
   // Auto-suggest: for each unmapped name, pick the product with the highest
   // word-overlap score (must be >= 0.3 to avoid garbage suggestions).
@@ -279,16 +323,22 @@ export default function Audit() {
   }
 
   // ---- Step 3: save mappings + import records ----
+  // Rules:
+  //   - Only "visible" (in-filter) unmapped names block import — anything
+  //     outside the date filter is silently skipped at import time.
+  //   - We only upsert mappings for names that the user actually decided on
+  //     (in pendingMappings). Untouched names stay unmapped in the DB so
+  //     they can be mapped later when the user widens the date filter.
   const handleImport = async () => {
     if (unmappedNames.length > 0) {
-      setParseError(`${unmappedNames.length} products still need mapping.`)
+      setParseError(`${unmappedNames.length} products in the current date filter still need mapping.`)
       return
     }
     setImporting(true)
     setParseError(null)
     try {
-      // Save mappings — upsert all
-      const mappingRows = uniqueNames.map(name => {
+      // Save mappings — only those the user touched in this session
+      const mappingRows = Object.keys(pendingMappings).map(name => {
         const val = pendingMappings[name]
         return {
           platform: PLATFORM,
@@ -302,12 +352,15 @@ export default function Audit() {
         .upsert(mappingRows, { onConflict: 'platform,external_name' })
       if (mapErr) throw mapErr
 
-      // Resolve product_id per record, dropping ignored ones.
+      // Resolve product_id per record. Skip:
+      //   - Ignored mappings (val === 'IGNORE')
+      //   - Unmapped names (val undefined) — these are outside the filter so
+      //     they aren't this audit's concern. User can re-import later.
       const uploadId = (crypto.randomUUID && crypto.randomUUID()) || `upload-${Date.now()}`
       const toImport = []
       for (const r of parsedRecords) {
         const val = pendingMappings[r.external_name]
-        if (val === 'IGNORE') continue
+        if (!val || val === 'IGNORE') continue
         toImport.push({
           platform: PLATFORM,
           sale_date: r.sale_date,
@@ -604,31 +657,67 @@ export default function Audit() {
           </div>
 
           {/* Parse stats */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4 text-sm">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4 text-sm">
             <div className="bg-vault-darker rounded-lg p-3">
-              <div className="text-gray-400 text-xs">Parsed rows</div>
+              <div className="text-gray-400 text-xs">CSV rows</div>
               <div className="text-white font-bold text-lg">{parsedRecords.length.toLocaleString()}</div>
             </div>
             <div className="bg-vault-darker rounded-lg p-3">
-              <div className="text-gray-400 text-xs">Unique products</div>
-              <div className="text-white font-bold text-lg">{uniqueNames.length}</div>
+              <div className="text-gray-400 text-xs">All products</div>
+              <div className="text-white font-bold text-lg">{allUniqueNames.length}</div>
             </div>
             <div className="bg-vault-darker rounded-lg p-3">
-              <div className="text-gray-400 text-xs">Unmapped</div>
+              <div className="text-gray-400 text-xs">In date filter</div>
+              <div className="text-vault-gold font-bold text-lg">{uniqueNames.length}</div>
+            </div>
+            <div className="bg-vault-darker rounded-lg p-3">
+              <div className="text-gray-400 text-xs">Unmapped (filtered)</div>
               <div className={`font-bold text-lg ${unmappedNames.length > 0 ? 'text-yellow-400' : 'text-green-400'}`}>
                 {unmappedNames.length}
               </div>
             </div>
             <div className="bg-vault-darker rounded-lg p-3">
-              <div className="text-gray-400 text-xs">Skipped</div>
-              <div className="text-gray-300 font-bold text-lg">
-                {parseSkipped ? Object.values(parseSkipped).reduce((s, n) => s + n, 0) : 0}
-              </div>
-              {parseSkipped && (
-                <div className="text-xs text-gray-500 mt-0.5">
-                  {parseSkipped.auction}A · {parseSkipped.zeroQty}Q · {parseSkipped.badDate + parseSkipped.missingProduct}X
-                </div>
-              )}
+              <div className="text-gray-400 text-xs">Will import</div>
+              <div className="text-green-400 font-bold text-lg">{importPreviewCount.toLocaleString()}</div>
+              <div className="text-xs text-gray-500 mt-0.5">rows with mapping</div>
+            </div>
+          </div>
+
+          {/* Date filter — restricts which products show up for mapping. The
+              user only cares about products active in the period they're
+              about to audit; older SKUs that left the catalog months ago
+              are noise. */}
+          <div className="bg-vault-darker/50 border border-vault-border rounded-lg p-3 mb-3 flex flex-wrap items-end gap-3">
+            <div className="flex items-center gap-1.5 text-xs text-gray-400">
+              <Calendar size={14} className="text-vault-gold" />
+              Show only products sold:
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-500">from</label>
+              <input
+                type="date"
+                value={mapFilterStart}
+                onChange={(e) => setMapFilterStart(e.target.value)}
+                className="px-2 py-1 bg-vault-surface border border-vault-border rounded text-white text-xs focus:outline-none focus:border-vault-gold"
+              />
+              <label className="text-xs text-gray-500">to</label>
+              <input
+                type="date"
+                value={mapFilterEnd}
+                onChange={(e) => setMapFilterEnd(e.target.value)}
+                placeholder="(today)"
+                className="px-2 py-1 bg-vault-surface border border-vault-border rounded text-white text-xs focus:outline-none focus:border-vault-gold"
+              />
+              <button
+                onClick={() => { setMapFilterStart(''); setMapFilterEnd('') }}
+                className="text-xs text-gray-500 hover:text-gray-300 underline"
+                title="Show all products from the CSV"
+              >
+                clear
+              </button>
+            </div>
+            <div className="text-xs text-gray-600 ml-auto">
+              Tip: products outside this range stay unmapped — their rows are skipped on import.
             </div>
           </div>
 
@@ -650,6 +739,7 @@ export default function Audit() {
               const val = pendingMappings[name]
               const isIgnore = val === 'IGNORE'
               const isMapped = !!val
+              const stats = productStats.get(name)
               return (
                 <MappingRow
                   key={name}
@@ -658,13 +748,16 @@ export default function Audit() {
                   value={val}
                   isIgnore={isIgnore}
                   isMapped={isMapped}
+                  stats={stats}
                   onChange={(v) => setPendingMappings(prev => ({ ...prev, [name]: v }))}
                   onClear={() => setPendingMappings(prev => { const n = { ...prev }; delete n[name]; return n })}
                 />
               )
             })}
             {filteredNames.length === 0 && (
-              <p className="text-gray-500 text-sm py-4 text-center">No products match "{searchQuery}"</p>
+              <p className="text-gray-500 text-sm py-4 text-center">
+                {searchQuery ? `No products match "${searchQuery}"` : 'No products in the selected date range.'}
+              </p>
             )}
           </div>
 
@@ -672,12 +765,12 @@ export default function Audit() {
           <div className="flex items-center justify-between gap-3 pt-3 border-t border-vault-border">
             <p className="text-xs text-gray-500">
               {unmappedNames.length > 0
-                ? `${unmappedNames.length} unmapped — map them or mark as Ignore`
-                : `Ready to import — ${parsedRecords.filter(r => pendingMappings[r.external_name] !== 'IGNORE').length} rows will be saved`}
+                ? `${unmappedNames.length} in current filter still need mapping`
+                : `Ready — ${importPreviewCount.toLocaleString()} mapped rows will be imported`}
             </p>
             <button
               onClick={handleImport}
-              disabled={importing || unmappedNames.length > 0}
+              disabled={importing || unmappedNames.length > 0 || importPreviewCount === 0}
               className="px-5 py-2.5 bg-vault-gold text-vault-dark font-semibold rounded-lg hover:bg-vault-gold/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
             >
               {importing ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
@@ -761,7 +854,7 @@ export default function Audit() {
 
 // ---- Subcomponents -----------------------------------------------------
 
-function MappingRow({ name, products, value, isIgnore, isMapped, onChange, onClear }) {
+function MappingRow({ name, products, value, isIgnore, isMapped, stats, onChange, onClear }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const matched = useMemo(() => {
@@ -783,6 +876,12 @@ function MappingRow({ name, products, value, isIgnore, isMapped, onChange, onCle
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex-1 min-w-0">
           <div className="text-white text-sm font-medium truncate">{name}</div>
+          {stats && (
+            <div className="text-[11px] text-gray-500 mt-0.5">
+              {stats.count.toLocaleString()} sale{stats.count === 1 ? '' : 's'} · {stats.firstDate}
+              {stats.firstDate !== stats.lastDate && ` → ${stats.lastDate}`}
+            </div>
+          )}
           {isMapped && (
             <div className="text-xs mt-0.5">
               {isIgnore ? (
