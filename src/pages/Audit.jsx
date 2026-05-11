@@ -18,26 +18,41 @@ import {
 // ============================================================================
 // Sales Reconciliation / Audit page
 // ============================================================================
-// Compares platform-reported sales (e.g. Packheads CSV) against inventory
-// outflow recorded by the system, to detect shrinkage / theft / mis-entry.
+// Compares platform-reported sales (TikTok Shop Seller Center order export)
+// against inventory outflow recorded by the system, to detect shrinkage /
+// theft / mis-entry.
+//
+// Data source: the "Manage orders" page in TikTok Shop Seller Center has a
+// CSV export. Each row = one SKU within an order, with status, quantity,
+// revenue, dates. We previously parsed an agency-maintained spreadsheet
+// (Packheads) but switched to TikTok's raw export — same shop, but the
+// original source is more accurate and doesn't depend on a human keeping
+// the agency sheet up to date.
 //
 // User flow:
-//   1. Upload CSV → parse (with year inference) → load existing mappings.
-//   2. If any products in CSV are unmapped → show mapping panel, user
-//      maps each to a system product (or marks as "Ignore").
-//   3. Import the parsed rows to platform_sales_records.
-//   4. Run audit report — comparison between platform and system, by product
-//      and by streamer. Rows with |diff| >= threshold are flagged.
+//   1. Upload TikTok orders CSV → parse → load existing mappings.
+//   2. If any products in CSV are unmapped → mapping panel.
+//   3. Import to platform_sales_records.
+//   4. Run audit report — compares platform vs stream-room outflow per
+//      product. Rows with |diff| >= threshold are flagged.
 //
-// Platform support: currently 'packheads' (TikTok stream room). Schema is
-// platform-agnostic so we can plug eBay, Whatnot, etc. later.
+// The platform identifier remains 'packheads' since that's the shop name
+// (PackHeadsTCG on TikTok). Future shops (eBay, Whatnot) can use different
+// platform identifiers in the same table.
 
 // ----- Constants --------------------------------------------------------
 const PLATFORM = 'packheads'
-// Default stream room the audit compares against. The user can override
-// this with the dropdown — useful when auditing a different stream room
-// (RocketsHQ, Whatnot, etc.) without code changes.
 const DEFAULT_LOCATION = 'Stream Room - TikTok Packheads'
+
+// TikTok CSV column indexes (0-based). These are stable as of 2026-05.
+// If TikTok changes their export format we'll need to remap.
+const COL_ORDER_ID    = 0
+const COL_STATUS      = 1
+const COL_PRODUCT     = 7
+const COL_QTY         = 10
+const COL_QTY_RETURN  = 11
+const COL_SUBTOTAL    = 16   // SKU Subtotal After Discount
+const COL_CREATED     = 27   // Created Time, e.g. "05/07/2026 9:07:33 PM"
 
 // ----- CSV parsing helpers ----------------------------------------------
 
@@ -75,56 +90,58 @@ function parseMoney(s) {
   return isFinite(n) ? n : 0
 }
 
-// Year inference. The CSV uses "m/d" with no year. User tells us the
-// starting year+month of the data; rows with month >= startMonth get
-// startYear, rows with month < startMonth get startYear + 1. This handles
-// the year boundary cleanly for CSVs spanning up to 12 months.
-function inferYear(month, startYear, startMonth) {
-  return month >= startMonth ? startYear : startYear + 1
-}
-
-function toISODate(year, month, day) {
+// Parse a TikTok "Created Time" cell into a YYYY-MM-DD date string.
+// Example input: "05/07/2026 9:07:33 PM" (may have trailing tabs/spaces).
+// Returns null if unparseable.
+function tiktokDateToISO(s) {
+  if (!s) return null
+  const m = String(s).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+  if (!m) return null
   const pad = (n) => String(n).padStart(2, '0')
-  return `${year}-${pad(month)}-${pad(day)}`
+  return `${m[3]}-${pad(parseInt(m[1], 10))}-${pad(parseInt(m[2], 10))}`
 }
 
-// Convert the Packheads CSV (already parsed to rows-of-cells) into a list
-// of structured records ready for import. Skips:
-//   - Auction lines (per user q3)
-//   - Rows with quantity_ordered = 0 (refund-only / non-sale rows)
-//   - Rows missing date or product title
-function csvRowsToRecords(rows, startYear, startMonth) {
-  // Column indexes — matches the Packheads sheet:
-  //   0:Date 1:Product title 2:Qty ordered 3:Qty returned 4:Net sales
-  //   5:Net Income 6:Cost of Good Sold 7:Gross profit 8:Gross margin
-  //   9:Total returns 10:Orders 11:Time 12:Streamer 13:Stream Hr
+// Convert TikTok orders CSV rows into structured records ready for import.
+// Each row in the export is already one SKU within one order, so we map
+// 1:1 — no aggregation needed at this stage.
+//
+// Skips:
+//   - Canceled orders (don't represent inventory leaving)
+//   - Rows with no product name (broken/header rows)
+//   - Rows with quantity <= 0
+//   - Rows whose Created Time can't be parsed
+//
+// TikTok doesn't expose:
+//   - which streamer made the sale (streamer = null)
+//   - cost of goods (cost = 0; the audit computes from inventory.avg_cost_basis)
+function csvRowsToRecords(rows) {
   const out = []
-  const skipped = { auction: 0, zeroQty: 0, badDate: 0, missingProduct: 0 }
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i]
-    const dateStr = (r[0] || '').trim()
-    const product = (r[1] || '').trim()
-    if (!dateStr || !/^\d{1,2}\/\d{1,2}$/.test(dateStr)) { skipped.badDate++; continue }
-    if (!product) { skipped.missingProduct++; continue }
-    if (/^auction/i.test(product)) { skipped.auction++; continue }
+  const skipped = { canceled: 0, missingProduct: 0, zeroQty: 0, badDate: 0 }
+  for (const r of rows) {
+    // The very first cell may carry a UTF-8 BOM (﻿) — strip it.
+    const orderId = (r[COL_ORDER_ID] || '').replace(/﻿/g, '').trim()
+    const status = (r[COL_STATUS] || '').trim()
+    const product = (r[COL_PRODUCT] || '').trim()
+    const qty = parseInt((r[COL_QTY] || '0').trim(), 10) || 0
+    const qtyReturned = parseInt((r[COL_QTY_RETURN] || '0').trim(), 10) || 0
+    const subtotal = parseMoney(r[COL_SUBTOTAL])
+    const isoDate = tiktokDateToISO(r[COL_CREATED])
 
-    const [m, d] = dateStr.split('/').map(Number)
-    const year = inferYear(m, startYear, startMonth)
-    const qty = parseInt(r[2] || '0', 10) || 0
+    if (!product) { skipped.missingProduct++; continue }
+    if (status === 'Canceled') { skipped.canceled++; continue }
     if (qty <= 0) { skipped.zeroQty++; continue }
-    const qtyReturned = parseInt(r[3] || '0', 10) || 0
-    const netSales = parseMoney(r[4])
-    const cogs = parseMoney(r[6])
-    const streamer = (r[12] || '').trim() || null
+    if (!isoDate) { skipped.badDate++; continue }
 
     out.push({
-      sale_date: toISODate(year, m, d),
+      sale_date: isoDate,
       external_name: product,
       quantity: qty,
       quantity_returned: qtyReturned,
-      net_sales: netSales,
-      cost: cogs,
-      streamer,
+      net_sales: subtotal,
+      cost: 0,           // TikTok doesn't expose COGS — computed in report from inventory.avg_cost_basis
+      streamer: null,    // TikTok doesn't attribute orders to streamers
+      _order_id: orderId,
+      _status: status,
     })
   }
   return { records: out, skipped }
@@ -161,9 +178,6 @@ export default function Audit() {
   const [pageError, setPageError] = useState(null)
 
   // Upload form
-  const today = new Date()
-  const [startYear, setStartYear] = useState(today.getFullYear() - 1)
-  const [startMonth, setStartMonth] = useState(7)
   const [file, setFile] = useState(null)
 
   // Parsed CSV state
@@ -239,15 +253,15 @@ export default function Audit() {
       setParseError(null)
       const text = await file.text()
       const rows = parseCSV(text)
-      // Skip the first two header-ish lines: the Packheads sheet has a
-      // "Total Gross Profit" row on top and the real header underneath.
-      // Detect by finding the row that starts with "Date".
-      let dataStart = 0
-      for (let i = 0; i < Math.min(rows.length, 5); i++) {
-        if ((rows[i][0] || '').trim().toLowerCase() === 'date') { dataStart = i + 1; break }
+      // TikTok orders export has exactly one header row; data starts at row 1.
+      // Validate by checking the header includes "Order ID" (BOM-tolerant).
+      const headerCell0 = (rows[0]?.[0] || '').replace(/﻿/g, '').trim().toLowerCase()
+      if (!headerCell0.startsWith('order id')) {
+        setParseError(`This doesn't look like a TikTok orders export. Header row 1, column 1 = "${headerCell0}". Expected "Order ID".`)
+        return
       }
-      const dataRows = rows.slice(dataStart)
-      const { records, skipped } = csvRowsToRecords(dataRows, startYear, startMonth)
+      const dataRows = rows.slice(1)
+      const { records, skipped } = csvRowsToRecords(dataRows)
       if (!records.length) { setParseError('No usable rows found in CSV.'); return }
       setParsedRecords(records)
       setParseSkipped(skipped)
@@ -428,22 +442,25 @@ export default function Audit() {
       if (pErr) throw pErr
 
       const platformByProduct = new Map() // pid → { qty, cost, streamers: Map }
-      const platformByStreamer = new Map() // streamer → { qty, cost }
+      const platformByStreamer = new Map() // streamer → { qty, cost } — only filled when streamer is named
       for (const r of platformRows || []) {
         const cur = platformByProduct.get(r.product_id) || { qty: 0, cost: 0, streamers: new Map() }
         cur.qty += r.quantity || 0
         cur.cost += parseFloat(r.cost) || 0
-        const sName = r.streamer || '(unknown)'
-        const s = cur.streamers.get(sName) || { qty: 0, cost: 0 }
-        s.qty += r.quantity || 0
-        s.cost += parseFloat(r.cost) || 0
-        cur.streamers.set(sName, s)
+        // TikTok export doesn't carry streamer info — skip the per-streamer
+        // bucket entirely in that case rather than dump everything into an
+        // "(unknown)" pile that adds noise to the report.
+        if (r.streamer) {
+          const s = cur.streamers.get(r.streamer) || { qty: 0, cost: 0 }
+          s.qty += r.quantity || 0
+          s.cost += parseFloat(r.cost) || 0
+          cur.streamers.set(r.streamer, s)
+          const ts = platformByStreamer.get(r.streamer) || { qty: 0, cost: 0 }
+          ts.qty += r.quantity || 0
+          ts.cost += parseFloat(r.cost) || 0
+          platformByStreamer.set(r.streamer, ts)
+        }
         platformByProduct.set(r.product_id, cur)
-
-        const ts = platformByStreamer.get(sName) || { qty: 0, cost: 0 }
-        ts.qty += r.quantity || 0
-        ts.cost += parseFloat(r.cost) || 0
-        platformByStreamer.set(sName, ts)
       }
 
       // ---- System side (stream_count_items where location = chosen audit room) ----
@@ -587,48 +604,31 @@ export default function Audit() {
         <div className="bg-vault-surface border border-vault-border rounded-lg p-6">
           <div className="flex items-center gap-2 mb-4">
             <span className="w-7 h-7 rounded-full bg-vault-gold/20 text-vault-gold font-bold flex items-center justify-center text-sm">1</span>
-            <h2 className="font-semibold text-white">Upload Packheads CSV</h2>
+            <h2 className="font-semibold text-white">Upload TikTok orders CSV</h2>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-            <div>
-              <label className="block text-sm text-gray-400 mb-1">CSV file</label>
-              <label className="flex items-center gap-2 px-4 py-2.5 bg-vault-darker border border-vault-border rounded-lg cursor-pointer hover:border-vault-gold transition-colors">
-                <Upload size={16} className="text-vault-gold" />
-                <span className="text-sm text-gray-300 truncate">{file?.name || 'Choose a CSV file...'}</span>
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  className="hidden"
-                  onChange={(e) => { setFile(e.target.files?.[0] || null); setParseError(null) }}
-                />
-              </label>
-            </div>
-            <div>
-              <label className="block text-sm text-gray-400 mb-1">
-                CSV's earliest month <span className="text-gray-600">(year/month)</span>
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="number" min="2020" max="2100"
-                  value={startYear}
-                  onChange={(e) => setStartYear(parseInt(e.target.value || '0', 10))}
-                  className="w-24 px-3 py-2 bg-vault-darker border border-vault-border rounded-lg text-white text-sm focus:outline-none focus:border-vault-gold"
-                />
-                <select
-                  value={startMonth}
-                  onChange={(e) => setStartMonth(parseInt(e.target.value, 10))}
-                  className="flex-1 px-3 py-2 bg-vault-darker border border-vault-border rounded-lg text-white text-sm focus:outline-none focus:border-vault-gold"
-                >
-                  {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
-                    <option key={m} value={m}>{m}月</option>
-                  ))}
-                </select>
-              </div>
-              <p className="text-xs text-gray-600 mt-1">
-                e.g. CSV starts at 7/1/2025 → set to 2025 / 7月
-              </p>
-            </div>
+          <div className="bg-vault-darker/50 border border-vault-border rounded-lg p-3 mb-4 text-xs text-gray-400">
+            <div className="font-medium text-gray-300 mb-1">How to export from TikTok:</div>
+            <ol className="list-decimal list-inside space-y-0.5">
+              <li>Go to <a href="https://seller-us.tiktok.com/order" target="_blank" rel="noopener noreferrer" className="text-vault-gold hover:underline">TikTok Shop Seller Center → Manage Orders</a></li>
+              <li>Click <strong>Filter</strong> → set the date range you want to audit</li>
+              <li>Click the <strong>download ⬇️</strong> icon (top right of the orders table)</li>
+              <li>Upload the downloaded CSV here</li>
+            </ol>
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-sm text-gray-400 mb-1">CSV file</label>
+            <label className="flex items-center gap-2 px-4 py-2.5 bg-vault-darker border border-vault-border rounded-lg cursor-pointer hover:border-vault-gold transition-colors">
+              <Upload size={16} className="text-vault-gold" />
+              <span className="text-sm text-gray-300 truncate">{file?.name || 'Choose a CSV file...'}</span>
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={(e) => { setFile(e.target.files?.[0] || null); setParseError(null) }}
+              />
+            </label>
           </div>
 
           <button
@@ -697,6 +697,19 @@ export default function Audit() {
               <div className="text-xs text-gray-500 mt-0.5">rows with mapping</div>
             </div>
           </div>
+
+          {/* Skipped-rows context. Helps the user verify "yes we did skip
+              the 4 Canceled orders" without digging through the CSV. */}
+          {parseSkipped && (
+            <div className="text-xs text-gray-500 mb-3">
+              Skipped during parse:
+              {parseSkipped.canceled > 0 && <span className="ml-2">{parseSkipped.canceled} canceled</span>}
+              {parseSkipped.zeroQty > 0 && <span className="ml-2">· {parseSkipped.zeroQty} zero qty</span>}
+              {parseSkipped.badDate > 0 && <span className="ml-2">· {parseSkipped.badDate} bad date</span>}
+              {parseSkipped.missingProduct > 0 && <span className="ml-2">· {parseSkipped.missingProduct} missing product</span>}
+              {Object.values(parseSkipped).every(n => n === 0) && <span className="ml-2 text-green-500">none ✓</span>}
+            </div>
+          )}
 
           {/* Date filter — restricts which products show up for mapping. The
               user only cares about products active in the period they're
@@ -989,6 +1002,10 @@ function MappingRow({ name, products, value, isIgnore, isMapped, stats, onChange
 
 function ReportView({ report, fmt }) {
   const { rows, totals, byStreamer, range } = report
+  // Hide streamer column / section entirely when no row has streamer data —
+  // TikTok exports don't include streamer attribution, so most reports
+  // won't have it. Showing an empty column is just noise.
+  const showStreamers = rows.some(r => r.streamers.length > 0)
   return (
     <div className="space-y-4">
       {/* Summary */}
@@ -1037,7 +1054,7 @@ function ReportView({ report, fmt }) {
                   <th className="pb-2 font-medium text-right">Platform qty</th>
                   <th className="pb-2 font-medium text-right">System qty</th>
                   <th className="pb-2 font-medium text-right">Diff</th>
-                  <th className="pb-2 font-medium">Streamers (platform side)</th>
+                  {showStreamers && <th className="pb-2 font-medium">Streamers (platform side)</th>}
                 </tr>
               </thead>
               <tbody>
@@ -1057,10 +1074,12 @@ function ReportView({ report, fmt }) {
                     }`}>
                       {r.diff > 0 ? '+' : ''}{r.diff.toLocaleString()}
                     </td>
-                    <td className="py-2.5 text-xs text-gray-400">
-                      {r.streamers.length === 0 ? '—' :
-                        r.streamers.map(([name, v]) => `${name}: ${v.qty}`).join(' · ')}
-                    </td>
+                    {showStreamers && (
+                      <td className="py-2.5 text-xs text-gray-400">
+                        {r.streamers.length === 0 ? '—' :
+                          r.streamers.map(([name, v]) => `${name}: ${v.qty}`).join(' · ')}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
