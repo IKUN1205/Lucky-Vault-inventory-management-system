@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import {
   fetchLocations,
   fetchUsers,
@@ -25,7 +26,8 @@ import {
   User,
   ChevronDown,
   ChevronUp,
-  History
+  History,
+  ShieldCheck
 } from 'lucide-react'
 
 // Helper to extract Launch Name from full product name
@@ -305,7 +307,11 @@ export default function StreamCounts() {
         })
       
       setReport({
+        stream_count_id: streamCount.id,   // surface the saved ID so the
+                                           // success screen can deep-link
+                                           // into per-stream reconciliation
         location: locations.find(l => l.id === form.location_id)?.name,
+        location_name: locations.find(l => l.id === form.location_id)?.name,
         streamer: users.find(u => u.id === form.streamer_id)?.name,
         counted_by: users.find(u => u.id === form.counted_by_id)?.name,
         count_time: localDate,
@@ -938,7 +944,19 @@ export default function StreamCounts() {
             )}
             
             {/* Actions */}
-            <div className="mt-6 pt-6 border-t border-vault-border">
+            <div className="mt-6 pt-6 border-t border-vault-border space-y-2">
+              {/* Per-stream reconciliation — surface this for the rooms where
+                  we have a TikTok export to compare against. Currently only
+                  the TikTok rooms map cleanly, so gate by the location name. */}
+              {report.stream_count_id && /TikTok/i.test(report.location_name || '') && (
+                <Link
+                  to={`/reconcile?count_id=${report.stream_count_id}`}
+                  className="btn btn-secondary w-full"
+                >
+                  <ShieldCheck size={20} />
+                  Reconcile against TikTok LIVE session
+                </Link>
+              )}
               <button onClick={handleNewCount} className="btn btn-primary w-full">
                 <ClipboardList size={20} />
                 Start New Count

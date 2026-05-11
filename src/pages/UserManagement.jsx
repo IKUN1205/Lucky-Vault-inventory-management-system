@@ -27,6 +27,7 @@ const ALL_PAGES = [
   { path: '/turnover', label: 'Turnover' },
   { path: '/executive-report', label: 'Executive Report' },
   { path: '/audit', label: 'Sales Audit' },
+  { path: '/reconcile', label: 'Reconcile (per-stream)' },
   { path: '/product-mapping', label: 'Product Mapping' },
   { path: '/users', label: 'Team Management' },
   { path: '/high-value', label: 'High Value (Separate)' },

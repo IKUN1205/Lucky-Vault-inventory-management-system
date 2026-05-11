@@ -26,6 +26,7 @@ import UserManagement from './pages/UserManagement'
 import Turnover from './pages/Turnover'
 import ExecutiveReport from './pages/ExecutiveReport'
 import Audit from './pages/Audit'
+import Reconcile from './pages/Reconcile'
 
 // Components
 import Layout from './components/Layout'
@@ -121,6 +122,9 @@ function AppRoutes() {
       } />
       <Route path="/audit" element={
         <ProtectedRoute path="/audit"><Layout><Audit /></Layout></ProtectedRoute>
+      } />
+      <Route path="/reconcile" element={
+        <ProtectedRoute path="/reconcile"><Layout><Reconcile /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

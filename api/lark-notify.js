@@ -59,6 +59,33 @@ export default async function handler(req, res) {
     return handleStreamCount(body, res)
   }
 
+  // Per-stream reconciliation should land in the room's own group, not the
+  // main "all activity" channel. Fall back to main URL if no room webhook
+  // is configured for the room (so messages aren't silently dropped).
+  if (type === 'reconciliation') {
+    const roomWebhook = getRoomWebhook(body.roomName)
+    const webhookUrl = roomWebhook || process.env.LARK_WEBHOOK_URL
+    if (!webhookUrl) {
+      console.error('[lark-notify] reconciliation: no webhook configured', body.roomName)
+      return res.status(500).json({ error: 'No webhook configured for this room' })
+    }
+    let messageText
+    try { messageText = buildMessage(body) }
+    catch (err) { return res.status(400).json({ error: err.message }) }
+    try {
+      const r = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text: messageText } })
+      })
+      const txt = await r.text()
+      if (!r.ok) return res.status(502).json({ error: 'Lark webhook failed', status: r.status, details: txt })
+      return res.status(200).json({ ok: true, lark: txt, target: roomWebhook ? 'room' : 'main' })
+    } catch (err) {
+      return res.status(500).json({ error: 'Failed to call Lark webhook', message: String(err?.message || err) })
+    }
+  }
+
   const webhookUrl = process.env.LARK_WEBHOOK_URL
   if (!webhookUrl) {
     console.error('[lark-notify] LARK_WEBHOOK_URL is not set in Vercel env')
@@ -326,6 +353,53 @@ function buildMessage(body) {
       const url = buildTrackingUrl(carrier, trackingNumber)
       if (url) lines.push(`Track: ${url}`)
     }
+    lines.push(`Time: ${nowUtcStamp()}`)
+    return lines.join('\n')
+  }
+
+  if (type === 'reconciliation') {
+    // Per-stream reconciliation: compare stream-count outflow against TikTok
+    // platform sales for the same LIVE session. Sent to the per-room group
+    // (e.g. PACKHEADS group) so the streamer and manager see it immediately.
+    const {
+      roomName,
+      streamerName,
+      sessionLabel,
+      windowFrom,
+      windowTo,
+      totalPlatform,
+      totalSystem,
+      totalDiff,
+      flaggedRows = [],        // [{ product, platform, system, diff }]
+      unmappedCount = 0,
+      threshold = 5,
+    } = body
+    const lines = []
+    lines.push(`🔍 Stream Reconciliation — ${(roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')}`)
+    if (streamerName) lines.push(`Streamer: ${streamerName}`)
+    if (sessionLabel) lines.push(`Session: ${sessionLabel}`)
+    if (windowFrom || windowTo) lines.push(`Window: ${windowFrom || '?'} → ${windowTo || '?'}`)
+    lines.push('')
+    lines.push(`Totals — TikTok ${totalPlatform ?? 0} · Count ${totalSystem ?? 0} · Diff ${(totalDiff ?? 0) > 0 ? '+' : ''}${totalDiff ?? 0}`)
+    lines.push('')
+    if (flaggedRows.length === 0) {
+      lines.push(`✅ All products match within ±${threshold}`)
+    } else {
+      lines.push(`⚠️ ${flaggedRows.length} product${flaggedRows.length === 1 ? '' : 's'} off by ${threshold}+:`)
+      // Cap at 15 lines so Lark messages stay readable
+      for (const r of flaggedRows.slice(0, 15)) {
+        const sign = r.diff > 0 ? '+' : ''
+        lines.push(`  • ${r.product || 'Unknown'}: TikTok ${r.platform || 0} · Count ${r.system || 0} · ${sign}${r.diff || 0}`)
+      }
+      if (flaggedRows.length > 15) {
+        lines.push(`  …and ${flaggedRows.length - 15} more`)
+      }
+    }
+    if (unmappedCount > 0) {
+      lines.push('')
+      lines.push(`ℹ️ ${unmappedCount} TikTok product${unmappedCount === 1 ? '' : 's'} unmapped — open Sales Audit to map them.`)
+    }
+    lines.push('')
     lines.push(`Time: ${nowUtcStamp()}`)
     return lines.join('\n')
   }
