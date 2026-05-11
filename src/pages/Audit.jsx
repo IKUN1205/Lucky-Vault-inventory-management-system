@@ -531,11 +531,20 @@ export default function Audit() {
             .from('stream_count_items')
             .select('product_id, expected_qty, actual_qty')
             .in('stream_count_id', ids)
+          // Accumulate the SIGNED diff (expected - actual) — positive = items
+          // left the shelf, negative = items appeared (typically a correction
+          // of a prior miscount, or an unrecorded inflow). The previous
+          // version floored at 0, hiding corrections and producing phantom
+          // outflow on noisy products. We also track event counts so the UI
+          // can show "5 counts, 2 of them were corrections" — that's a hint
+          // for the user that the number is noisy.
           for (const item of items || []) {
-            const sold = (item.expected_qty || 0) - (item.actual_qty || 0)
-            if (sold <= 0) continue
-            const cur = systemByProduct.get(item.product_id) || { qty: 0 }
-            cur.qty += sold
+            const delta = (item.expected_qty || 0) - (item.actual_qty || 0)
+            const cur = systemByProduct.get(item.product_id)
+              || { qty: 0, countEvents: 0, correctionEvents: 0 }
+            cur.qty += delta
+            cur.countEvents += 1
+            if (delta < 0) cur.correctionEvents += 1
             systemByProduct.set(item.product_id, cur)
           }
         }
@@ -547,7 +556,7 @@ export default function Audit() {
       const rows = []
       for (const pid of allPids) {
         const p = platformByProduct.get(pid) || { qty: 0, cost: 0, streamers: new Map() }
-        const s = systemByProduct.get(pid) || { qty: 0 }
+        const s = systemByProduct.get(pid) || { qty: 0, countEvents: 0, correctionEvents: 0 }
         const diff = p.qty - s.qty
         rows.push({
           product_id: pid,
@@ -555,6 +564,12 @@ export default function Audit() {
           platform_qty: p.qty,
           platform_cost: p.cost,
           system_qty: s.qty,
+          // count_events / correction_events expose how "noisy" the stream
+          // counts were. A product with 5 count events and 2 corrections
+          // (negative diffs that cancel positives) is much less trustworthy
+          // than one with 1 clean count event.
+          count_events: s.countEvents,
+          correction_events: s.correctionEvents,
           diff,
           flagged: Math.abs(diff) >= threshold,
           streamers: Array.from(p.streamers.entries()).sort((a, b) => b[1].qty - a[1].qty),
@@ -1102,17 +1117,25 @@ function ReportView({ report, fmt }) {
           Product-level reconciliation
           <span className="text-xs text-gray-500 ml-1">({rows.length} products · {range.start} → {range.end})</span>
         </h3>
-        {/* Sort-order legend. Sorted by suspicion: negative diffs (direct
-            theft signal) first, then positive diffs (mixed signal). */}
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 mb-3">
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block w-3 h-3 rounded bg-red-500/30"></span>
-            <strong className="text-red-300">Negative diff</strong> = system &gt; platform · likely missing inventory
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block w-3 h-3 rounded bg-yellow-500/30"></span>
-            <strong className="text-yellow-300">Positive diff</strong> = platform &gt; system · likely missing stream counts
-          </span>
+        {/* Semantics legend. system_qty is now the NET signed change from
+            stream counts during the period (positive = items left the shelf,
+            negative = items appeared — usually a correction of a prior
+            miscount). The "corrections" badge on a row warns the user that
+            the system_qty number for that row is noisy. */}
+        <div className="space-y-1 text-xs text-gray-500 mb-3">
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded bg-red-500/30"></span>
+              <strong className="text-red-300">Negative diff</strong> = system &gt; platform · inventory left the shelf without a TikTok sale
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded bg-yellow-500/30"></span>
+              <strong className="text-yellow-300">Positive diff</strong> = platform &gt; system · either lazy stream counts or unrecorded inflow
+            </span>
+          </div>
+          <div className="text-gray-600">
+            System qty = net signed change from stream counts (negative number means items appeared on the shelf). "N corrections" means N of the counts undid earlier counts — treat those rows as noisy.
+          </div>
         </div>
         {rows.length === 0 ? (
           <p className="text-gray-500 text-sm">No platform sales or system outflow in this period.</p>
@@ -1146,7 +1169,19 @@ function ReportView({ report, fmt }) {
                       {r.product?.language && <span className="text-gray-500 ml-2 text-xs">[{r.product.language}]</span>}
                     </td>
                     <td className="py-2.5 text-right text-white font-medium">{r.platform_qty.toLocaleString()}</td>
-                    <td className="py-2.5 text-right text-white font-medium">{r.system_qty.toLocaleString()}</td>
+                    <td className="py-2.5 text-right text-white font-medium">
+                      <div>{r.system_qty > 0 ? '+' : ''}{r.system_qty.toLocaleString()}</div>
+                      {r.count_events > 0 && (
+                        <div className="text-[10px] text-gray-500 leading-none mt-0.5">
+                          {r.count_events} count{r.count_events === 1 ? '' : 's'}
+                          {r.correction_events > 0 && (
+                            <span className="text-orange-400">
+                              {' · '}{r.correction_events} correction{r.correction_events === 1 ? '' : 's'}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </td>
                     <td className={`py-2.5 text-right font-bold ${
                       r.diff === 0 ? 'text-green-400'
                         : r.flagged && r.diff < 0 ? 'text-red-400'    // theft signal
