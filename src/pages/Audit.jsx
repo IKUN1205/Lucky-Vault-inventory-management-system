@@ -359,6 +359,9 @@ export default function Audit() {
   //   - We only upsert mappings for names that the user actually decided on
   //     (in pendingMappings). Untouched names stay unmapped in the DB so
   //     they can be mapped later when the user widens the date filter.
+  //   - Before inserting, scan for existing records in the same date range
+  //     to prevent accidental double-imports. If overlap is found, prompt
+  //     the user: replace (delete then insert) or cancel.
   const handleImport = async () => {
     if (unmappedNames.length > 0) {
       setParseError(`${unmappedNames.length} products in the current date filter still need mapping.`)
@@ -367,6 +370,60 @@ export default function Audit() {
     setImporting(true)
     setParseError(null)
     try {
+      // ---- Overlap detection ----
+      // Find the date range we're about to import, then check whether any
+      // existing rows for this platform fall inside it. If yes, ask before
+      // proceeding — and on confirm, delete the overlap first so we end up
+      // with one clean copy instead of duplicates.
+      const recordsToImport = parsedRecords.filter(r => {
+        const v = pendingMappings[r.external_name]
+        return v && v !== 'IGNORE'
+      })
+      if (recordsToImport.length === 0) {
+        setParseError('Nothing to import — no products are mapped.')
+        setImporting(false)
+        return
+      }
+      const sortedDates = recordsToImport.map(r => r.sale_date).sort()
+      const minDate = sortedDates[0]
+      const maxDate = sortedDates[sortedDates.length - 1]
+
+      const { data: overlap, error: overlapErr } = await supabase
+        .from('platform_sales_records')
+        .select('source_upload_id, source_filename, sale_date')
+        .eq('platform', PLATFORM)
+        .gte('sale_date', minDate)
+        .lte('sale_date', maxDate)
+      if (overlapErr) throw overlapErr
+
+      if (overlap && overlap.length > 0) {
+        // Group by source_upload_id so the prompt is readable.
+        const byUpload = new Map()
+        for (const o of overlap) {
+          const cur = byUpload.get(o.source_upload_id) || { filename: o.source_filename || '(unnamed)', count: 0 }
+          cur.count += 1
+          byUpload.set(o.source_upload_id, cur)
+        }
+        const summary = Array.from(byUpload.values())
+          .map(u => `  • ${u.filename}: ${u.count} rows`)
+          .join('\n')
+        const proceed = confirm(
+          `⚠️  Existing data found in this date range (${minDate} → ${maxDate}):\n\n${summary}\n\nClick OK to REPLACE (delete the existing data, then import this one).\nClick Cancel to abort the import.`
+        )
+        if (!proceed) {
+          setImporting(false)
+          return
+        }
+        // Delete only rows within the new range — preserves data outside it
+        // (so re-importing one week doesn't wipe other weeks).
+        const { error: delErr } = await supabase
+          .from('platform_sales_records')
+          .delete()
+          .eq('platform', PLATFORM)
+          .gte('sale_date', minDate)
+          .lte('sale_date', maxDate)
+        if (delErr) throw delErr
+      }
       // Save mappings — only those the user touched in this session
       const mappingRows = Object.keys(pendingMappings).map(name => {
         const val = pendingMappings[name]
@@ -382,29 +439,22 @@ export default function Audit() {
         .upsert(mappingRows, { onConflict: 'platform,external_name' })
       if (mapErr) throw mapErr
 
-      // Resolve product_id per record. Skip:
-      //   - Ignored mappings (val === 'IGNORE')
-      //   - Unmapped names (val undefined) — these are outside the filter so
-      //     they aren't this audit's concern. User can re-import later.
+      // Build insert rows from the already-filtered recordsToImport
+      // (computed up top alongside the overlap check).
       const uploadId = (crypto.randomUUID && crypto.randomUUID()) || `upload-${Date.now()}`
-      const toImport = []
-      for (const r of parsedRecords) {
-        const val = pendingMappings[r.external_name]
-        if (!val || val === 'IGNORE') continue
-        toImport.push({
-          platform: PLATFORM,
-          sale_date: r.sale_date,
-          streamer: r.streamer,
-          external_name: r.external_name,
-          product_id: val,
-          quantity: r.quantity,
-          quantity_returned: r.quantity_returned,
-          net_sales: r.net_sales,
-          cost: r.cost,
-          source_upload_id: uploadId,
-          source_filename: file?.name || null,
-        })
-      }
+      const toImport = recordsToImport.map(r => ({
+        platform: PLATFORM,
+        sale_date: r.sale_date,
+        streamer: r.streamer,
+        external_name: r.external_name,
+        product_id: pendingMappings[r.external_name],
+        quantity: r.quantity,
+        quantity_returned: r.quantity_returned,
+        net_sales: r.net_sales,
+        cost: r.cost,
+        source_upload_id: uploadId,
+        source_filename: file?.name || null,
+      }))
       // Batch insert in chunks of 500 to stay within PostgREST limits.
       const chunkSize = 500
       for (let i = 0; i < toImport.length; i += chunkSize) {
