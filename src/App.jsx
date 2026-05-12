@@ -28,6 +28,7 @@ import ExecutiveReport from './pages/ExecutiveReport'
 import Audit from './pages/Audit'
 import Reconcile from './pages/Reconcile'
 import StorefrontImport from './pages/StorefrontImport'
+import StreamSessions from './pages/StreamSessions'
 
 // Components
 import Layout from './components/Layout'
@@ -129,6 +130,9 @@ function AppRoutes() {
       } />
       <Route path="/storefront-import" element={
         <ProtectedRoute path="/storefront-import"><Layout><StorefrontImport /></Layout></ProtectedRoute>
+      } />
+      <Route path="/stream-sessions" element={
+        <ProtectedRoute path="/stream-sessions"><Layout><StreamSessions /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

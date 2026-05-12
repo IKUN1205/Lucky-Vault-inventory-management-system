@@ -28,6 +28,7 @@ const ALL_PAGES = [
   { path: '/executive-report', label: 'Executive Report' },
   { path: '/audit', label: 'Sales Audit' },
   { path: '/reconcile', label: 'Reconcile (per-stream)' },
+  { path: '/stream-sessions', label: 'Stream Session History' },
   { path: '/storefront-import', label: 'Storefront Import' },
   { path: '/product-mapping', label: 'Product Mapping' },
   { path: '/users', label: 'Team Management' },
