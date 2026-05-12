@@ -90,7 +90,11 @@ export default function Reconcile() {
   // CSV state
   const [file, setFile] = useState(null)
   const [parseError, setParseError] = useState(null)
-  const [tiktokRows, setTiktokRows] = useState([])       // [{external_name, qty, created}]
+  const [tiktokRows, setTiktokRows] = useState([])       // [{external_name, qty, created, dt}]
+  const [tiktokSource, setTiktokSource] = useState(null) // 'csv' | 'auto' — how rows were obtained
+  // Auto-fetch (Vercel + Chromium harvester) state
+  const [autoFetching, setAutoFetching] = useState(false)
+  const [autoFetchResult, setAutoFetchResult] = useState(null) // { ok, message, ordersObserved, dataCoversFromDate, totalMs }
   const [filterByWindow, setFilterByWindow] = useState(true)  // if true, drop rows outside [prevTime, countTime]
 
   // Lark state
@@ -172,7 +176,8 @@ export default function Reconcile() {
   const handleCsvUpload = async (f) => {
     setFile(f)
     setParseError(null)
-    if (!f) { setTiktokRows([]); return }
+    setAutoFetchResult(null)  // clear any prior auto-fetch state — user pivoting to CSV
+    if (!f) { setTiktokRows([]); setTiktokSource(null); return }
     try {
       const text = await f.text()
       const rows = parseCSV(text)
@@ -201,6 +206,7 @@ export default function Reconcile() {
         out.push({ external_name: product, qty, created: createdStr, dt })
       }
       setTiktokRows(out)
+      setTiktokSource('csv')
     } catch (err) {
       console.error(err)
       setParseError(err.message || 'Failed to parse CSV')
@@ -321,6 +327,79 @@ export default function Reconcile() {
     window.open('https://seller-us.tiktok.com/order?selected_sort=6&tab=all', '_blank')
   }
 
+  // Auto-fetch path: call our /api/tiktok-fetch-orders endpoint which
+  // launches headless Chromium server-side, navigates to TikTok's order
+  // page, harvests the orders TikTok's own JS fetches, and returns
+  // pre-normalised SKU lines. The user doesn't have to touch TikTok at all.
+  //
+  // Reuses the same time window the page already computed from the
+  // previous + current stream count. live_only=true so we only pull
+  // orders tagged "LIVE: <creator>" — those are the ones that came
+  // through the actual stream session.
+  const handleAutoFetch = async () => {
+    if (!streamCount) return
+    setAutoFetching(true)
+    setAutoFetchResult(null)
+    setParseError(null)
+    try {
+      // Convert the window to YYYY-MM-DD for the API. Use the same date
+      // range as the count's session window — the API also filters
+      // server-side, but using the date bounds keeps the response small.
+      const fromDate = prevCount?.count_time
+        ? new Date(prevCount.count_time)
+        : new Date(new Date(streamCount.count_time).getTime() - 36 * 60 * 60 * 1000) // 36h fallback
+      const toDate = new Date(streamCount.count_time)
+      const fmt = (d) => d.toISOString().slice(0, 10)
+      const params = new URLSearchParams({
+        from: fmt(fromDate),
+        to: fmt(toDate),
+        live_only: 'true',
+      })
+      const res = await fetch(`/api/tiktok-fetch-orders?${params.toString()}`)
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || `HTTP ${res.status}`)
+      }
+
+      // Transform API lines → tiktokRows shape (matches the CSV parser).
+      // Then re-apply the per-second time-window filter so we only keep
+      // rows that fell inside [prevCount.count_time, streamCount.count_time]
+      // — the API filters by DATE which is coarser.
+      const windowStart = prevCount ? new Date(prevCount.count_time) : null
+      const windowEnd = new Date(streamCount.count_time)
+      const rows = (data.lines || [])
+        .map(l => ({
+          external_name: l.product_name,
+          qty: l.quantity,
+          created: l.create_time,
+          dt: l.create_unix ? new Date(l.create_unix * 1000) : null,
+        }))
+        .filter(r => {
+          if (!filterByWindow) return true
+          if (!r.dt) return false
+          if (windowStart && r.dt < windowStart) return false
+          if (windowEnd && r.dt > windowEnd) return false
+          return true
+        })
+
+      setTiktokRows(rows)
+      setTiktokSource('auto')
+      setFile(null) // clear any prior CSV state so the UI is clean
+      setAutoFetchResult({
+        ok: true,
+        message: `Fetched ${rows.length} LIVE order line${rows.length === 1 ? '' : 's'} from TikTok.`,
+        ordersObserved: data.orders_observed,
+        dataCoversFromDate: data.data_covers_from_date,
+        totalMs: data.total_ms,
+      })
+    } catch (err) {
+      console.error(err)
+      setAutoFetchResult({ ok: false, error: err.message || String(err) })
+    } finally {
+      setAutoFetching(false)
+    }
+  }
+
   // ---- Render ----
   if (loading) {
     return <div className="flex items-center justify-center h-64"><div className="spinner"></div></div>
@@ -383,29 +462,67 @@ export default function Reconcile() {
         </div>
       </div>
 
-      {/* Step 1: Get the TikTok CSV */}
+      {/* Step 1: Auto-fetch from TikTok (preferred) */}
       <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="w-6 h-6 rounded-full bg-vault-gold/20 text-vault-gold font-bold flex items-center justify-center text-xs">1</span>
-          <h2 className="font-semibold text-white">Export TikTok LIVE-session CSV</h2>
+        <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="w-6 h-6 rounded-full bg-vault-gold/20 text-vault-gold font-bold flex items-center justify-center text-xs">1</span>
+            <h2 className="font-semibold text-white">Fetch TikTok orders</h2>
+          </div>
+          <span className="text-xs text-gray-500">{prevCount ? `Window: ${windowFromStr} → ${windowToStr}` : 'No previous count — using ~36h window'}</span>
         </div>
         <p className="text-gray-400 text-sm mb-3">
-          In TikTok Seller Center, click <strong>Filter</strong>, set <strong>LIVE session</strong> to the show you just finished, then click the <strong>download ⬇️</strong> icon.
+          One click — Lucky Vault opens TikTok Seller Center in the background, pulls the LIVE-tagged orders in this session's time window, and drops them right into the reconcile table. Takes ~25-35 seconds.
         </p>
-        <button
-          onClick={openTikTok}
-          className="px-4 py-2 bg-vault-darker border border-vault-border hover:border-vault-gold text-sm text-gray-200 rounded-lg flex items-center gap-2"
-        >
-          <ExternalLink size={14} /> Open TikTok Seller Center
-        </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={handleAutoFetch}
+            disabled={autoFetching}
+            className="px-5 py-2.5 bg-vault-gold text-vault-dark font-semibold rounded-lg hover:bg-vault-gold/90 disabled:opacity-50 transition-all flex items-center gap-2"
+          >
+            {autoFetching ? <RefreshCw size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+            {autoFetching ? 'Fetching from TikTok... (~30s)' : 'Auto-fetch from TikTok'}
+          </button>
+          <span className="text-xs text-gray-600">
+            or <button onClick={openTikTok} className="text-vault-gold hover:underline">open TikTok manually</button> to export a CSV
+          </span>
+        </div>
+        {autoFetchResult && (
+          <div
+            className={`mt-3 rounded-lg p-3 text-sm ${
+              autoFetchResult.ok
+                ? 'bg-green-500/10 border border-green-500/30 text-green-300'
+                : 'bg-red-500/10 border border-red-500/30 text-red-300'
+            }`}
+          >
+            {autoFetchResult.ok ? (
+              <>
+                ✓ {autoFetchResult.message}
+                {' '}<span className="text-gray-400 text-xs">
+                  (observed {autoFetchResult.ordersObserved} order{autoFetchResult.ordersObserved === 1 ? '' : 's'} in {Math.round((autoFetchResult.totalMs || 0) / 1000)}s)
+                </span>
+                {autoFetchResult.dataCoversFromDate === false && (
+                  <div className="text-yellow-300 text-xs mt-1">
+                    ⚠️ TikTok only auto-loaded the most recent ~20 orders. If your session had more, drop the CSV instead.
+                  </div>
+                )}
+              </>
+            ) : (
+              <>❌ {autoFetchResult.error}</>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Step 2: Upload CSV */}
+      {/* Step 2: Manual CSV fallback */}
       <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
         <div className="flex items-center gap-2 mb-3">
           <span className="w-6 h-6 rounded-full bg-vault-gold/20 text-vault-gold font-bold flex items-center justify-center text-xs">2</span>
-          <h2 className="font-semibold text-white">Drop CSV here</h2>
+          <h2 className="font-semibold text-white">Or: drop CSV manually</h2>
         </div>
+        <p className="text-xs text-gray-500 mb-3">
+          Fallback if auto-fetch failed or you need orders beyond the most-recent ~20: export the CSV from TikTok yourself (Filter → LIVE session → ⬇️) and drop it here.
+        </p>
         <label className="flex items-center gap-2 px-4 py-3 bg-vault-darker border border-vault-border rounded-lg cursor-pointer hover:border-vault-gold transition-colors">
           <Upload size={16} className="text-vault-gold" />
           <span className="text-sm text-gray-300 truncate">{file?.name || 'Click to choose or drag a CSV file...'}</span>
@@ -436,9 +553,14 @@ export default function Reconcile() {
             {parseError}
           </div>
         )}
-        {file && tiktokRows.length > 0 && (
+        {tiktokSource === 'csv' && file && tiktokRows.length > 0 && (
           <div className="mt-3 text-sm text-green-300">
             ✓ Parsed {tiktokRows.length} orders from CSV
+          </div>
+        )}
+        {tiktokSource === 'auto' && tiktokRows.length > 0 && (
+          <div className="mt-3 text-xs text-gray-500">
+            Using {tiktokRows.length} orders from Auto-fetch above. Drop a CSV here to override.
           </div>
         )}
       </div>
