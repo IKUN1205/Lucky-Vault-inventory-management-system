@@ -46,6 +46,7 @@ const navSections = [
       { path: '/purchased-items', label: 'Purchased Items', icon: ShoppingCart },
       { path: '/intake', label: 'Intake to Master', icon: Package },
       { path: '/manual-inventory', label: 'Manual Inventory', icon: PackagePlus },
+      { path: '/storefront-import', label: 'Storefront Import', icon: Store },
       { path: '/add-product', label: 'Add Product', icon: Plus },
     ]
   },
