@@ -3,6 +3,7 @@ import { fetchProducts, fetchLocations, updateInventory } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import Instructions from '../components/Instructions'
+import { useAuth } from '../lib/AuthContext'
 import { PackagePlus, Save, Plus, Trash2 } from 'lucide-react'
 
 // Helper to extract Launch Name from full product name
@@ -24,7 +25,8 @@ const getCurrency = (language) => {
 
 export default function ManualInventory() {
   const { toasts, addToast, removeToast } = useToast()
-  
+  const { user } = useAuth()
+
   const [products, setProducts] = useState([])
   const [locations, setLocations] = useState([])
   const [loading, setLoading] = useState(true)
@@ -150,6 +152,28 @@ export default function ManualInventory() {
 
       setForm(f => ({ ...f, product_id: '', quantity: '', avg_cost_basis: '' }))
       addToast(`Added ${qty} units to inventory`, 'success', { action: { label: 'Undo', onClick: undo } })
+
+      // Fire-and-forget Lark notification. Failures here MUST NOT bubble up
+      // (the inventory write already succeeded — we don't want to roll it
+      // back if Lark is down).
+      try {
+        const product = products.find(p => p.id === productId)
+        const locationObj = locations.find(l => l.id === locationId)
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'manual_inventory',
+            user: user?.name || 'Unknown',
+            locationName: locationObj?.name || 'Unknown',
+            mode: 'single',
+            items: [{ name: product?.name || 'Unknown product', quantity: qty }],
+            totalUnits: qty,
+          })
+        }).catch(err => console.error('[lark-notify] manual_inventory request failed:', err))
+      } catch (err) {
+        console.error('[lark-notify] failed to build manual_inventory payload:', err)
+      }
     } catch (error) {
       console.error('Error adding inventory:', error)
       addToast('Failed to add inventory', 'error')
@@ -206,6 +230,34 @@ export default function ManualInventory() {
       'success',
       completed.length > 0 ? { action: { label: 'Undo', onClick: undo } } : undefined
     )
+
+    // Fire-and-forget Lark notification (bulk add). Only sends when at least
+    // one row actually succeeded — silence is better than spamming Lark with
+    // empty "0 items added" pings if every row failed.
+    if (completed.length > 0) {
+      try {
+        const locationObj = locations.find(l => l.id === targetLocation)
+        const items = completed.map(c => {
+          const product = products.find(p => p.id === c.product_id)
+          return { name: product?.name || 'Unknown product', quantity: c.qty }
+        })
+        const totalUnits = completed.reduce((s, c) => s + (c.qty || 0), 0)
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'manual_inventory',
+            user: user?.name || 'Unknown',
+            locationName: locationObj?.name || 'Unknown',
+            mode: 'bulk',
+            items,
+            totalUnits,
+          })
+        }).catch(err => console.error('[lark-notify] manual_inventory bulk request failed:', err))
+      } catch (err) {
+        console.error('[lark-notify] failed to build manual_inventory bulk payload:', err)
+      }
+    }
   }
 
   // Format product for SearchableSelect - using new nomenclature

@@ -357,6 +357,31 @@ function buildMessage(body) {
     return lines.join('\n')
   }
 
+  if (type === 'manual_inventory') {
+    // Triggered after a successful Manual Inventory add (single or bulk).
+    // Useful so the team knows "Aldo manually added 50 NIKKE to Master" —
+    // catches accidental double-entries and gives an audit trail when
+    // inventory appears without a Purchased Items / Intake record.
+    const { user, locationName, items = [], totalUnits, mode } = body
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error('manual_inventory: missing items')
+    }
+    const lines = []
+    lines.push('🧮 Manual Inventory Added')
+    lines.push(`By: ${user || 'Unknown'}`)
+    lines.push(`Location: ${locationName || 'Unknown'}`)
+    if (mode === 'bulk') lines.push('Mode: Bulk add')
+    lines.push('')
+    for (const item of items) {
+      lines.push(`• ${item.name || 'Unknown product'} × ${item.quantity ?? 0}`)
+    }
+    lines.push('')
+    const skuLabel = items.length === 1 ? 'SKU' : 'SKUs'
+    lines.push(`Total: ${items.length} ${skuLabel} / ${totalUnits ?? 0} units`)
+    lines.push(`Time: ${nowUtcStamp()}`)
+    return lines.join('\n')
+  }
+
   if (type === 'reconciliation') {
     // Per-stream reconciliation: compare stream-count outflow against TikTok
     // platform sales for the same LIVE session. Sent to the per-room group
