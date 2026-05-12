@@ -357,6 +357,37 @@ function buildMessage(body) {
     return lines.join('\n')
   }
 
+  if (type === 'add_product') {
+    // Triggered after a new product is created via Add Product (single or
+    // bulk mode). Visibility matters here because new SKUs are upstream of
+    // everything — if a duplicate or mis-typed product slips in, it pollutes
+    // every report afterwards. The notification gives the team a chance to
+    // catch typos and dupes before they propagate.
+    const { user, products: prods = [], mode } = body
+    if (!Array.isArray(prods) || prods.length === 0) {
+      throw new Error('add_product: missing products')
+    }
+    const lines = []
+    lines.push('🆕 New Product Added')
+    lines.push(`By: ${user || 'Unknown'}`)
+    if (mode === 'bulk') lines.push(`Mode: Bulk (${prods.length})`)
+    lines.push('')
+    for (const p of prods) {
+      // Each product line: "Brand | Name | [LANG] [Type]"
+      const parts = []
+      if (p.brand) parts.push(p.brand)
+      parts.push(p.name || 'Unnamed')
+      let suffix = ''
+      if (p.language) suffix += ` [${p.language}]`
+      if (p.type) suffix += ` ${p.type}`
+      if (p.breakable && p.packs_per_box) suffix += ` (${p.packs_per_box} packs/box)`
+      lines.push(`• ${parts.join(' | ')}${suffix}`)
+    }
+    lines.push('')
+    lines.push(`Time: ${nowUtcStamp()}`)
+    return lines.join('\n')
+  }
+
   if (type === 'manual_inventory') {
     // Triggered after a successful Manual Inventory add (single or bulk).
     // Useful so the team knows "Aldo manually added 50 NIKKE to Master" —

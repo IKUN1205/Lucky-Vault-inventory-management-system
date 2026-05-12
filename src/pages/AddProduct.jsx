@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { createProduct } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
+import { useAuth } from '../lib/AuthContext'
 import { Plus, Save, Trash2 } from 'lucide-react'
 
 // Product Type options matching sheet nomenclature
@@ -40,7 +41,8 @@ const getCurrency = (language) => {
 
 export default function AddProduct() {
   const { toasts, addToast, removeToast } = useToast()
-  
+  const { user } = useAuth()
+
   const [submitting, setSubmitting] = useState(false)
   const [mode, setMode] = useState('single')
 
@@ -110,7 +112,32 @@ export default function AddProduct() {
       })
 
       addToast(`Added: ${form.brand} | ${form.launch_name} ${form.product_type} (${form.language})`)
-      
+
+      // Fire-and-forget Lark notification. New products propagate everywhere
+      // (inventory, audit mappings, reports) so visibility helps the team
+      // catch typos / dupes before they pollute downstream.
+      try {
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'add_product',
+            user: user?.name || 'Unknown',
+            mode: 'single',
+            products: [{
+              name: fullName,
+              brand: form.brand,
+              language: form.language,
+              type: form.product_type,
+              breakable: form.breakable,
+              packs_per_box: form.breakable && form.packs_per_box ? parseInt(form.packs_per_box) : null,
+            }],
+          })
+        }).catch(err => console.error('[lark-notify] add_product request failed:', err))
+      } catch (err) {
+        console.error('[lark-notify] failed to build add_product payload:', err)
+      }
+
       setForm(f => ({
         ...f,
         launch_name: '',
@@ -189,11 +216,12 @@ export default function AddProduct() {
     setSubmitting(true)
     let successCount = 0
     let failCount = 0
+    const successProducts = []  // for the Lark message — only the ones that actually saved
 
     for (const product of validProducts) {
       try {
         const fullName = `${product.launch_name.trim()} ${product.product_type}`
-        
+
         await createProduct({
           brand: product.brand,
           type: product.sealed_unsealed,
@@ -204,6 +232,14 @@ export default function AddProduct() {
           packs_per_box: product.breakable && product.packs_per_box ? parseInt(product.packs_per_box) : null
         })
         successCount++
+        successProducts.push({
+          name: fullName,
+          brand: product.brand,
+          language: product.language,
+          type: product.product_type,
+          breakable: product.breakable,
+          packs_per_box: product.breakable && product.packs_per_box ? parseInt(product.packs_per_box) : null,
+        })
       } catch (err) {
         console.error('Error adding product:', err)
         failCount++
@@ -213,6 +249,24 @@ export default function AddProduct() {
     if (successCount > 0) {
       addToast(`${successCount} product(s) added!${failCount > 0 ? ` ${failCount} failed.` : ''}`)
       setBulkProducts(bulkProducts.map(p => ({ ...p, launch_name: '' })))
+
+      // Fire-and-forget Lark notification (bulk). One message per batch,
+      // listing all the products that actually saved. Failed rows are
+      // excluded so the message reflects reality.
+      try {
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'add_product',
+            user: user?.name || 'Unknown',
+            mode: 'bulk',
+            products: successProducts,
+          })
+        }).catch(err => console.error('[lark-notify] add_product bulk request failed:', err))
+      } catch (err) {
+        console.error('[lark-notify] failed to build add_product bulk payload:', err)
+      }
     } else {
       addToast('Failed to add products', 'error')
     }
