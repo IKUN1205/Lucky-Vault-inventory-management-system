@@ -9,9 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^148.0.0",
     "@supabase/supabase-js": "^2.39.0",
     "date-fns": "^3.0.0",
     "lucide-react": "^0.294.0",
+    "puppeteer-core": "^24.43.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.21.0",
