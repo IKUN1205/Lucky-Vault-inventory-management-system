@@ -402,6 +402,27 @@ export default function StreamCounts() {
         console.error('[lark-notify] failed to build stream_count payload:', err)
       }
 
+      // Auto-reconcile for TikTok rooms — fire-and-forget. The function
+      // takes ~30s on the server, but we don't block the user; the result
+      // shows up in /audit-history when it's done. If anything fails, the
+      // failure is also persisted there with an error_message.
+      try {
+        const locName = locations.find(l => l.id === form.location_id)?.name || ''
+        if (/TikTok/i.test(locName)) {
+          fetch('/api/auto-reconcile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              count_id: streamCount.id,
+              trigger: 'auto_after_count',
+            }),
+          }).catch(err => console.error('[auto-reconcile] request failed:', err))
+          addToast('Auto-reconcile started — check Audit History in ~30 seconds.', 'info')
+        }
+      } catch (err) {
+        console.error('[auto-reconcile] failed to fire:', err)
+      }
+
       setStep(3)
     } catch (error) {
       console.error('Error submitting count:', error)

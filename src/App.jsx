@@ -29,6 +29,7 @@ import Audit from './pages/Audit'
 import Reconcile from './pages/Reconcile'
 import StorefrontImport from './pages/StorefrontImport'
 import StreamSessions from './pages/StreamSessions'
+import AuditHistory from './pages/AuditHistory'
 
 // Components
 import Layout from './components/Layout'
@@ -133,6 +134,9 @@ function AppRoutes() {
       } />
       <Route path="/stream-sessions" element={
         <ProtectedRoute path="/stream-sessions"><Layout><StreamSessions /></Layout></ProtectedRoute>
+      } />
+      <Route path="/audit-history" element={
+        <ProtectedRoute path="/audit-history"><Layout><AuditHistory /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
