@@ -405,13 +405,16 @@ export default function StreamCounts() {
         console.error('[lark-notify] failed to build stream_count payload:', err)
       }
 
-      // Auto-reconcile for TikTok rooms — fire-and-forget. The function
-      // takes ~30s on the server, but we don't block the user; the result
-      // shows up in /audit-history when it's done. If anything fails, the
-      // failure is also persisted there with an error_message.
+      // Auto-reconcile — fire-and-forget. Only TikTok Packheads is wired
+      // to the TikTok seller-center cookie + product mappings, so we gate
+      // strictly on that one room. Other TikTok rooms (RocketsHQ, etc.)
+      // would each need their own auth + mapping before they can be
+      // reconciled, so don't even fire the request for them. The function
+      // takes ~30s server-side; result shows up in /audit-history when
+      // done, with failures persisted there as well.
       try {
         const locName = locations.find(l => l.id === form.location_id)?.name || ''
-        if (/TikTok/i.test(locName)) {
+        if (/TikTok\s*Packheads/i.test(locName)) {
           fetch('/api/auto-reconcile', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -969,11 +972,12 @@ export default function StreamCounts() {
             
             {/* Actions */}
             <div className="mt-6 pt-6 border-t border-vault-border space-y-2">
-              {/* TikTok rooms get reconciled automatically by /api/auto-reconcile
-                  in the background — no manual reconcile button anymore.
-                  Surface a hint so the streamer knows where to look for the
-                  result. */}
-              {report.stream_count_id && /TikTok/i.test(report.location_name || '') && (
+              {/* TikTok Packheads gets reconciled automatically by
+                  /api/auto-reconcile in the background. Surface a hint so
+                  the streamer knows where to look for the result. Other
+                  TikTok rooms aren't wired up yet, so don't show the hint
+                  for them. */}
+              {report.stream_count_id && /TikTok\s*Packheads/i.test(report.location_name || '') && (
                 <div className="text-center text-xs text-gray-500 py-2 px-3 bg-vault-darker/40 rounded border border-vault-border/50">
                   Auto-reconcile running — check <span className="text-vault-gold">Audit History</span> in ~30 seconds.
                 </div>

@@ -242,9 +242,17 @@ export default async function handler(req, res) {
   if (cErr || !count) {
     return res.status(404).json({ ok: false, error: `Stream count not found: ${cErr?.message || ''}` })
   }
-  const isTikTokRoom = /TikTok/i.test(count.location?.name || '')
-  if (!isTikTokRoom) {
-    return res.status(400).json({ ok: false, error: `Auto-reconcile only supports TikTok rooms. This count is at: ${count.location?.name}` })
+  // Only TikTok Packheads is wired to the TikTok seller-center cookie /
+  // product mappings right now. Other TikTok rooms (RocketsHQ, etc.) would
+  // need their own cookie + mapping table before we can reconcile them.
+  // Gate strictly here so a stray count at another room can't kick off
+  // a wasted Chromium run.
+  const isPackheads = /TikTok\s*Packheads/i.test(count.location?.name || '')
+  if (!isPackheads) {
+    return res.status(400).json({
+      ok: false,
+      error: `Auto-reconcile is only enabled for TikTok Packheads. This count is at: ${count.location?.name}`,
+    })
   }
 
   // Write a "running" row immediately so the function is visible in

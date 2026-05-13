@@ -290,7 +290,10 @@ function SessionRow({ count, expanded, items, onToggle }) {
   const dayStr = time ? time.toLocaleDateString('en-CA') : '—'
   const timeStr = time ? time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
   const roomShort = (count.location?.name || '—').replace(/^Stream Room\s*-\s*/, '')
-  const isTikTokRoom = /TikTok/i.test(count.location?.name || '')
+  // Only Packheads is wired to auto-reconcile right now. RocketsHQ etc.
+  // would each need their own cookie/mappings, so show the "auto" tag
+  // only for the room that's actually reconciled.
+  const isTikTokRoom = /TikTok\s*Packheads/i.test(count.location?.name || '')
 
   return (
     <>

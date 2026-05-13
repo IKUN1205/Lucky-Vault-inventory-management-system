@@ -253,13 +253,16 @@ function ReconRow({ r, expanded, onToggle }) {
     r.total_diff > 0 ? 'text-yellow-400' :
     'text-red-400'
 
+  // Make the whole row clickable (apart from the lark icon / status pill).
+  // The original chevron button was 14×14 — way too small a target.
   return (
     <>
-      <tr className="border-b border-vault-border/50 hover:bg-vault-darker/30">
-        <td className="py-2.5 pl-2">
-          <button onClick={onToggle} className="text-gray-500 hover:text-vault-gold">
-            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </button>
+      <tr
+        className="border-b border-vault-border/50 hover:bg-vault-darker/30 cursor-pointer"
+        onClick={onToggle}
+      >
+        <td className="py-2.5 pl-2 text-gray-500">
+          {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
         </td>
         <td className="py-2.5 text-white">
           <div className="font-medium">{dayStr}</div>
@@ -281,7 +284,7 @@ function ReconRow({ r, expanded, onToggle }) {
             <span className="text-xs">{meta.label}</span>
           </div>
         </td>
-        <td className="py-2.5 text-center">
+        <td className="py-2.5 pr-2 text-center">
           {r.lark_sent_at ? (
             <span title={`Sent ${new Date(r.lark_sent_at).toLocaleString()} to ${r.lark_target || 'main'}`}>
               <Send size={12} className="inline text-green-400" />
@@ -290,7 +293,6 @@ function ReconRow({ r, expanded, onToggle }) {
             <span className="text-xs text-gray-600">—</span>
           )}
         </td>
-        <td className="py-2.5 pr-2"></td>
       </tr>
       {expanded && (
         <tr className="bg-vault-darker/30">
