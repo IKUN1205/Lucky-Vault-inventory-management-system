@@ -216,8 +216,40 @@ export default function StreamCounts() {
   }
 
   const handleSubmitCount = async () => {
+    // ---- Stale-room guard (L3) ----
+    // If this room hasn't been counted in a long time, ANOTHER streamer
+    // may have gone live in the gap and skipped counting. This count
+    // would silently absorb that prior session — combined totals can
+    // still pass audit but per-streamer attribution is meaningless.
+    // L1 detects this server-side (merged_session_count), L2 alerts
+    // proactively via cron — L3 is the last-line soft signal at submit
+    // time. NEVER block; just confirm. Threshold tuned to typical
+    // overnight gap (sessions are usually 12-18h apart) — 18h means
+    // most legit counts skip the dialog entirely, only suspiciously
+    // long gaps trigger it.
+    const STALE_THRESHOLD_HOURS = 18
+    try {
+      const lastAtRoom = recentCounts
+        .filter(c => c.location_id === form.location_id)
+        .sort((a, b) => new Date(b.count_time) - new Date(a.count_time))[0]
+      if (lastAtRoom?.count_time) {
+        const hoursAgo = (Date.now() - new Date(lastAtRoom.count_time).getTime()) / 3600000
+        if (hoursAgo > STALE_THRESHOLD_HOURS) {
+          const proceed = confirm(
+            `⚠️ This room hasn't been counted in ${Math.round(hoursAgo)} hours.\n\n` +
+            `If another streamer went live during this window without counting, this submission will merge multiple stream sessions and the audit won't be able to tell sales apart by streamer.\n\n` +
+            `Click OK to submit anyway, or Cancel to double-check with the team first.`
+          )
+          if (!proceed) return  // user cancelled — don't even setSubmitting
+        }
+      }
+    } catch (err) {
+      // Guard is best-effort; never let it block a submit on its own bug.
+      console.warn('[stale-room guard] failed, proceeding without prompt:', err)
+    }
+
     setSubmitting(true)
-    
+
     try {
       // Build count time from date and time inputs
       // Get local timezone offset and append it so Postgres doesn't convert to UTC
