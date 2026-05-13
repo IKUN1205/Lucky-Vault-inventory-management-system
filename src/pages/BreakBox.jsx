@@ -23,7 +23,7 @@ export default function BreakBox() {
   const [submitting, setSubmitting] = useState(false)
 
   const [form, setForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: new Date().toLocaleDateString('en-CA'),
     sealed_product_id: '',
     boxes_broken: 1,
     override_pack_count: false,

@@ -52,7 +52,7 @@ export default function OnlineOrders() {
   const [submitting, setSubmitting] = useState(false)
 
   const [form, setForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: new Date().toLocaleDateString('en-CA'),
     platform_channel: '',                // combined "TikTok|RocketsHQ" etc.
     order_number: '',
     customer_name: '',

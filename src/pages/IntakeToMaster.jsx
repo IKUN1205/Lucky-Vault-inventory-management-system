@@ -88,7 +88,7 @@ export default function IntakeToMaster() {
       // Create receipt record
       const receipt = await createReceipt({
         acquisition_id: acqId,
-        date_received: new Date().toISOString().split('T')[0],
+        date_received: new Date().toLocaleDateString('en-CA'),
         quantity_received: qty,
         received_by: null
       })

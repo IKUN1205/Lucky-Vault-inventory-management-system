@@ -10,7 +10,7 @@ export default function Reports() {
   const [loading, setLoading] = useState(false)
   const [activeTab, setActiveTab] = useState('stream_counts') // 'stream_counts', 'acquisitions', 'expenses', 'summary'
   const [dateMode, setDateMode] = useState('single') // 'single', 'range', 'weekly'
-  const [singleDate, setSingleDate] = useState(new Date().toISOString().split('T')[0])
+  const [singleDate, setSingleDate] = useState(new Date().toLocaleDateString('en-CA'))
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [reportData, setReportData] = useState(null)
@@ -24,8 +24,8 @@ export default function Reports() {
     const sunday = new Date(monday)
     sunday.setDate(monday.getDate() + 6)
     return {
-      start: monday.toISOString().split('T')[0],
-      end: sunday.toISOString().split('T')[0]
+      start: monday.toLocaleDateString('en-CA'),
+      end: sunday.toLocaleDateString('en-CA')
     }
   }
 

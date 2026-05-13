@@ -34,7 +34,7 @@ LEFT JOIN locations l ON l.id = sc.location_id
 LEFT JOIN users streamer ON streamer.id = sc.streamer_id
 LEFT JOIN users counter ON counter.id = sc.counted_by_id
 WHERE l.name ILIKE '%TikTok%Packheads%'
-  AND sc.count_time >= '2026-05-12 00:00:00'
+  AND sc.count_time >= '2026-05-11 00:00:00'
   AND sc.count_time <  '2026-05-14 00:00:00'
   AND sc.deleted = false
 ORDER BY sc.count_time;
@@ -52,7 +52,7 @@ FROM stream_reconciliations r
 JOIN stream_counts sc ON sc.id = r.stream_count_id
 LEFT JOIN locations l ON l.id = sc.location_id
 WHERE l.name ILIKE '%TikTok%Packheads%'
-  AND sc.count_time >= '2026-05-12 00:00:00'
+  AND sc.count_time >= '2026-05-11 00:00:00'
   AND sc.count_time <  '2026-05-14 00:00:00';
 
 -- ----------------------------------------------------------------------------
@@ -71,7 +71,7 @@ WHERE l.name ILIKE '%TikTok%Packheads%'
   WHERE r.stream_count_id = sc.id
     AND sc.location_id = l.id
     AND l.name ILIKE '%TikTok%Packheads%'
-    AND sc.count_time >= '2026-05-12 00:00:00'
+    AND sc.count_time >= '2026-05-11 00:00:00'
     AND sc.count_time <  '2026-05-14 00:00:00';
 
   -- stream_count_items has ON DELETE CASCADE from stream_counts, so deleting
@@ -83,7 +83,7 @@ WHERE l.name ILIKE '%TikTok%Packheads%'
     FROM stream_counts sc
     LEFT JOIN locations l ON l.id = sc.location_id
     WHERE l.name ILIKE '%TikTok%Packheads%'
-      AND sc.count_time >= '2026-05-12 00:00:00'
+      AND sc.count_time >= '2026-05-11 00:00:00'
       AND sc.count_time <  '2026-05-14 00:00:00'
   );
 
@@ -94,7 +94,7 @@ WHERE l.name ILIKE '%TikTok%Packheads%'
     FROM stream_counts sc
     LEFT JOIN locations l ON l.id = sc.location_id
     WHERE l.name ILIKE '%TikTok%Packheads%'
-      AND sc.count_time >= '2026-05-12 00:00:00'
+      AND sc.count_time >= '2026-05-11 00:00:00'
       AND sc.count_time <  '2026-05-14 00:00:00'
   );
 
@@ -104,7 +104,7 @@ WHERE l.name ILIKE '%TikTok%Packheads%'
   FROM stream_counts sc
   LEFT JOIN locations l ON l.id = sc.location_id
   WHERE l.name ILIKE '%TikTok%Packheads%'
-    AND sc.count_time >= '2026-05-12 00:00:00'
+    AND sc.count_time >= '2026-05-11 00:00:00'
     AND sc.count_time <  '2026-05-14 00:00:00';
 
 -- COMMIT;

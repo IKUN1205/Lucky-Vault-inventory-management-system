@@ -38,7 +38,7 @@ export default function MovedInventory() {
   const [submitting, setSubmitting] = useState(false)
 
   const [form, setForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: new Date().toLocaleDateString('en-CA'),
     from_location_id: '',
     to_location_id: '',
     moved_by_id: '',

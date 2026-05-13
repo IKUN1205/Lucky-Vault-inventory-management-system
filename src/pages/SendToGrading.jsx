@@ -20,7 +20,7 @@ export default function SendToGrading() {
   const [submitting, setSubmitting] = useState(false)
 
   const [form, setForm] = useState({
-    date_sent: new Date().toISOString().split('T')[0],
+    date_sent: new Date().toLocaleDateString('en-CA'),
     grading_company: 'PSA',
     grading_location: 'USA',
     from_location_id: '',

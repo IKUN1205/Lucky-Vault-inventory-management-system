@@ -24,7 +24,7 @@ export default function BusinessExpenses() {
   const [newPaymentName, setNewPaymentName] = useState('')
 
   const [form, setForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: new Date().toLocaleDateString('en-CA'),
     category: '',
     amount: '',
     currency: 'USD',
@@ -111,7 +111,7 @@ export default function BusinessExpenses() {
       }
       addToast('Expense recorded successfully!', 'success', { action: { label: 'Undo', onClick: undo } })
       setForm({
-        date: new Date().toISOString().split('T')[0],
+        date: new Date().toLocaleDateString('en-CA'),
         category: '',
         amount: '',
         currency: 'USD',

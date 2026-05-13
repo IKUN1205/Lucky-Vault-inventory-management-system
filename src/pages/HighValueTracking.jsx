@@ -367,7 +367,7 @@ function AddHighValueForm({ locations, vendors, users, onClose, onSuccess, addTo
     location_id: '', 
     acquirer_id: '', 
     vendor_id: '',
-    date_added: new Date().toISOString().split('T')[0], 
+    date_added: new Date().toLocaleDateString('en-CA'), 
     notes: ''
   })
 

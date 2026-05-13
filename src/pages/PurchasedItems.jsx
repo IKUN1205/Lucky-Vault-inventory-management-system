@@ -47,7 +47,7 @@ export default function PurchasedItems() {
   const [showInstructions, setShowInstructions] = useState(false)
 
   const [header, setHeader] = useState({
-    date_purchased: new Date().toISOString().split('T')[0],
+    date_purchased: new Date().toLocaleDateString('en-CA'),
     acquirer_id: '',
     source_country: 'USA',
     vendor_id: '',

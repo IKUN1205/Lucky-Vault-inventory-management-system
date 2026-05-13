@@ -35,7 +35,7 @@ export default function PlatformSales() {
 
   // eBay/Whatnot form (session-level)
   const [sessionForm, setSessionForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: new Date().toLocaleDateString('en-CA'),
     channel: '',
     streamer_id: '',
     order_count: '',
@@ -50,7 +50,7 @@ export default function PlatformSales() {
 
   // TikTok form (item-level)
   const [itemForm, setItemForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: new Date().toLocaleDateString('en-CA'),
     external_product_name: '',
     product_id: '',
     quantity: '',
@@ -1079,7 +1079,7 @@ function mapCsvRowToEntry(row, platform, users, aliases) {
   
   // Parse date
   const dateStr = row['Date'] || row['date']
-  const date = dateStr ? new Date(dateStr + '/2025').toISOString().split('T')[0] : null
+  const date = dateStr ? new Date(dateStr + '/2025').toLocaleDateString('en-CA') : null
   
   if (!date) return null
   

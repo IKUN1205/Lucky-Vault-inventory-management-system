@@ -22,7 +22,7 @@ export default function StorefrontSale() {
 
   // Bulk sale form
   const [bulkForm, setBulkForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: new Date().toLocaleDateString('en-CA'),
     brand: 'Pokemon',
     product_type: 'Single',
     quantity: 1,
@@ -32,7 +32,7 @@ export default function StorefrontSale() {
 
   // Product sale form
   const [productForm, setProductForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: new Date().toLocaleDateString('en-CA'),
     inventory_id: '', // Now we select inventory directly (includes location)
     quantity: 1,
     sale_price: '',

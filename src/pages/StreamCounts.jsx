@@ -62,13 +62,18 @@ export default function StreamCounts() {
   const [expandedReport, setExpandedReport] = useState(null)
   const [expandedReportItems, setExpandedReportItems] = useState([])
   
-  // Form State
+  // Form State.
+  // count_date defaults to TODAY in the user's local timezone — using
+  // toISOString() here would silently roll over to tomorrow once the
+  // user is past UTC midnight (e.g. 5pm PDT = midnight UTC), and the
+  // count_time below would be combined with the wrong date. We saw this
+  // surface as "future-dated" counts in Audit History.
   const [form, setForm] = useState({
     location_id: '',
     streamer_id: '',
     counted_by_id: '',
     count_time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
-    count_date: new Date().toISOString().split('T')[0]
+    count_date: new Date().toLocaleDateString('en-CA') // YYYY-MM-DD, local time
   })
   
   // Count data - maps product_id to actual count
@@ -437,7 +442,7 @@ export default function StreamCounts() {
       streamer_id: '',
       counted_by_id: '',
       count_time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
-      count_date: new Date().toISOString().split('T')[0]
+      count_date: new Date().toLocaleDateString('en-CA') // local YYYY-MM-DD
     })
     setCounts({})
     setReport(null)
