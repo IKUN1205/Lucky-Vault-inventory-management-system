@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import {
   ShieldCheck,
@@ -12,6 +13,7 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  Users,
 } from 'lucide-react'
 
 // ============================================================================
@@ -268,7 +270,17 @@ function ReconRow({ r, expanded, onToggle }) {
           <div className="font-medium">{dayStr}</div>
           <div className="text-xs text-gray-500">{timeStr}</div>
         </td>
-        <td className="py-2.5 text-gray-300">{room}</td>
+        <td className="py-2.5 text-gray-300">
+          {room}
+          {(r.merged_session_count || 1) > 1 && (
+            <span
+              className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/20 text-orange-300 border border-orange-500/40 align-middle"
+              title={`This count covered ${r.merged_session_count} LIVE sessions — per-streamer attribution may be unreliable. Expand for breakdown.`}
+            >
+              🔀 {r.merged_session_count}
+            </span>
+          )}
+        </td>
         <td className="py-2.5 text-white">{streamer}</td>
         <td className="py-2.5 text-right text-white">{(r.total_platform_units || 0).toLocaleString()}</td>
         <td className="py-2.5 text-right text-white">{(r.total_system_units || 0).toLocaleString()}</td>
@@ -320,6 +332,8 @@ function ExpandedDetail({ r }) {
 
   const rows = Array.isArray(r.rows) ? r.rows : []
   const unmapped = Array.isArray(r.unmapped) ? r.unmapped : []
+  const perCreator = Array.isArray(r.per_creator_breakdown) ? r.per_creator_breakdown : []
+  const isMerged = (r.merged_session_count || 1) > 1
   return (
     <div className="space-y-3 text-xs">
       <div className="text-gray-500">
@@ -327,6 +341,51 @@ function ExpandedDetail({ r }) {
         {' · '}Triggered: <code>{r.triggered_by}</code>
         {' · '}Duration: {(r.duration_ms || 0).toLocaleString()}ms
       </div>
+
+      {/* L1: per-creator breakdown. Shown whenever per_creator_breakdown
+          is populated — single-session counts get a tidy one-row table,
+          merged sessions (>1 creator) get a loud warning header so the
+          reviewer doesn't mistake a coincidentally-matching combined
+          total for a clean audit. */}
+      {perCreator.length > 0 && (
+        <div className={`rounded-lg p-2 border ${isMerged ? 'bg-orange-500/10 border-orange-500/40' : 'bg-vault-darker/40 border-vault-border/50'}`}>
+          <div className={`text-xs font-semibold mb-1.5 flex items-center gap-1.5 ${isMerged ? 'text-orange-300' : 'text-gray-400'}`}>
+            <Users size={12} />
+            {isMerged ? (
+              <>🔀 MERGED — this count covered {r.merged_session_count} LIVE sessions. Per-streamer attribution unreliable.</>
+            ) : (
+              <>Per-creator LIVE sales</>
+            )}
+          </div>
+          <table className="w-full">
+            <thead>
+              <tr className="text-left text-gray-500 text-[10px] uppercase">
+                <th className="pb-0.5">Creator</th>
+                <th className="pb-0.5 text-right">Units</th>
+                <th className="pb-0.5 text-right">Lines</th>
+                <th className="pb-0.5 text-right">First → Last</th>
+              </tr>
+            </thead>
+            <tbody>
+              {perCreator.map((c, i) => {
+                const fmt = (u) => u ? new Date(u * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '—'
+                return (
+                  <tr key={i} className="border-t border-vault-border/30">
+                    <td className="py-0.5 text-gray-200">{c.creator}</td>
+                    <td className="py-0.5 text-right text-gray-300">{(c.total_qty || 0).toLocaleString()}</td>
+                    <td className="py-0.5 text-right text-gray-500">{(c.line_count || 0).toLocaleString()}</td>
+                    <td className="py-0.5 text-right text-gray-500">
+                      {c.earliest_unix && c.latest_unix && c.earliest_unix !== c.latest_unix
+                        ? `${fmt(c.earliest_unix)} → ${fmt(c.latest_unix)}`
+                        : fmt(c.earliest_unix)}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {rows.length === 0 ? (
         <div className="text-gray-500">No products in this reconciliation.</div>
