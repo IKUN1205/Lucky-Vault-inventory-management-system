@@ -489,30 +489,30 @@ export default function StreamCounts() {
             <ClipboardList className="text-vault-gold" />
             Stream Counts
           </h1>
-          <p className="text-gray-400 mt-1">Record inventory counts after each stream</p>
+          <p className="text-gray-400 mt-1">Count inventory before each stream to record what the previous session sold</p>
         </div>
       </div>
 
       <Instructions>
         <div className="space-y-3 text-gray-300">
-          <p className="font-medium text-white">After each stream ends, log the remaining inventory count:</p>
+          <p className="font-medium text-white">Before you start streaming, count what's left in the room from the previous session:</p>
           <ol className="list-decimal list-inside space-y-2 ml-2">
             <li>Select your <span className="text-vault-gold">Stream Room</span> from the dropdown</li>
-            <li>Select <span className="text-vault-gold">Streamer</span> (who ran the stream)</li>
-            <li>Select <span className="text-vault-gold">Counted By</span> (who is doing the count)</li>
+            <li>Select <span className="text-vault-gold">Streamer</span> — <em className="text-gray-400 not-italic">the person who ran the PREVIOUS session (whose sales we're recording)</em></li>
+            <li>Select <span className="text-vault-gold">Counted By</span> (you — the one doing the count right now)</li>
             <li>Click <span className="text-vault-gold">Start Count</span></li>
-            <li>Enter the <span className="text-vault-gold">actual quantity</span> for each product shown</li>
+            <li>Enter the <span className="text-vault-gold">actual quantity</span> sitting in the room for each product</li>
             <li>Click <span className="text-vault-gold">Submit Count</span></li>
           </ol>
           <div className="mt-4 p-3 bg-vault-surface rounded border border-vault-border">
             <p className="font-medium text-white mb-2">What the numbers mean:</p>
             <ul className="space-y-1">
-              <li><span className="text-green-400">Expected 10, Actual 7</span> → 3 sold ✓</li>
-              <li><span className="text-gray-400">Expected 10, Actual 10</span> → 0 sold</li>
+              <li><span className="text-green-400">Expected 10, Actual 7</span> → previous streamer sold 3 ✓</li>
+              <li><span className="text-gray-400">Expected 10, Actual 10</span> → 0 sold (no streaming, or unsold)</li>
               <li><span className="text-amber-400">Expected 10, Actual 12</span> → +2 discrepancy (report to manager)</li>
             </ul>
           </div>
-          <p className="text-amber-400 text-xs mt-3">⚠️ Count IMMEDIATELY after stream ends (within 30 min)</p>
+          <p className="text-amber-400 text-xs mt-3">⚠️ Count BEFORE your stream starts — do it as soon as you arrive at the room.</p>
         </div>
       </Instructions>
 
