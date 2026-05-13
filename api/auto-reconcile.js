@@ -23,13 +23,19 @@ export const config = {
 
 const RECONCILE_THRESHOLD = 5
 
-// Use service role so we can write to stream_reconciliations regardless
-// of RLS. SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are already set in
-// Vercel for other endpoints.
+// Service role is ideal (bypasses RLS), but the frontend uses
+// VITE_SUPABASE_ANON_KEY and stream_reconciliations has no RLS yet — so
+// anon works too. Fall back through the common env-var names rather than
+// requiring the user to add a new variable.
 function supabaseAdmin() {
   const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
-  if (!url || !key) throw new Error('Supabase env vars missing (need URL + SERVICE_ROLE_KEY)')
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY
+  if (!url) throw new Error('Supabase URL missing (set VITE_SUPABASE_URL or SUPABASE_URL on Vercel)')
+  if (!key) throw new Error('Supabase key missing (set VITE_SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY on Vercel)')
   return createClient(url, key, { auth: { persistSession: false } })
 }
 
@@ -151,7 +157,14 @@ export default async function handler(req, res) {
   }
 
   const started = Date.now()
-  const supabase = supabaseAdmin()
+  let supabase
+  try {
+    supabase = supabaseAdmin()
+  } catch (err) {
+    // We can't write anywhere if supabase itself is misconfigured — just
+    // return so the caller (or Vercel logs) can see the error.
+    return res.status(500).json({ ok: false, error: err.message })
+  }
 
   // ---- Step 1: load the stream count + items + previous count ----
   const { data: count, error: cErr } = await supabase
@@ -166,6 +179,22 @@ export default async function handler(req, res) {
   if (!isTikTokRoom) {
     return res.status(400).json({ ok: false, error: `Auto-reconcile only supports TikTok rooms. This count is at: ${count.location?.name}` })
   }
+
+  // Write a "running" row immediately so the function is visible in
+  // Audit History even if a later step fails. window_from/window_to are
+  // NOT NULL in the schema — seed them with the count's timestamp, then
+  // overwrite once we've computed the real window.
+  await supabase
+    .from('stream_reconciliations')
+    .upsert({
+      stream_count_id: countId,
+      triggered_by: triggeredBy,
+      triggered_by_user_id: triggeredByUserId,
+      source: 'tiktok_api',
+      window_from: count.count_time,
+      window_to: count.count_time,
+      status: 'running',
+    }, { onConflict: 'stream_count_id' })
 
   const [itemsRes, prevCountRes] = await Promise.all([
     supabase.from('stream_count_items')
@@ -221,16 +250,17 @@ export default async function handler(req, res) {
     lines = result.lines
     observed = result.observed
   } catch (err) {
-    // Persist failure so the audit-history page can show it
-    const failureRecord = {
-      ...baseRecord,
-      status: 'failed',
-      error_message: err.message || String(err),
-      duration_ms: Date.now() - started,
-    }
+    // Persist failure so the audit-history page can show it. We already
+    // wrote a "running" row up-top, so just update it.
     await supabase
       .from('stream_reconciliations')
-      .upsert(failureRecord, { onConflict: 'stream_count_id' })
+      .update({
+        ...baseRecord,
+        status: 'failed',
+        error_message: err.message || String(err),
+        duration_ms: Date.now() - started,
+      })
+      .eq('stream_count_id', countId)
     return res.status(500).json({ ok: false, error: err.message })
   }
 
