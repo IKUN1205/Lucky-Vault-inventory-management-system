@@ -170,7 +170,10 @@ export default function UserManagement() {
   const openEditModal = (user) => {
     setEditingUser({
       ...user,
-      allowed_pages: user.allowed_pages || ['/']
+      allowed_pages: user.allowed_pages || ['/'],
+      // Existing rows without can_login (NULL) are treated as enabled
+      // for backwards-compat; only an explicit false disables.
+      can_login: user.can_login !== false,
     })
   }
 
@@ -198,7 +201,12 @@ export default function UserManagement() {
         .update({
           name: editingUser.name.trim(),
           pin: editingUser.pin,
-          allowed_pages: editingUser.allowed_pages
+          allowed_pages: editingUser.allowed_pages,
+          // Default to true on save so the toggle's "on by default" state
+          // sticks even on rows that pre-date the can_login column. The
+          // UI ensures editingUser.can_login is always set explicitly
+          // when the modal opens.
+          can_login: editingUser.can_login !== false,
         })
         .eq('id', editingUser.id)
 
@@ -566,6 +574,37 @@ export default function UserManagement() {
                     </button>
                   </div>
                 </div>
+              </div>
+
+              {/* Login enable toggle. People created inline from the
+                  Stream Counts form (createUser) default to can_login=false
+                  because most of those rows are just "who streamed" tags,
+                  not login accounts. When they SHOULD be a login account
+                  (like the shared "Streamer" PIN setup) this toggle is
+                  the only UI to flip it on without going into SQL. */}
+              <div className="flex items-center justify-between bg-vault-darker/40 border border-vault-border rounded-lg px-4 py-3">
+                <div>
+                  <div className="text-sm font-medium text-white">Allow login</div>
+                  <div className="text-xs text-gray-500 mt-0.5">
+                    If off, this person can't sign in with their PIN — even though they
+                    still appear in dropdowns (e.g. "who streamed last").
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingUser({ ...editingUser, can_login: !editingUser.can_login })}
+                  role="switch"
+                  aria-checked={editingUser.can_login}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    editingUser.can_login ? 'bg-vault-gold' : 'bg-vault-border'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      editingUser.can_login ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
               </div>
 
               {/* Page Access */}
