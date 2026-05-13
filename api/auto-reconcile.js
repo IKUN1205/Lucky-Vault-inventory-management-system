@@ -90,9 +90,22 @@ function explodeOrderToLines(o) {
 // Harvest TikTok orders via in-page response interception. Same approach
 // proven in /api/tiktok-fetch-orders — let TikTok's own page JS fetch,
 // we just listen for the responses.
+//
+// Pagination: TikTok's default page loads ~20 orders. For sessions counted
+// 3-4 days after the actual stream (per Lucky Vault workflow), the last
+// stream's orders can be on page 2-5. After the initial response we scroll
+// the table to the bottom and click the "next page" arrow repeatedly until:
+//   (a) we've captured an order older than fromTs (covered the window), or
+//   (b) no new orders came in after a click (end of list), or
+//   (c) we've done MAX_PAGES iterations (safety cap).
+// `fromTs` can be null — meaning "no lower bound, just take everything
+// we can reach". In that case we stop on (b) or (c) only.
+const MAX_PAGES = 6  // ~120 orders max per run
+
 async function harvestTikTokOrders({ rawCookie, fromTs, toTs }) {
   const cookies = parseCookieHeader(rawCookie)
   const harvested = []
+  let pageInfo = { pagesLoaded: 1, hitOlderThanWindow: false, hitEndOfList: false }
 
   const browser = await puppeteer.launch({
     args: chromium.args,
@@ -124,12 +137,59 @@ async function harvestTikTokOrders({ rawCookie, fromTs, toTs }) {
     if (/login|signin|account\/verify/i.test(page.url())) {
       throw new Error('TikTok cookies stale — got redirected to login.')
     }
+    // Initial response usually arrives within a few seconds.
     await new Promise(r => setTimeout(r, 5000))
+
+    // Helper: does the harvested set already include an order older than the
+    // lower bound? Once yes, we've covered the requested window.
+    const haveCoveredWindow = () => {
+      if (!fromTs) return false  // no lower bound → never "covered"
+      return harvested.some(o => {
+        const ct = parseInt(o.trade_order_module?.create_time || '0', 10) || 0
+        return ct < fromTs
+      })
+    }
+
+    // Pagination loop
+    for (let i = 1; i < MAX_PAGES; i++) {
+      if (haveCoveredWindow()) { pageInfo.hitOlderThanWindow = true; break }
+      const beforeCount = harvested.length
+
+      // Try scrolling the page first — some pagination is on-scroll
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {})
+      await new Promise(r => setTimeout(r, 1500))
+
+      // Click the "next page" pagination arrow. TikTok uses Arco Design,
+      // so we try several common selectors for the next-page button.
+      const clicked = await page.evaluate(() => {
+        const selectors = [
+          '.arco-pagination-item-next:not(.arco-pagination-item-disabled)',
+          '[class*="pagination-next"]:not([class*="disabled"])',
+          'button[aria-label="Next"]:not([disabled])',
+          'li[title="Next Page"]:not(.arco-pagination-item-disabled)',
+        ]
+        for (const sel of selectors) {
+          const btn = document.querySelector(sel)
+          if (btn) { btn.click(); return sel }
+        }
+        return null
+      }).catch(() => null)
+
+      // Wait for the next response to land
+      await new Promise(r => setTimeout(r, 3500))
+
+      if (harvested.length === beforeCount) {
+        // No new orders → either end of list or pagination control not found
+        pageInfo.hitEndOfList = !clicked
+        break
+      }
+      pageInfo.pagesLoaded = i + 1
+    }
   } finally {
     await browser.close()
   }
 
-  // Dedupe + filter
+  // Dedupe + filter to [fromTs, toTs] (each bound optional)
   const seen = new Set()
   const inWindow = []
   for (const o of harvested) {
@@ -137,10 +197,17 @@ async function harvestTikTokOrders({ rawCookie, fromTs, toTs }) {
     if (!id || seen.has(id)) continue
     seen.add(id)
     const ct = parseInt(o.trade_order_module?.create_time || '0', 10) || 0
-    if (ct >= fromTs && ct <= toTs) inWindow.push(o)
+    if (fromTs != null && ct < fromTs) continue
+    if (toTs != null && ct > toTs) continue
+    inWindow.push(o)
   }
   const lines = inWindow.flatMap(explodeOrderToLines).filter(l => l.is_live)
-  return { lines, observed: harvested.length, inWindowOrderCount: inWindow.length }
+  return {
+    lines,
+    observed: harvested.length,
+    inWindowOrderCount: inWindow.length,
+    pageInfo,
+  }
 }
 
 export default async function handler(req, res) {
@@ -212,20 +279,31 @@ export default async function handler(req, res) {
   const items = itemsRes.data || []
   const prevCount = prevCountRes.data || null
 
-  // Window: from previous count to this count. If no previous, 36h back.
-  const windowTo = new Date(count.count_time)
-  const windowFrom = prevCount
-    ? new Date(prevCount.count_time)
-    : new Date(windowTo.getTime() - 36 * 60 * 60 * 1000)
-  const fromTs = Math.floor(windowFrom.getTime() / 1000)
+  // Window:
+  //   lower bound = previous count's time (or NONE if no previous count —
+  //     in that case we paginate back as far as we can and let the harvest
+  //     decide what to keep).
+  //   upper bound = NOW, not the count's time. The count may be entered
+  //     hours after the actual stream ended, and TikTok sometimes finalises
+  //     order create_time slightly after the sale — pinning the upper bound
+  //     to NOW means late-arriving orders within that gap still count.
+  // The "(一定是最新的一场 stream) 但是点货的时间可能是三四天后" workflow
+  // (per Will): no time-based lower bound when no prev count, and we
+  // paginate back as needed.
+  const windowTo = new Date()
+  const windowFrom = prevCount ? new Date(prevCount.count_time) : null
+  const fromTs = windowFrom ? Math.floor(windowFrom.getTime() / 1000) : null
   const toTs = Math.floor(windowTo.getTime() / 1000)
 
+  // For the DB column (NOT NULL): when there's no prev count, fall back to
+  // count_time itself so the row stays valid. We'll overwrite to the
+  // earliest-seen-order timestamp after harvest if we want a real display.
   const baseRecord = {
     stream_count_id: countId,
     triggered_by: triggeredBy,
     triggered_by_user_id: triggeredByUserId,
     source: 'tiktok_api',
-    window_from: windowFrom.toISOString(),
+    window_from: (windowFrom || new Date(count.count_time)).toISOString(),
     window_to: windowTo.toISOString(),
     threshold: RECONCILE_THRESHOLD,
   }
@@ -243,12 +321,27 @@ export default async function handler(req, res) {
   // ---- Step 3: fetch TikTok orders ----
   let lines = []
   let observed = 0
+  let pageInfo = null
+  let inWindowOrderCount = 0
   try {
     const rawCookie = process.env.TIKTOK_COOKIE
     if (!rawCookie) throw new Error('TIKTOK_COOKIE env var not set')
     const result = await harvestTikTokOrders({ rawCookie, fromTs, toTs })
     lines = result.lines
     observed = result.observed
+    pageInfo = result.pageInfo
+    inWindowOrderCount = result.inWindowOrderCount
+
+    // When there's no prev count, our windowFrom is null and we just
+    // record the count_time as a placeholder. Now that we've harvested,
+    // overwrite window_from with the oldest LIVE order's time so the
+    // Audit History row reflects what we actually searched.
+    if (!windowFrom && lines.length > 0) {
+      const oldestUnix = Math.min(...lines.map(l => l.create_unix || 0).filter(Boolean))
+      if (oldestUnix) {
+        baseRecord.window_from = new Date(oldestUnix * 1000).toISOString()
+      }
+    }
   } catch (err) {
     // Persist failure so the audit-history page can show it. We already
     // wrote a "running" row up-top, so just update it.
@@ -359,7 +452,7 @@ export default async function handler(req, res) {
         sessionLabel: triggeredBy === 'auto_after_count'
           ? '(auto-fetched after stream count)'
           : '(manual reconcile)',
-        windowFrom: windowFrom.toLocaleString(),
+        windowFrom: windowFrom ? windowFrom.toLocaleString() : '(no previous count)',
         windowTo: windowTo.toLocaleString(),
         totalPlatform,
         totalSystem,
@@ -387,7 +480,10 @@ export default async function handler(req, res) {
   return res.status(200).json({
     ok: true,
     triggered_by: triggeredBy,
-    window: { from: windowFrom.toISOString(), to: windowTo.toISOString() },
+    window: {
+      from: windowFrom ? windowFrom.toISOString() : null,
+      to: windowTo.toISOString(),
+    },
     summary: {
       total_platform_units: totalPlatform,
       total_system_units: totalSystem,
@@ -396,6 +492,10 @@ export default async function handler(req, res) {
       unmapped_count: unmapped.length,
       tiktok_lines: lines.length,
       orders_observed: observed,
+      orders_in_window: inWindowOrderCount,
+      pages_loaded: pageInfo?.pagesLoaded || 1,
+      hit_older_than_window: pageInfo?.hitOlderThanWindow || false,
+      hit_end_of_list: pageInfo?.hitEndOfList || false,
     },
     lark: larkResult,
     duration_ms: Date.now() - started,
