@@ -6,6 +6,10 @@
     {
       "path": "/api/aftership-sync",
       "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/detect-missing-counts",
+      "schedule": "0 */2 * * *"
     }
   ]
 }
