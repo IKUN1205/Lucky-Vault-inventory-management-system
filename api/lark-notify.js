@@ -476,6 +476,12 @@ function buildMessage(body) {
     // Per-stream reconciliation: compare stream-count outflow against TikTok
     // platform sales for the same LIVE session. Sent to the per-room group
     // (e.g. PACKHEADS group) so the streamer and manager see it immediately.
+    //
+    // NOTE: production runs of auto-reconcile call Lark DIRECTLY (inlined
+    // builder in api/auto-reconcile.js) to bypass the Vercel-auth 401 on
+    // inter-function loopback. This builder is kept here for parity in
+    // case anything else POSTs type='reconciliation' — keep it in sync
+    // with api/auto-reconcile.js:buildReconciliationMessage.
     const {
       roomName,
       streamerName,
@@ -488,13 +494,39 @@ function buildMessage(body) {
       flaggedRows = [],        // [{ product, platform, system, diff }]
       unmappedCount = 0,
       threshold = 5,
+      mergedSessionCount = 1,
+      perCreator = [],         // [{ creator, total_qty, line_count, earliest_unix, latest_unix }]
     } = body
     const lines = []
-    lines.push(`🔍 Stream Reconciliation — ${(roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')}`)
-    if (streamerName) lines.push(`Streamer: ${streamerName}`)
-    if (sessionLabel) lines.push(`Session: ${sessionLabel}`)
-    if (windowFrom || windowTo) lines.push(`Window: ${windowFrom || '?'} → ${windowTo || '?'}`)
-    lines.push('')
+    const isMerged = (mergedSessionCount || 1) > 1
+    const room = (roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')
+
+    if (isMerged) {
+      lines.push(`🔀 MERGED Reconciliation — ${mergedSessionCount} sessions`)
+      lines.push(`Room: ${room}`)
+      if (sessionLabel) lines.push(`Session: ${sessionLabel}`)
+      if (windowFrom || windowTo) lines.push(`Window: ${windowFrom || '?'} → ${windowTo || '?'}`)
+      lines.push('')
+      lines.push(`⚠️ This count covered multiple LIVE streams. Per-stream attribution is not reliable — investigate any discrepancy across ALL streamers below.`)
+      lines.push('')
+      lines.push('Per-creator TikTok sales:')
+      for (const c of perCreator) {
+        const span = c.earliest_unix && c.latest_unix && c.earliest_unix !== c.latest_unix
+          ? ` (${formatUnixShortPT(c.earliest_unix)} → ${formatUnixShortPT(c.latest_unix)})`
+          : c.earliest_unix
+            ? ` (${formatUnixShortPT(c.earliest_unix)})`
+            : ''
+        lines.push(`  • ${c.creator}: ${c.total_qty} units${span}`)
+      }
+      lines.push('')
+    } else {
+      lines.push(`🔍 Stream Reconciliation — ${room}`)
+      if (streamerName) lines.push(`Streamer: ${streamerName}`)
+      if (sessionLabel) lines.push(`Session: ${sessionLabel}`)
+      if (windowFrom || windowTo) lines.push(`Window: ${windowFrom || '?'} → ${windowTo || '?'}`)
+      lines.push('')
+    }
+
     lines.push(`Totals — TikTok ${totalPlatform ?? 0} · Count ${totalSystem ?? 0} · Diff ${(totalDiff ?? 0) > 0 ? '+' : ''}${totalDiff ?? 0}`)
     lines.push('')
     if (flaggedRows.length === 0) {
@@ -548,4 +580,20 @@ function nowUtcStamp() {
   }).formatToParts(new Date())
   const get = (t) => parts.find(p => p.type === t)?.value || ''
   return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')} PT`
+}
+
+// Short LA-local format used in per-creator session breakdowns
+// ("Mon 19:00 PT"). Kept in sync with auto-reconcile.js.
+function formatUnixShortPT(unix) {
+  if (!unix) return '?'
+  const d = new Date(unix * 1000)
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d)
+  const get = (t) => parts.find(p => p.type === t)?.value || ''
+  return `${get('weekday')} ${get('hour')}:${get('minute')} PT`
 }

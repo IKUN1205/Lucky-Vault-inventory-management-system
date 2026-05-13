@@ -72,6 +72,23 @@ function nowLocalStamp() {
 // Reconciliation Lark message. Mirrors the builder in api/lark-notify.js
 // (kept in sync intentionally — small duplication beats the alternative of
 // auto-reconcile depending on the HTTP loopback that 401's out).
+// Format a unix timestamp as "Mon 19:00 PT" — used in the per-creator
+// merged-session breakdown so reviewers can see when each LIVE block
+// ran. Falls back to '?' when the unix is null/0/missing.
+function formatUnixShortPT(unix) {
+  if (!unix) return '?'
+  const d = new Date(unix * 1000)
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d)
+  const get = (t) => parts.find(p => p.type === t)?.value || ''
+  return `${get('weekday')} ${get('hour')}:${get('minute')} PT`
+}
+
 function buildReconciliationMessage({
   roomName,
   streamerName,
@@ -84,13 +101,42 @@ function buildReconciliationMessage({
   flaggedRows = [],
   unmappedCount = 0,
   threshold = 5,
+  mergedSessionCount = 1,
+  perCreator = [],
 }) {
   const lines = []
-  lines.push(`🔍 Stream Reconciliation — ${(roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')}`)
-  if (streamerName) lines.push(`Streamer: ${streamerName}`)
-  if (sessionLabel) lines.push(`Session: ${sessionLabel}`)
-  if (windowFrom || windowTo) lines.push(`Window: ${windowFrom || '?'} → ${windowTo || '?'}`)
-  lines.push('')
+  const isMerged = (mergedSessionCount || 1) > 1
+  const room = (roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')
+
+  if (isMerged) {
+    // Loud header so a glance at Lark distinguishes a merged audit from a
+    // clean one. The 90% case (single LIVE session) keeps the original
+    // 🔍 header untouched.
+    lines.push(`🔀 MERGED Reconciliation — ${mergedSessionCount} sessions`)
+    lines.push(`Room: ${room}`)
+    if (sessionLabel) lines.push(`Session: ${sessionLabel}`)
+    if (windowFrom || windowTo) lines.push(`Window: ${windowFrom || '?'} → ${windowTo || '?'}`)
+    lines.push('')
+    lines.push(`⚠️ This count covered multiple LIVE streams. Per-stream attribution is not reliable — investigate any discrepancy across ALL streamers below.`)
+    lines.push('')
+    lines.push('Per-creator TikTok sales:')
+    for (const c of perCreator) {
+      const span = c.earliest_unix && c.latest_unix && c.earliest_unix !== c.latest_unix
+        ? ` (${formatUnixShortPT(c.earliest_unix)} → ${formatUnixShortPT(c.latest_unix)})`
+        : c.earliest_unix
+          ? ` (${formatUnixShortPT(c.earliest_unix)})`
+          : ''
+      lines.push(`  • ${c.creator}: ${c.total_qty} units${span}`)
+    }
+    lines.push('')
+  } else {
+    lines.push(`🔍 Stream Reconciliation — ${room}`)
+    if (streamerName) lines.push(`Streamer: ${streamerName}`)
+    if (sessionLabel) lines.push(`Session: ${sessionLabel}`)
+    if (windowFrom || windowTo) lines.push(`Window: ${windowFrom || '?'} → ${windowTo || '?'}`)
+    lines.push('')
+  }
+
   lines.push(`Totals — TikTok ${totalPlatform ?? 0} · Count ${totalSystem ?? 0} · Diff ${(totalDiff ?? 0) > 0 ? '+' : ''}${totalDiff ?? 0}`)
   lines.push('')
   if (flaggedRows.length === 0) {
@@ -453,6 +499,41 @@ export default async function handler(req, res) {
     }
   }
 
+  // Per-creator breakdown. Each TikTok order line carries live_creator
+  // (extracted in explodeOrderToLines). When a stream count covers
+  // multiple LIVE sessions (the streamer who was supposed to count
+  // before going live skipped it), this map will have >1 entry — that's
+  // the signal that the overall audit's per-streamer attribution is
+  // unreliable, even if the combined totals match. lark + audit-history
+  // surface this as a "MERGED" indicator so the human reviewer doesn't
+  // mistake a coincidentally-matching combined total for a clean audit.
+  const creatorMap = new Map()
+  for (const l of lines) {
+    const creator = l.live_creator || '(unknown)'
+    const entry = creatorMap.get(creator) || {
+      creator,
+      total_qty: 0,
+      line_count: 0,
+      earliest_unix: Infinity,
+      latest_unix: 0,
+    }
+    entry.total_qty += l.quantity
+    entry.line_count += 1
+    if (l.create_unix) {
+      entry.earliest_unix = Math.min(entry.earliest_unix, l.create_unix)
+      entry.latest_unix = Math.max(entry.latest_unix, l.create_unix)
+    }
+    creatorMap.set(creator, entry)
+  }
+  const perCreator = Array.from(creatorMap.values())
+    .map(c => ({
+      ...c,
+      // Normalise the sentinel back to null for storage
+      earliest_unix: c.earliest_unix === Infinity ? null : c.earliest_unix,
+    }))
+    .sort((a, b) => (a.earliest_unix || 0) - (b.earliest_unix || 0))
+  const mergedSessionCount = perCreator.length
+
   // Count side, by product_id, signed (positive = sold/missing,
   // negative = found/appeared)
   const countByProduct = new Map()
@@ -505,6 +586,8 @@ export default async function handler(req, res) {
     unmapped_count: unmapped.length,
     rows,
     unmapped,
+    merged_session_count: mergedSessionCount,
+    per_creator_breakdown: perCreator,
     status: 'success',
     duration_ms: Date.now() - started,
   }
@@ -551,6 +634,8 @@ export default async function handler(req, res) {
         flaggedRows: flaggedForLark,
         unmappedCount: unmapped.length,
         threshold: RECONCILE_THRESHOLD,
+        mergedSessionCount,
+        perCreator,
       })
       const r = await fetch(webhookUrl, {
         method: 'POST',
