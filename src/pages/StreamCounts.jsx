@@ -437,17 +437,41 @@ export default function StreamCounts() {
       // reconciled, so don't even fire the request for them. The function
       // takes ~30s server-side; result shows up in /audit-history when
       // done, with failures persisted there as well.
+      // Use sendBeacon when available so the request survives the user
+      // closing the tab / navigating away immediately after submit. We saw
+      // Yazi's 5/13 count never trigger reconciliation because the plain
+      // fetch was cancelled by the browser before it reached Vercel.
+      // sendBeacon is fire-and-forget by design and the browser guarantees
+      // delivery even during unload — but it only supports POST + a Blob
+      // body, so we don't get to inspect the response. The server still
+      // writes a "running" row immediately so we can see the run started.
+      // Fallback to fetch on older browsers (older Safari before iOS 13).
       try {
         const locName = locations.find(l => l.id === form.location_id)?.name || ''
         if (/TikTok\s*Packheads/i.test(locName)) {
-          fetch('/api/auto-reconcile', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              count_id: streamCount.id,
-              trigger: 'auto_after_count',
-            }),
-          }).catch(err => console.error('[auto-reconcile] request failed:', err))
+          const url = '/api/auto-reconcile'
+          const payload = JSON.stringify({
+            count_id: streamCount.id,
+            trigger: 'auto_after_count',
+          })
+          let sent = false
+          if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+            // Blob with explicit JSON mimetype so the API route's
+            // express-style body parser still sees req.body as JSON.
+            const blob = new Blob([payload], { type: 'application/json' })
+            sent = navigator.sendBeacon(url, blob)
+          }
+          if (!sent) {
+            // Best-effort fallback. keepalive: true asks the browser to
+            // continue the request through page unload — same intent as
+            // sendBeacon but on the fetch API.
+            fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: payload,
+              keepalive: true,
+            }).catch(err => console.error('[auto-reconcile] request failed:', err))
+          }
           addToast('Auto-reconcile started — check Audit History in ~30 seconds.', 'info')
         }
       } catch (err) {
