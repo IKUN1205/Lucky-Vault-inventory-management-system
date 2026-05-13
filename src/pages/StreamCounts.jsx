@@ -5,8 +5,7 @@ import {
   fetchInventoryForRoom,
   createStreamCount,
   createStreamCountItems,
-  deleteStreamCount,
-  deleteStreamCountItemsByCountId,
+  softDeleteStreamCount,
   createUser,
   updateInventory,
   fetchStreamCounts,
@@ -331,16 +330,22 @@ export default function StreamCounts() {
       
       const streamCountId = streamCount?.id
       const undoLocationId = form.location_id
+      const undoRoomName = locations.find(l => l.id === form.location_id)?.name || 'Unknown room'
+      const undoStreamerName = users.find(u => u.id === form.streamer_id)?.name || 'Unknown'
+      const undoCountedByName = users.find(u => u.id === form.counted_by_id)?.name || 'Unknown'
       const undo = async () => {
         try {
           // Reverse every inventory delta we applied
           for (const d of appliedDeltas) {
             await updateInventory(d.product_id, undoLocationId, -d.delta)
           }
-          // Delete child rows first (FK), then the parent
+          // Soft-delete the count (set deleted=true). Hard-deleting was
+          // the original cause of "Lark says X but DB has no row" — we
+          // keep the row now so the audit trail matches the Lark
+          // notification that already fired. fetchStreamCounts hides
+          // deleted rows so Session History stays clean.
           if (streamCountId) {
-            await deleteStreamCountItemsByCountId(streamCountId)
-            await deleteStreamCount(streamCountId)
+            await softDeleteStreamCount(streamCountId)
           }
           addToast('Undone — stream count reverted, inventory restored', 'info')
           // Refresh recent counts list
@@ -348,6 +353,26 @@ export default function StreamCounts() {
           setRecentCounts(data.slice(0, 10))
           // Send user back to step 1 so they can redo
           setStep(1)
+
+          // Fire-and-forget Lark "undone" follow-up. The original
+          // stream_count Lark already went out by the time the Undo
+          // toast appears — Lark doesn't support recall, so we send a
+          // second message so the room group knows the prior numbers
+          // are void. Same dual-target dispatch as the original.
+          try {
+            fetch('/api/lark-notify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                type: 'stream_count_undone',
+                roomName: undoRoomName,
+                streamerName: undoStreamerName,
+                countedByName: undoCountedByName,
+              }),
+            }).catch(err => console.error('[lark-notify] stream_count_undone request failed:', err))
+          } catch (err) {
+            console.error('[lark-notify] failed to build stream_count_undone payload:', err)
+          }
         } catch (err) {
           console.error('Undo failed:', err)
           addToast('Undo failed — check console', 'error')

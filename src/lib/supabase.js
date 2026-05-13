@@ -536,6 +536,18 @@ export const createStreamCountItems = async (items) => {
   return data
 }
 
+// Soft-delete: mark a stream_count as deleted instead of removing the row.
+// Used by the Undo flow so the parent row stays as an audit trail (matching
+// the Lark notification that was already fired). fetchStreamCounts filters
+// these out, so Session History stays clean.
+export const softDeleteStreamCount = async (id) => {
+  const { error } = await supabase
+    .from('stream_counts')
+    .update({ deleted: true })
+    .eq('id', id)
+  if (error) throw error
+}
+
 export const fetchStreamCounts = async (locationId = null, dateFrom = null, dateTo = null) => {
   let query = supabase
     .from('stream_counts')
@@ -545,11 +557,14 @@ export const fetchStreamCounts = async (locationId = null, dateFrom = null, date
       streamer:users!stream_counts_streamer_id_fkey(name),
       counted_by:users!stream_counts_counted_by_id_fkey(name)
     `)
-  
+    // Hide soft-deleted counts (treat NULL deleted as not-deleted for
+    // backwards compatibility with rows that pre-date the column).
+    .or('deleted.is.null,deleted.eq.false')
+
   if (locationId) query = query.eq('location_id', locationId)
   if (dateFrom) query = query.gte('count_time', dateFrom)
   if (dateTo) query = query.lte('count_time', dateTo)
-  
+
   const { data, error } = await query.order('count_time', { ascending: false })
   if (error) throw error
   return data || []

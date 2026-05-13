@@ -59,6 +59,14 @@ export default async function handler(req, res) {
     return handleStreamCount(body, res)
   }
 
+  // stream_count_undone follows the same dual-target dispatch but with a
+  // shorter "void the previous message" payload. Used when a streamer hits
+  // the Undo button on the Submit toast — by that point the original Lark
+  // already went out, so the room group needs to know not to trust it.
+  if (type === 'stream_count_undone') {
+    return handleStreamCountUndone(body, res)
+  }
+
   // Per-stream reconciliation should land in the room's own group, not the
   // main "all activity" channel. Fall back to main URL if no room webhook
   // is configured for the room (so messages aren't silently dropped).
@@ -176,6 +184,57 @@ async function handleStreamCount(body, res) {
   }))
 
   return res.status(200).json({ ok: results.every(r => r.ok), results })
+}
+
+// ---- stream_count_undone: dual-target dispatch for cancellation ----
+//
+// Same fan-out as handleStreamCount (main group brief + room group). The
+// streamer clicked Undo on the post-submit toast, so the count never
+// landed in the audit history but the original Lark already went out.
+// We send a short "ignore the previous message" follow-up.
+async function handleStreamCountUndone(body, res) {
+  const mainWebhook = process.env.LARK_WEBHOOK_URL
+  const roomWebhook = getRoomWebhook(body.roomName)
+
+  const text = buildStreamCountUndone(body)
+
+  const sends = []
+  if (mainWebhook) sends.push({ target: 'main', url: mainWebhook, text })
+  if (roomWebhook) sends.push({ target: 'room', url: roomWebhook, text })
+
+  if (sends.length === 0) {
+    console.error('[lark-notify] stream_count_undone: no webhooks configured', body.roomName)
+    return res.status(500).json({ error: 'No webhooks configured (main + room both missing)' })
+  }
+
+  const results = await Promise.all(sends.map(async s => {
+    try {
+      const r = await fetch(s.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text: s.text } })
+      })
+      const txt = await r.text()
+      return { target: s.target, ok: r.ok, status: r.status, response: txt }
+    } catch (err) {
+      console.error(`[lark-notify] stream_count_undone ${s.target} send failed:`, err)
+      return { target: s.target, ok: false, error: String(err?.message || err) }
+    }
+  }))
+
+  return res.status(200).json({ ok: results.every(r => r.ok), results })
+}
+
+function buildStreamCountUndone(body) {
+  const { roomName, streamerName, countedByName } = body
+  const room = (roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')
+  const lines = []
+  lines.push(`↩️ Stream Count UNDONE — ${room}`)
+  lines.push(`Counter: ${countedByName || '?'} (was recording ${streamerName || '?'}'s session)`)
+  lines.push(`Time: ${nowUtcStamp()}`)
+  lines.push('')
+  lines.push('⚠️ The previous Stream Count message above is VOID — please disregard those numbers. A new count will be submitted shortly.')
+  return lines.join('\n')
 }
 
 // Match the room name (e.g. "Stream Room - TikTok RocketsHQ") to the right
