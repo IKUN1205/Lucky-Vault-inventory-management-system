@@ -39,6 +39,81 @@ function supabaseAdmin() {
   return createClient(url, key, { auth: { persistSession: false } })
 }
 
+// Map a room name (e.g. "Stream Room - TikTok Packheads") to the per-room
+// Lark webhook env var. Kept in sync with the version in api/lark-notify.js
+// — duplicated here so we don't have to do an inter-function HTTP call
+// (which Vercel Authentication was blocking with 401).
+function getRoomWebhookForReconcile(roomName) {
+  if (!roomName) return null
+  const n = String(roomName)
+  if (n.includes('RocketsHQ'))    return process.env.LARK_WEBHOOK_STREAM_ROCKETSHQ    || null
+  if (n.includes('Packheads'))    return process.env.LARK_WEBHOOK_STREAM_PACKHEADS    || null
+  if (n.includes('LuckyVaultUS')) return process.env.LARK_WEBHOOK_STREAM_LUCKYVAULTUS || null
+  if (n.includes('SlabbiePatty')) return process.env.LARK_WEBHOOK_STREAM_SLABBIEPATTY || null
+  return null
+}
+
+// Server-side LA-local timestamp ("2026-05-13 08:56 PT"). Matches the format
+// used by api/lark-notify.js so all Lark messages look consistent.
+function nowLocalStamp() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date())
+  const get = (t) => parts.find(p => p.type === t)?.value || ''
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')} PT`
+}
+
+// Reconciliation Lark message. Mirrors the builder in api/lark-notify.js
+// (kept in sync intentionally — small duplication beats the alternative of
+// auto-reconcile depending on the HTTP loopback that 401's out).
+function buildReconciliationMessage({
+  roomName,
+  streamerName,
+  sessionLabel,
+  windowFrom,
+  windowTo,
+  totalPlatform,
+  totalSystem,
+  totalDiff,
+  flaggedRows = [],
+  unmappedCount = 0,
+  threshold = 5,
+}) {
+  const lines = []
+  lines.push(`🔍 Stream Reconciliation — ${(roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')}`)
+  if (streamerName) lines.push(`Streamer: ${streamerName}`)
+  if (sessionLabel) lines.push(`Session: ${sessionLabel}`)
+  if (windowFrom || windowTo) lines.push(`Window: ${windowFrom || '?'} → ${windowTo || '?'}`)
+  lines.push('')
+  lines.push(`Totals — TikTok ${totalPlatform ?? 0} · Count ${totalSystem ?? 0} · Diff ${(totalDiff ?? 0) > 0 ? '+' : ''}${totalDiff ?? 0}`)
+  lines.push('')
+  if (flaggedRows.length === 0) {
+    lines.push(`✅ All products match within ±${threshold}`)
+  } else {
+    lines.push(`⚠️ ${flaggedRows.length} product${flaggedRows.length === 1 ? '' : 's'} off by ${threshold}+:`)
+    for (const r of flaggedRows.slice(0, 15)) {
+      const sign = r.diff > 0 ? '+' : ''
+      lines.push(`  • ${r.product || 'Unknown'}: TikTok ${r.platform || 0} · Count ${r.system || 0} · ${sign}${r.diff || 0}`)
+    }
+    if (flaggedRows.length > 15) {
+      lines.push(`  …and ${flaggedRows.length - 15} more`)
+    }
+  }
+  if (unmappedCount > 0) {
+    lines.push('')
+    lines.push(`ℹ️ ${unmappedCount} TikTok product${unmappedCount === 1 ? '' : 's'} unmapped — open Sales Audit to map them.`)
+  }
+  lines.push('')
+  lines.push(`Time: ${nowLocalStamp()}`)
+  return lines.join('\n')
+}
+
 function parseCookieHeader(raw) {
   return String(raw || '')
     .split(';')
@@ -441,20 +516,28 @@ export default async function handler(req, res) {
   }
 
   // ---- Step 6: send Lark ----
+  // Direct webhook POST — earlier we routed through /api/lark-notify, but
+  // that meant auto-reconcile (a server-side function) had to fetch ITSELF
+  // via a public URL constructed from process.env.VERCEL_URL. On projects
+  // with Vercel Authentication enabled (or when VERCEL_URL points to the
+  // preview-style deployment URL), that loopback hits the platform auth
+  // layer and returns HTTP 401 before the request reaches our code — so
+  // EVERY reconciliation Lark silently failed. Going direct to the room
+  // webhook cuts out the broken hop entirely.
   let larkResult = null
   try {
-    const flaggedForLark = flaggedRows.slice(0, 15).map(r => ({
-      product: r.product_name,
-      platform: r.platform_qty,
-      system: r.system_qty,
-      diff: r.diff,
-    }))
-    const baseUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000'
-    const larkRes = await fetch(`${baseUrl}/api/lark-notify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'reconciliation',
+    const roomWebhook = getRoomWebhookForReconcile(count.location?.name)
+    const webhookUrl = roomWebhook || process.env.LARK_WEBHOOK_URL
+    if (!webhookUrl) {
+      larkResult = { ok: false, error: 'No webhook configured for this room' }
+    } else {
+      const flaggedForLark = flaggedRows.slice(0, 15).map(r => ({
+        product: r.product_name,
+        platform: r.platform_qty,
+        system: r.system_qty,
+        diff: r.diff,
+      }))
+      const messageText = buildReconciliationMessage({
         roomName: count.location?.name,
         streamerName: count.streamer?.name,
         sessionLabel: triggeredBy === 'auto_after_count'
@@ -468,18 +551,23 @@ export default async function handler(req, res) {
         flaggedRows: flaggedForLark,
         unmappedCount: unmapped.length,
         threshold: RECONCILE_THRESHOLD,
-      }),
-    })
-    const larkData = await larkRes.json().catch(() => ({}))
-    if (larkRes.ok && larkData.ok) {
-      larkResult = { ok: true, target: larkData.target || 'unknown' }
-      // Stamp lark_sent_at
-      await supabase
-        .from('stream_reconciliations')
-        .update({ lark_sent_at: new Date().toISOString(), lark_target: larkData.target || null })
-        .eq('stream_count_id', countId)
-    } else {
-      larkResult = { ok: false, error: larkData?.error || `HTTP ${larkRes.status}` }
+      })
+      const r = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text: messageText } }),
+      })
+      if (r.ok) {
+        const target = roomWebhook ? 'room' : 'main'
+        larkResult = { ok: true, target }
+        await supabase
+          .from('stream_reconciliations')
+          .update({ lark_sent_at: new Date().toISOString(), lark_target: target })
+          .eq('stream_count_id', countId)
+      } else {
+        const detail = await r.text().catch(() => '')
+        larkResult = { ok: false, error: `Lark webhook HTTP ${r.status}${detail ? `: ${detail.slice(0, 100)}` : ''}` }
+      }
     }
   } catch (err) {
     larkResult = { ok: false, error: err.message }
