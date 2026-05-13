@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
 import {
   fetchLocations,
   fetchUsers,
@@ -26,8 +25,7 @@ import {
   User,
   ChevronDown,
   ChevronUp,
-  History,
-  ShieldCheck
+  History
 } from 'lucide-react'
 
 // Helper to extract Launch Name from full product name
@@ -966,17 +964,14 @@ export default function StreamCounts() {
             
             {/* Actions */}
             <div className="mt-6 pt-6 border-t border-vault-border space-y-2">
-              {/* Per-stream reconciliation — surface this for the rooms where
-                  we have a TikTok export to compare against. Currently only
-                  the TikTok rooms map cleanly, so gate by the location name. */}
+              {/* TikTok rooms get reconciled automatically by /api/auto-reconcile
+                  in the background — no manual reconcile button anymore.
+                  Surface a hint so the streamer knows where to look for the
+                  result. */}
               {report.stream_count_id && /TikTok/i.test(report.location_name || '') && (
-                <Link
-                  to={`/reconcile?count_id=${report.stream_count_id}`}
-                  className="btn btn-secondary w-full"
-                >
-                  <ShieldCheck size={20} />
-                  Reconcile against TikTok LIVE session
-                </Link>
+                <div className="text-center text-xs text-gray-500 py-2 px-3 bg-vault-darker/40 rounded border border-vault-border/50">
+                  Auto-reconcile running — check <span className="text-vault-gold">Audit History</span> in ~30 seconds.
+                </div>
               )}
               <button onClick={handleNewCount} className="btn btn-primary w-full">
                 <ClipboardList size={20} />

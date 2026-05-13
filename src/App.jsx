@@ -26,7 +26,6 @@ import UserManagement from './pages/UserManagement'
 import Turnover from './pages/Turnover'
 import ExecutiveReport from './pages/ExecutiveReport'
 import Audit from './pages/Audit'
-import Reconcile from './pages/Reconcile'
 import StorefrontImport from './pages/StorefrontImport'
 import StreamSessions from './pages/StreamSessions'
 import AuditHistory from './pages/AuditHistory'
@@ -125,9 +124,6 @@ function AppRoutes() {
       } />
       <Route path="/audit" element={
         <ProtectedRoute path="/audit"><Layout><Audit /></Layout></ProtectedRoute>
-      } />
-      <Route path="/reconcile" element={
-        <ProtectedRoute path="/reconcile"><Layout><Reconcile /></Layout></ProtectedRoute>
       } />
       <Route path="/storefront-import" element={
         <ProtectedRoute path="/storefront-import"><Layout><StorefrontImport /></Layout></ProtectedRoute>

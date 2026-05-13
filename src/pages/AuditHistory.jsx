@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import {
   ShieldCheck,
@@ -12,7 +11,7 @@ import {
   Send,
   ChevronDown,
   ChevronRight,
-  ExternalLink,
+  Loader2,
 } from 'lucide-react'
 
 // ============================================================================
@@ -28,6 +27,7 @@ const STATUS_META = {
   success: { icon: CheckCircle2, color: 'text-green-400', label: 'Done' },
   failed:  { icon: XCircle, color: 'text-red-400', label: 'Failed' },
   no_data: { icon: AlertTriangle, color: 'text-yellow-400', label: 'No data' },
+  running: { icon: Loader2, color: 'text-blue-400', label: 'Running…' },
 }
 
 export default function AuditHistory() {
@@ -207,7 +207,6 @@ export default function AuditHistory() {
                   <th className="pb-2 text-right">Flagged</th>
                   <th className="pb-2 text-center">Status</th>
                   <th className="pb-2 text-center">Lark</th>
-                  <th className="pb-2 pr-2"></th>
                 </tr>
               </thead>
               <tbody>
@@ -291,18 +290,11 @@ function ReconRow({ r, expanded, onToggle }) {
             <span className="text-xs text-gray-600">—</span>
           )}
         </td>
-        <td className="py-2.5 pr-2">
-          <Link
-            to={`/reconcile?count_id=${r.stream_count_id}`}
-            className="text-xs text-vault-gold hover:underline flex items-center gap-1"
-          >
-            <ExternalLink size={12} /> Open
-          </Link>
-        </td>
+        <td className="py-2.5 pr-2"></td>
       </tr>
       {expanded && (
         <tr className="bg-vault-darker/30">
-          <td colSpan={11} className="px-2 py-3">
+          <td colSpan={10} className="px-2 py-3">
             <ExpandedDetail r={r} />
           </td>
         </tr>

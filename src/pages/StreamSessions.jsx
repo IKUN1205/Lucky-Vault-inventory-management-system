@@ -1,12 +1,10 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { fetchStreamCounts, fetchLocations } from '../lib/supabase'
 import {
   ClipboardList,
   Calendar,
   Filter,
-  ShieldCheck,
   AlertTriangle,
   CheckCircle2,
   RefreshCw,
@@ -24,8 +22,9 @@ import {
 // the "look at /reports for last 7 days" workflow when you want to drill
 // into a specific session.
 //
-// Each row has a one-click Reconcile button that jumps to /reconcile?count_id=X
-// so the user can compare that session against TikTok sales.
+// TikTok-room sessions show "auto" in the actions column — they're reconciled
+// automatically by /api/auto-reconcile after the count is saved; results live
+// in /audit-history. There is no manual reconcile flow anymore.
 // ============================================================================
 
 export default function StreamSessions() {
@@ -148,7 +147,7 @@ export default function StreamSessions() {
           Stream Session History
         </h1>
         <p className="text-gray-400 mt-1">
-          Every stream count, one row per session. Click <strong className="text-vault-gold">Reconcile</strong> on any row to compare that session's outflow against TikTok sales.
+          Every stream count, one row per session. TikTok rooms are auto-reconciled — see results in <strong className="text-vault-gold">Audit History</strong>.
         </p>
       </div>
 
@@ -318,17 +317,11 @@ function SessionRow({ count, expanded, items, onToggle }) {
         </td>
         <td className="py-2.5 pr-2 text-right">
           {isTikTokRoom ? (
-            <Link
-              to={`/reconcile?count_id=${count.id}`}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-vault-gold/10 text-vault-gold hover:bg-vault-gold/20 border border-vault-gold/30 rounded text-xs font-medium"
-            >
-              <ShieldCheck size={12} />
-              Reconcile
-            </Link>
-          ) : (
-            <span className="text-xs text-gray-600" title="Reconcile is only wired up for TikTok rooms right now">
-              —
+            <span className="text-xs text-gray-500" title="Auto-reconcile runs after every TikTok stream count — see results in Audit History">
+              auto
             </span>
+          ) : (
+            <span className="text-xs text-gray-600">—</span>
           )}
         </td>
       </tr>
