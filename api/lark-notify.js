@@ -6,8 +6,10 @@
 // Supports multiple notification types via the `type` field:
 //   - "move"         : triggered after a Move Inventory transfer
 //   - "receive"      : triggered after Receive on Intake to Master
+//                      DUAL TARGET: Acquisitions Squad + Backend Core groups
 //   - "online_order" : triggered after Ship Order on Online Orders
 //   - "purchased"    : triggered after Log Purchase on Purchased Items
+//                      Routed to Acquisitions Squad group
 //   - "stream_count" : triggered after Submit on Stream Counts (DUAL TARGET:
 //                      brief to main group, detailed to per-room group)
 //
@@ -20,6 +22,14 @@
 //   LARK_WEBHOOK_STREAM_PACKHEADS          → TikTok Packheads room group
 //   LARK_WEBHOOK_STREAM_LUCKYVAULTUS       → eBay LuckyVaultUS room group
 //   LARK_WEBHOOK_STREAM_SLABBIEPATTY       → eBay SlabbiePatty room group
+//
+// Squad webhooks (Vercel env vars) — used by acquisition lifecycle notifications:
+//   LARK_WEBHOOK_ACQUISITIONS              → Acquisitions Squad group
+//                                            (target for `purchased` + `receive`)
+//   LARK_WEBHOOK_BACKEND_CORE              → Backend Core group
+//                                            (additional target for `receive`)
+// Either env var falls back to LARK_WEBHOOK_URL if unset, so messages are
+// never silently dropped. Duplicate targets are deduped before dispatch.
 
 // Carrier → tracking URL template. Keep keys in sync with the dropdown in
 // PurchasedItems.jsx. "Other" / unknown carriers fall back to 17track which
@@ -65,6 +75,17 @@ export default async function handler(req, res) {
   // already went out, so the room group needs to know not to trust it.
   if (type === 'stream_count_undone') {
     return handleStreamCountUndone(body, res)
+  }
+
+  // Acquisition lifecycle types route to dedicated squad groups, NOT the main
+  // "all activity" channel. The acquisitions squad owns purchase orders and
+  // intake; the backend core group also needs visibility into intake (to
+  // reconcile against accounting / system state).
+  if (type === 'purchased') {
+    return handlePurchased(body, res)
+  }
+  if (type === 'receive') {
+    return handleReceive(body, res)
   }
 
   // Per-stream reconciliation should land in the room's own group, not the
@@ -219,6 +240,105 @@ async function handleStreamCountUndone(body, res) {
     } catch (err) {
       console.error(`[lark-notify] stream_count_undone ${s.target} send failed:`, err)
       return { target: s.target, ok: false, error: String(err?.message || err) }
+    }
+  }))
+
+  return res.status(200).json({ ok: results.every(r => r.ok), results })
+}
+
+// ---- purchased: single-target dispatch (Acquisitions Squad) ----
+//
+// "🛍️ New Purchase Logged" — fires when a user submits Purchased Items.
+// Routed to LARK_WEBHOOK_ACQUISITIONS; falls back to LARK_WEBHOOK_URL if the
+// squad webhook isn't configured so messages aren't silently dropped during
+// rollout.
+async function handlePurchased(body, res) {
+  let text
+  try { text = buildMessage(body) }
+  catch (err) {
+    console.error('[lark-notify] purchased: bad payload:', err)
+    return res.status(400).json({ error: err.message || 'Invalid payload' })
+  }
+
+  const acqUrl = process.env.LARK_WEBHOOK_ACQUISITIONS
+  const url = acqUrl || process.env.LARK_WEBHOOK_URL
+  if (!url) {
+    console.error('[lark-notify] purchased: no webhook configured (LARK_WEBHOOK_ACQUISITIONS / LARK_WEBHOOK_URL)')
+    return res.status(500).json({ error: 'No webhook configured' })
+  }
+
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ msg_type: 'text', content: { text } })
+    })
+    const txt = await r.text()
+    if (!r.ok) {
+      console.error('[lark-notify] purchased: Lark non-OK:', r.status, txt)
+      return res.status(502).json({ error: 'Lark webhook failed', status: r.status, details: txt })
+    }
+    return res.status(200).json({ ok: true, lark: txt, target: acqUrl ? 'acquisitions' : 'main_fallback' })
+  } catch (err) {
+    console.error('[lark-notify] purchased: send failed:', err)
+    return res.status(500).json({ error: 'Failed to call Lark webhook', message: String(err?.message || err) })
+  }
+}
+
+// ---- receive: dual-target dispatch (Acquisitions Squad + Backend Core) ----
+//
+// "📥 Inventory Received" — fires when a user clicks Receive on Intake to
+// Master. Goes to BOTH the Acquisitions Squad (owns the intake workflow) and
+// the Backend Core group (reconciles inventory against accounting / financial
+// records). Each target falls back to LARK_WEBHOOK_URL if its dedicated env
+// var isn't set; duplicate URLs are deduped so we never send the same message
+// twice to the same channel.
+async function handleReceive(body, res) {
+  let text
+  try { text = buildMessage(body) }
+  catch (err) {
+    console.error('[lark-notify] receive: bad payload:', err)
+    return res.status(400).json({ error: err.message || 'Invalid payload' })
+  }
+
+  const acqUrl  = process.env.LARK_WEBHOOK_ACQUISITIONS
+  const coreUrl = process.env.LARK_WEBHOOK_BACKEND_CORE
+  const mainUrl = process.env.LARK_WEBHOOK_URL
+
+  // Build target list. Each "slot" prefers its dedicated webhook, falls back
+  // to main. Track the resolved URL + a label so the response payload is
+  // useful for debugging "did acquisitions actually get it?".
+  const slots = [
+    { name: acqUrl  ? 'acquisitions'      : 'main_fallback_acq',  url: acqUrl  || mainUrl },
+    { name: coreUrl ? 'backend_core'      : 'main_fallback_core', url: coreUrl || mainUrl },
+  ]
+  // Dedupe by URL — if both slots resolved to the same channel (e.g. both
+  // fall back to LARK_WEBHOOK_URL), only send once. Keep the first label.
+  const seen = new Set()
+  const targets = []
+  for (const s of slots) {
+    if (!s.url || seen.has(s.url)) continue
+    seen.add(s.url)
+    targets.push(s)
+  }
+
+  if (targets.length === 0) {
+    console.error('[lark-notify] receive: no webhooks configured')
+    return res.status(500).json({ error: 'No webhooks configured (LARK_WEBHOOK_ACQUISITIONS / LARK_WEBHOOK_BACKEND_CORE / LARK_WEBHOOK_URL)' })
+  }
+
+  const results = await Promise.all(targets.map(async t => {
+    try {
+      const r = await fetch(t.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text } })
+      })
+      const txt = await r.text()
+      return { target: t.name, ok: r.ok, status: r.status, response: txt }
+    } catch (err) {
+      console.error(`[lark-notify] receive ${t.name} send failed:`, err)
+      return { target: t.name, ok: false, error: String(err?.message || err) }
     }
   }))
 
