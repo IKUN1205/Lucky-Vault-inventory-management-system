@@ -530,6 +530,22 @@ function formatCost(amount, currency) {
   return `${symbol}${Number(amount).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} ${currency}`
 }
 
+// Format "now" in America/Los_Angeles (the business HQ timezone) so the Lark
+// stamp matches what the streamer's local clock says. Using UTC here forced
+// everyone to mentally subtract 7-8 hours every time they read a message —
+// confusing enough that Will mistook a real submission timestamp for a
+// missing record. PT is the LA tz abbreviation that's correct year-round
+// (vs PDT/PST which flip with daylight saving).
 function nowUtcStamp() {
-  return new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date())
+  const get = (t) => parts.find(p => p.type === t)?.value || ''
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')} PT`
 }
