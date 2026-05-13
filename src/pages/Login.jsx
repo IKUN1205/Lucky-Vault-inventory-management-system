@@ -1,12 +1,15 @@
 import React, { useState } from 'react'
 import { useAuth } from '../lib/AuthContext'
-import { Lock, AlertCircle } from 'lucide-react'
+import { Lock, AlertCircle, User as UserIcon, ArrowLeft } from 'lucide-react'
 
 export default function Login() {
-  const { login } = useAuth()
+  const { login, loginAs } = useAuth()
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  // When multiple users share the same PIN, login() returns a list of
+  // candidates so we can ask "who are you?" — see AuthContext.login.
+  const [pickerCandidates, setPickerCandidates] = useState(null)
 
   const handlePinChange = (e) => {
     const value = e.target.value.replace(/\D/g, '').slice(0, 4)
@@ -16,7 +19,7 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    
+
     if (pin.length !== 4) {
       setError('Please enter a 4-digit PIN')
       return
@@ -26,10 +29,31 @@ export default function Login() {
     const result = await login(pin)
     setLoading(false)
 
+    if (result.success) return
+    if (result.needsPicker) {
+      setPickerCandidates(result.candidates)
+      setError('')
+      return
+    }
+    setError(result.error)
+    setPin('')
+  }
+
+  const handlePickIdentity = async (userId) => {
+    setLoading(true)
+    const result = await loginAs(userId)
+    setLoading(false)
     if (!result.success) {
       setError(result.error)
+      setPickerCandidates(null)
       setPin('')
     }
+  }
+
+  const handleBackToPin = () => {
+    setPickerCandidates(null)
+    setPin('')
+    setError('')
   }
 
   const handleKeypadClick = (num) => {
@@ -48,6 +72,54 @@ export default function Login() {
   const handleClear = () => {
     setPin('')
     setError('')
+  }
+
+  // Identity picker — shown when 2+ users share the entered PIN.
+  if (pickerCandidates) {
+    return (
+      <div className="min-h-screen bg-vault-darker flex items-center justify-center p-4">
+        <div className="w-full max-w-sm">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-gradient-to-br from-vault-gold to-amber-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <UserIcon className="text-vault-dark" size={32} />
+            </div>
+            <h1 className="font-display text-3xl font-bold text-white">Who are you?</h1>
+            <p className="text-gray-400 mt-2">Tap your name to continue</p>
+          </div>
+
+          <div className="bg-vault-surface border border-vault-border rounded-xl p-4 space-y-2 mb-4">
+            {pickerCandidates.map(c => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => handlePickIdentity(c.id)}
+                disabled={loading}
+                className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-vault-dark border border-vault-border hover:bg-vault-gold hover:text-vault-dark hover:border-vault-gold transition-all disabled:opacity-50"
+              >
+                <span className="font-semibold">{c.name}</span>
+                <span className="text-xs text-gray-500">{c.role || 'Member'}</span>
+              </button>
+            ))}
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-2 text-red-400 text-sm mb-4 justify-center">
+              <AlertCircle size={16} />
+              {error}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleBackToPin}
+            disabled={loading}
+            className="w-full flex items-center justify-center gap-2 py-2 text-sm text-gray-400 hover:text-white transition-colors disabled:opacity-50"
+          >
+            <ArrowLeft size={14} /> Back to PIN entry
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
