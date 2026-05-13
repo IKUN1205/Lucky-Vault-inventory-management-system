@@ -51,6 +51,18 @@ function ProtectedRoute({ children, path }) {
   }
 
   if (!hasAccess(path)) {
+    // Special case: user lands on "/" but doesn't have Dashboard access.
+    // Without this, restricted-role users (e.g. Streamer with only
+    // /stream-counts) would hit Access Denied immediately after login
+    // and have no obvious way out. Redirect them to whatever page they
+    // CAN access. If they have zero allowed pages, fall through to
+    // Access Denied (which shows a Logout escape hatch).
+    if (path === '/') {
+      const fallback = (user.allowed_pages || []).find(p => p !== '/')
+      if (fallback) {
+        return <Navigate to={fallback} replace />
+      }
+    }
     return <AccessDenied />
   }
 
