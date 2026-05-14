@@ -1,6 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { fetchStreamCounts, fetchLocations } from '../lib/supabase'
+import { useAuth } from '../lib/AuthContext'
+import { ToastContainer, useToast } from '../components/Toast'
+import DeleteCountModal, { useDeleteCountFlow } from '../components/DeleteCountModal'
 import {
   ClipboardList,
   Calendar,
@@ -12,6 +15,7 @@ import {
   Search,
   Eye,
   Package,
+  Trash2,
 } from 'lucide-react'
 
 // ============================================================================
@@ -28,6 +32,10 @@ import {
 // ============================================================================
 
 export default function StreamSessions() {
+  const { user, isAdmin } = useAuth()
+  const { toasts, addToast, removeToast } = useToast()
+  const admin = isAdmin()
+
   const [counts, setCounts] = useState([])
   const [locations, setLocations] = useState([])
   const [loading, setLoading] = useState(true)
@@ -42,6 +50,32 @@ export default function StreamSessions() {
   // Optional: line-item drill-in cache (loaded on row expand)
   const [expandedId, setExpandedId] = useState(null)
   const [itemsCache, setItemsCache] = useState({})
+
+  // Admin-only soft-delete flow (shared with Audit History). Reloads the
+  // session list on success so the deleted count vanishes.
+  const deleteFlow = useDeleteCountFlow({
+    addToast,
+    userId: user?.id,
+    onReload: () => load(),
+  })
+
+  // Wrap deleteFlow.open with the data shape this page uses. `counts` is a
+  // flat list of stream_counts (top-level fields), unlike Audit History
+  // which has them nested under `stream_count`.
+  const askDelete = (c) => {
+    if (!c?.id) return
+    deleteFlow.open(
+      {
+        streamCountId: c.id,
+        locationName: c.location?.name,
+        streamerName: c.streamer?.name,
+        countTime: c.count_time,
+        reportedItems: c.total_sold,
+        locationId: c.location_id,
+      },
+      counts, // already flat with { id, location_id, count_time }
+    )
+  }
 
   useEffect(() => { load() }, [])
 
@@ -262,6 +296,8 @@ export default function StreamSessions() {
                     expanded={expandedId === c.id}
                     items={itemsCache[c.id]}
                     onToggle={() => toggleExpand(c.id)}
+                    admin={admin}
+                    onAskDelete={() => askDelete(c)}
                   />
                 ))}
               </tbody>
@@ -269,6 +305,9 @@ export default function StreamSessions() {
           </div>
         )}
       </div>
+
+      {deleteFlow.target && <DeleteCountModal {...deleteFlow.modalProps()} />}
+      <ToastContainer toasts={toasts} onClose={removeToast} />
     </div>
   )
 }
@@ -285,7 +324,7 @@ function SummaryCard({ label, value, subtext, colorClass = 'text-white' }) {
   )
 }
 
-function SessionRow({ count, expanded, items, onToggle }) {
+function SessionRow({ count, expanded, items, onToggle, admin, onAskDelete }) {
   const time = count.count_time ? new Date(count.count_time) : null
   const dayStr = time ? time.toLocaleDateString('en-CA') : '—'
   const timeStr = time ? time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
@@ -319,13 +358,24 @@ function SessionRow({ count, expanded, items, onToggle }) {
           {count.total_discrepancies > 0 ? `+${count.total_discrepancies}` : '—'}
         </td>
         <td className="py-2.5 pr-2 text-right">
-          {isTikTokRoom ? (
-            <span className="text-xs text-gray-500" title="Auto-reconcile runs after every TikTok stream count — see results in Audit History">
-              auto
-            </span>
-          ) : (
-            <span className="text-xs text-gray-600">—</span>
-          )}
+          <div className="flex items-center justify-end gap-2">
+            {isTikTokRoom ? (
+              <span className="text-xs text-gray-500" title="Auto-reconcile runs after every TikTok stream count — see results in Audit History">
+                auto
+              </span>
+            ) : (
+              <span className="text-xs text-gray-600">—</span>
+            )}
+            {admin && (
+              <button
+                onClick={onAskDelete}
+                title="Soft-delete this count (admin only) — retract reverses inventory, hide does not"
+                className="p-1 rounded text-gray-500 hover:bg-red-500/10 hover:text-red-300"
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
+          </div>
         </td>
       </tr>
       {expanded && (
