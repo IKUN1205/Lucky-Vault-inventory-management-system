@@ -266,16 +266,47 @@ export async function harvestLiveSessionsFromAnalytics({ rawCookie }) {
     if (/login|signin|account\/verify/i.test(page.url())) {
       throw new Error('TikTok cookies stale — got redirected to login.')
     }
-    // The LIVE table is hydrated lazily — wait until rows appear (or
-    // give up after 25s).
+    // Initial hydration. The analytics-live page lazy-loads everything,
+    // including the LIVE performance table — and the table only shows
+    // when the "LIVE performance" sub-tab is active. Flow:
+    //  1. Wait for page chrome to render (12s)
+    //  2. Try clicking the "LIVE performance" sub-tab if not active
+    //  3. Long dwell for the table XHR(s) to land + render
+    //  4. Try scrolling so any infinite-load triggers
+    await new Promise(r => setTimeout(r, 12_000))
+
+    // Click "LIVE performance" / "LIVE" sub-tab so the table populates.
+    // The probe earlier confirmed the table is gated on this nav.
+    const clickedSubTab = await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('a, button, li, div'))
+      for (const el of els) {
+        const txt = (el.textContent || '').trim()
+        if ((txt === 'LIVE performance' || txt === 'LIVE') && el.offsetParent !== null) {
+          el.click()
+          return txt
+        }
+      }
+      return null
+    }).catch(() => null)
+
+    // Wait for table rows to appear after the click. waitForFunction
+    // with a generous timeout — the data XHR is slow on first render.
     try {
       await page.waitForFunction(
-        () => document.querySelectorAll('table tr').length > 1,
+        () => {
+          const trs = document.querySelectorAll('table tr')
+          // Require at least one data row (header has < 12 cells, data row has 12)
+          for (const tr of trs) {
+            if (tr.querySelectorAll('td').length >= 10) return true
+          }
+          return false
+        },
         { timeout: 25_000 }
       )
-    } catch {}
-    // Small extra dwell so all rows render
-    await new Promise(r => setTimeout(r, 4000))
+    } catch {
+      pageInfo.waitTimedOut = true
+    }
+    await new Promise(r => setTimeout(r, 3000))
 
     rawRows = await page.evaluate(() => {
       const out = []
@@ -283,11 +314,13 @@ export async function harvestLiveSessionsFromAnalytics({ rawCookie }) {
       for (const tr of trs) {
         const cells = Array.from(tr.querySelectorAll('th,td'))
           .map(c => (c.textContent || '').trim())
-        if (cells.length >= 10) out.push(cells)  // header has fewer, data rows have 12
+        if (cells.length >= 10) out.push(cells)
       }
       return out
     })
     pageInfo.rowCount = rawRows.length
+    pageInfo.clickedSubTab = clickedSubTab
+    pageInfo.finalUrl = page.url()
   } finally {
     await browser.close()
   }
