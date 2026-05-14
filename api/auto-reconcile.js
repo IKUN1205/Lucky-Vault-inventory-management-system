@@ -168,8 +168,8 @@ function buildReconciliationMessage({
 }
 
 // parseCookieHeader, explodeOrderToLines, and harvestTikTokOrders all live
-// in api/_lib/tiktok.js so /api/detect-missing-counts.js can reuse the
-// same proven logic without drift. Imported at the top of this file.
+// in api/_lib/tiktok.js so any future endpoint can reuse the same proven
+// logic without drift. Imported at the top of this file.
 
 export default async function handler(req, res) {
   if (req.method !== 'POST' && req.method !== 'GET') {

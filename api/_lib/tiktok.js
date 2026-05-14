@@ -1,9 +1,8 @@
 // api/_lib/tiktok.js
 //
-// Shared TikTok-seller-center harvester. Originally lived inline in
-// api/auto-reconcile.js; pulled out so api/detect-missing-counts.js can
-// reuse the same proven pagination + LIVE-tag extraction logic without
-// drift.
+// Shared TikTok-seller-center harvesters. Originally lived inline in
+// api/auto-reconcile.js; pulled out so any other endpoint can reuse the
+// same proven pagination + LIVE-tag extraction logic without drift.
 //
 // Vercel convention: directories under api/ whose name starts with `_`
 // are NOT deployed as serverless routes — they're shared modules only.
@@ -464,10 +463,11 @@ function parsePtWallClockToUnix(s) {
 // than `gapHours` between adjacent orders. Returns one entry per session,
 // each with creator + start/end unix + total qty / line count.
 //
-// Used by /api/detect-missing-counts to identify "a session ended at T"
-// then check whether anyone has counted since T. The 4h gap default
-// matches Lucky Vault's actual stream cadence — sessions are 2-4h long
-// with at least overnight in between, so 4h cleanly separates them.
+// Used by /api/auto-reconcile to build the per-session merged-audit
+// breakdown (different creators OR same creator with >4h gap = separate
+// sessions). The 4h gap default matches Lucky Vault's actual stream
+// cadence — sessions are 2-4h long with overnight breaks, so 4h
+// cleanly separates them.
 export function clusterLiveSessions(lines, { gapHours = 4 } = {}) {
   const gapSec = gapHours * 3600
   // Group by creator first, then walk each creator's lines chronologically
