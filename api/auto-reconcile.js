@@ -96,12 +96,47 @@ function formatUnixShortPT(unix) {
   return `${get('weekday')} ${get('hour')}:${get('minute')} PT`
 }
 
+// "5/12 3:39 PM PT" — used for window bounds + count submission time
+function formatDateTimePT(unix) {
+  if (!unix) return '?'
+  const d = new Date(unix * 1000)
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+    hour12: true,
+  }).format(d) + ' PT'
+}
+
+// "5/13 04:39" — used in per-session compact rows. 24h clock; no PT
+// suffix because the row context already says PT.
+function formatDateHHMMPT(unix) {
+  if (!unix) return '?'
+  const d = new Date(unix * 1000)
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    month: 'numeric', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d)
+  const get = (t) => parts.find(p => p.type === t)?.value || ''
+  return `${get('month')}/${get('day')} ${get('hour')}:${get('minute')}`
+}
+
+// Convert a JS Date or null → unix seconds for the builder
+function toUnix(dOrNull) {
+  if (!dOrNull) return null
+  return Math.floor(new Date(dOrNull).getTime() / 1000)
+}
+
 function buildReconciliationMessage({
   roomName,
   streamerName,
+  countedByName,
   sessionLabel,
-  windowFrom,
-  windowTo,
+  windowFromUnix,
+  windowToUnix,
+  countTimeUnix,
   totalPlatform,
   totalSystem,
   totalDiff,
@@ -110,58 +145,126 @@ function buildReconciliationMessage({
   threshold = 5,
   mergedSessionCount = 1,
   perCreator = [],
+  analyticsLiveSessions = [],
 }) {
   const lines = []
-  const isMerged = (mergedSessionCount || 1) > 1
   const room = (roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')
 
+  // Analytics LIVE is the authoritative source (TikTok's own per-session
+  // count). Order-list per-creator is only used as legacy fallback when
+  // Analytics LIVE harvest failed. The 🔀 MERGED indicator triggers on
+  // Analytics LIVE count when available, falling back to per_creator.
+  const liveSessions = Array.isArray(analyticsLiveSessions) ? analyticsLiveSessions : []
+  const sessionCount = liveSessions.length || (perCreator?.length || 0) || mergedSessionCount
+  const isMerged = sessionCount > 1
+  const liveAnalyticsTotal = liveSessions.reduce((s, x) => s + (x.items_sold || 0), 0)
+  const liveAnalyticsGmv = liveSessions.reduce((s, x) => s + (x.gmv_usd || 0), 0)
+
+  // ---- Header ----
   if (isMerged) {
-    // Loud header so a glance at Lark distinguishes a merged audit from a
-    // clean one. The 90% case (single LIVE session) keeps the original
-    // 🔍 header untouched.
-    lines.push(`🔀 MERGED Reconciliation — ${mergedSessionCount} sessions`)
+    lines.push(`🔀 MERGED Reconciliation — ${sessionCount} LIVE stream${sessionCount === 1 ? '' : 's'} covered`)
     lines.push(`Room: ${room}`)
-    if (sessionLabel) lines.push(`Session: ${sessionLabel}`)
-    if (windowFrom || windowTo) lines.push(`Window: ${windowFrom || '?'} → ${windowTo || '?'}`)
+  } else {
+    lines.push(`🔍 Stream Reconciliation — ${room}`)
+    if (streamerName) lines.push(`Streamer: ${streamerName}`)
+  }
+  if (countedByName) {
+    const ts = countTimeUnix ? formatDateTimePT(countTimeUnix) : ''
+    lines.push(`Counted by: ${countedByName}${ts ? `  ·  ${ts}` : ''}`)
+  }
+  if (sessionLabel && sessionLabel !== '(auto-fetched after stream count)') {
+    lines.push(`Session: ${sessionLabel}`)
+  }
+  if (windowFromUnix || windowToUnix) {
+    const wFrom = windowFromUnix ? formatDateTimePT(windowFromUnix) : '(no previous count)'
+    const wTo = windowToUnix ? formatDateTimePT(windowToUnix) : '?'
+    const durH = windowFromUnix && windowToUnix
+      ? Math.round((windowToUnix - windowFromUnix) / 3600)
+      : null
+    lines.push(`Window: ${wFrom}  →  ${wTo}${durH != null ? ` (${durH}h)` : ''}`)
+  }
+  lines.push('')
+
+  if (isMerged) {
+    lines.push(`⚠️ This count was submitted AFTER ${sessionCount} separate LIVE streams. Investigate each stream's audit individually rather than trusting the combined total.`)
     lines.push('')
-    lines.push(`⚠️ This count covered multiple LIVE streams. Per-stream attribution is not reliable — investigate any discrepancy across ALL streamers below.`)
+  }
+
+  // ---- Analytics LIVE sessions (primary block) ----
+  if (liveSessions.length > 0) {
+    lines.push(`🎯 TikTok Official LIVE sessions in window:`)
+    for (const s of liveSessions) {
+      const startStr = s.start_unix ? formatDateHHMMPT(s.start_unix) : '?'
+      const endStr = s.end_unix ? formatDateHHMMPT(s.end_unix) : '?'
+      const items = (s.items_sold || 0).toLocaleString()
+      const gmv = (s.gmv_usd || 0).toFixed(2)
+      lines.push(`  • ${s.title || '(untitled)'}: ${startStr} → ${endStr} PT   ${items} items   $${gmv}`)
+    }
+    lines.push('  ─────────────────')
+    lines.push(`  Total per TikTok analytics: ${liveAnalyticsTotal.toLocaleString()} items, $${liveAnalyticsGmv.toFixed(2)}`)
     lines.push('')
-    lines.push('Per-creator TikTok sales:')
+  } else if (perCreator.length > 0) {
+    // Legacy fallback when Analytics LIVE harvest failed
+    lines.push('Per-creator LIVE sales (from order list):')
     for (const c of perCreator) {
       const span = c.earliest_unix && c.latest_unix && c.earliest_unix !== c.latest_unix
         ? ` (${formatUnixShortPT(c.earliest_unix)} → ${formatUnixShortPT(c.latest_unix)})`
         : c.earliest_unix
           ? ` (${formatUnixShortPT(c.earliest_unix)})`
           : ''
-      lines.push(`  • ${c.creator}: ${c.total_qty} units${span}`)
+      lines.push(`  • ${c.creator}: ${c.total_qty || 0} units${span}`)
     }
-    lines.push('')
-  } else {
-    lines.push(`🔍 Stream Reconciliation — ${room}`)
-    if (streamerName) lines.push(`Streamer: ${streamerName}`)
-    if (sessionLabel) lines.push(`Session: ${sessionLabel}`)
-    if (windowFrom || windowTo) lines.push(`Window: ${windowFrom || '?'} → ${windowTo || '?'}`)
     lines.push('')
   }
 
-  lines.push(`Totals — TikTok ${totalPlatform ?? 0} · Count ${totalSystem ?? 0} · Diff ${(totalDiff ?? 0) > 0 ? '+' : ''}${totalDiff ?? 0}`)
+  // ---- Three-way totals comparison ----
+  lines.push('📊 Totals comparison')
+  lines.push(`  Count (what streamer reported): ${(totalSystem ?? 0).toLocaleString()} items`)
+  if (liveSessions.length > 0) {
+    const gap = (totalSystem || 0) - liveAnalyticsTotal
+    const gapStr = gap > 0 ? `gap: +${gap.toLocaleString()}` : gap < 0 ? `gap: ${gap.toLocaleString()}` : 'matches'
+    lines.push(`  TikTok Analytics LIVE: ${liveAnalyticsTotal.toLocaleString()} items   ← ${gapStr}`)
+  }
+  const mappedSuffix = unmappedCount > 0 ? '   ← needs Sales Audit mapping' : ''
+  lines.push(`  Order-list LIVE-tagged + mapped: ${(totalPlatform ?? 0).toLocaleString()} items${mappedSuffix}`)
+  if (liveSessions.length > 0) {
+    const gap = (totalSystem || 0) - liveAnalyticsTotal
+    if (Math.abs(gap) >= threshold) {
+      lines.push('')
+      lines.push(`  → ${Math.abs(gap).toLocaleString()} items not officially LIVE-attributed (could be non-LIVE shop sales / inventory shrinkage / miscount)`)
+    }
+  }
   lines.push('')
+
+  // ---- Flagged products ----
   if (flaggedRows.length === 0) {
     lines.push(`✅ All products match within ±${threshold}`)
   } else {
-    lines.push(`⚠️ ${flaggedRows.length} product${flaggedRows.length === 1 ? '' : 's'} off by ${threshold}+:`)
+    lines.push(`⚠️ ${flaggedRows.length} product${flaggedRows.length === 1 ? '' : 's'} with diff ≥ ${threshold}`)
+    // Identify the most extreme one for emphasis
+    const maxAbs = Math.max(...flaggedRows.map(r => Math.abs(r.diff || 0)))
     for (const r of flaggedRows.slice(0, 15)) {
       const sign = r.diff > 0 ? '+' : ''
-      lines.push(`  • ${r.product || 'Unknown'}: TikTok ${r.platform || 0} · Count ${r.system || 0} · ${sign}${r.diff || 0}`)
+      const isMax = flaggedRows.length > 1 && Math.abs(r.diff || 0) === maxAbs
+      const extraFound = r.diff > 0 && r.system < 0 ? ' (extra found)' : ''
+      const tag = isMax && Math.abs(r.diff) >= 50 ? '   ← biggest gap' : ''
+      lines.push(`  • ${r.product || 'Unknown'}: TikTok ${r.platform || 0} · Count ${r.system || 0} · ${sign}${r.diff || 0}${extraFound}${tag}`)
     }
     if (flaggedRows.length > 15) {
       lines.push(`  …and ${flaggedRows.length - 15} more`)
     }
   }
+
   if (unmappedCount > 0) {
     lines.push('')
     lines.push(`ℹ️ ${unmappedCount} TikTok product${unmappedCount === 1 ? '' : 's'} unmapped — open Sales Audit to map them.`)
   }
+
+  if (isMerged) {
+    lines.push('')
+    lines.push(`Next step: ask each streamer separately whether their session matches the items listed above.`)
+  }
+
   lines.push('')
   lines.push(`Time: ${nowLocalStamp()}`)
   return lines.join('\n')
@@ -197,7 +300,7 @@ export default async function handler(req, res) {
   // ---- Step 1: load the stream count + items + previous count ----
   const { data: count, error: cErr } = await supabase
     .from('stream_counts')
-    .select('id, location_id, streamer_id, counted_by_id, count_time, location:locations(name), streamer:users!stream_counts_streamer_id_fkey(name)')
+    .select('id, location_id, streamer_id, counted_by_id, count_time, location:locations(name), streamer:users!stream_counts_streamer_id_fkey(name), counted_by:users!stream_counts_counted_by_id_fkey(name)')
     .eq('id', countId)
     .single()
   if (cErr || !count) {
@@ -484,11 +587,13 @@ export default async function handler(req, res) {
       const messageText = buildReconciliationMessage({
         roomName: count.location?.name,
         streamerName: count.streamer?.name,
+        countedByName: count.counted_by?.name,
         sessionLabel: triggeredBy === 'auto_after_count'
           ? '(auto-fetched after stream count)'
           : '(manual reconcile)',
-        windowFrom: windowFrom ? windowFrom.toLocaleString() : '(no previous count)',
-        windowTo: windowTo.toLocaleString(),
+        windowFromUnix: toUnix(windowFrom),
+        windowToUnix: toUnix(windowTo),
+        countTimeUnix: toUnix(count.count_time),
         totalPlatform,
         totalSystem,
         totalDiff,
@@ -497,6 +602,7 @@ export default async function handler(req, res) {
         threshold: RECONCILE_THRESHOLD,
         mergedSessionCount,
         perCreator,
+        analyticsLiveSessions,
       })
       const r = await fetch(webhookUrl, {
         method: 'POST',

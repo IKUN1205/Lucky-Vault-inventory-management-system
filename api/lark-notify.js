@@ -600,8 +600,14 @@ function buildMessage(body) {
     // NOTE: production runs of auto-reconcile call Lark DIRECTLY (inlined
     // builder in api/auto-reconcile.js) to bypass the Vercel-auth 401 on
     // inter-function loopback. This builder is kept here for parity in
-    // case anything else POSTs type='reconciliation' — keep it in sync
-    // with api/auto-reconcile.js:buildReconciliationMessage.
+    // case anything else POSTs type='reconciliation'.
+    //
+    // ⚠️ TODO 2026-05-13: the inline builder in api/auto-reconcile.js was
+    // rewritten to a new template (3-way totals comparison, Analytics
+    // LIVE session list with titles, gap-explanation, "Next step" line).
+    // Nothing currently calls type='reconciliation' through this endpoint
+    // so the old format below is dead code today. If anything starts
+    // calling it, port the new format from auto-reconcile.js.
     const {
       roomName,
       streamerName,
