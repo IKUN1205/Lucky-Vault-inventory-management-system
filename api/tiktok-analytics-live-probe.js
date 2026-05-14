@@ -20,7 +20,7 @@ import puppeteer from 'puppeteer-core'
 import { parseCookieHeader } from './_lib/tiktok.js'
 
 export const config = {
-  maxDuration: 60,
+  maxDuration: 90,
 }
 
 export default async function handler(req, res) {
@@ -90,8 +90,28 @@ export default async function handler(req, res) {
       await browser.close()
       return res.status(401).json({ ok: false, error: 'Cookie stale — redirected to login' })
     }
-    // Dwell so async XHRs land
-    await new Promise(r => setTimeout(r, 10000))
+    // Long initial dwell — the LIVE session list is lazy-loaded after the
+    // page chrome finishes hydrating
+    await new Promise(r => setTimeout(r, 15000))
+
+    // Try to scroll the page so any "load on scroll" data fires
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {})
+    await new Promise(r => setTimeout(r, 5000))
+
+    // Try to click "LIVE performance" sub-tab if not already on it
+    await page.evaluate(() => {
+      // Look for an anchor / button containing "LIVE performance"
+      const els = Array.from(document.querySelectorAll('a, button, li, div'))
+      for (const el of els) {
+        const txt = (el.textContent || '').trim()
+        if (txt === 'LIVE performance' || txt === 'LIVE') {
+          el.click()
+          return true
+        }
+      }
+      return false
+    }).catch(() => {})
+    await new Promise(r => setTimeout(r, 5000))
 
     // Best-effort: dump a snapshot of table rows visible in the DOM, so we
     // can correlate XHR JSON with what the user actually sees.
@@ -112,20 +132,35 @@ export default async function handler(req, res) {
 
     await browser.close()
 
+    // Filter the URL list aggressively to only show ones that LOOK like data
+    // endpoints. Drop monitoring/tracking/CDN noise. We want to be able to
+    // visually spot the LIVE session list endpoint in this list.
+    const allDataXhrs = xhrCalls
+      .filter(x => {
+        const u = x.url
+        // Drop monitoring + tracking
+        if (/mcs(?:-sg)?\.tiktokv?\.com|mon\d+|libraweb|monitor_web|sentry|track|abtest_config|tiktokcdn/.test(u)) return false
+        // Drop user-webid / heartbeat
+        if (/\/v1\/user\/webid|\/v1\/list/.test(u)) return false
+        // Drop data: URIs
+        if (u.startsWith('data:')) return false
+        // Drop static assets / image
+        if (/\.(?:js|css|png|jpg|jpeg|gif|svg|woff2?|ico)/i.test(u)) return false
+        // Drop i18n / locale strings
+        if (/starling|i18n_ecom|i18n-resources|locales\/en\.json/.test(u)) return false
+        return true
+      })
+      .map(x => ({ url: x.url, status: x.status, shape: x.parsedShape }))
+
     return res.status(200).json({
       ok: true,
       url: 'https://seller-us.tiktok.com/compass/analytics-live?shop_region=US',
       xhr_count: xhrCalls.length,
       api_response_count: apiResponses.length,
-      // Skip the boring/static ones in the main output
-      api_responses: apiResponses.slice(0, 30),
+      data_xhrs_count: allDataXhrs.length,
+      // Most interesting list — should contain the LIVE session data endpoint
+      data_xhrs: allDataXhrs,
       dom: domSnapshot,
-      // Keep the full XHR list (truncated to 50) for completeness
-      all_xhrs_first_50: xhrCalls.slice(0, 50).map(x => ({
-        url: x.url,
-        status: x.status,
-        isJson: x.isJson,
-      })),
     })
   } catch (err) {
     try { await browser.close() } catch {}
