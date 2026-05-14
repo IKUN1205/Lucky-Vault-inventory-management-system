@@ -123,10 +123,32 @@ export default async function handler(req, res) {
           .map(c => (c.textContent || '').trim().slice(0, 80))
         if (cells.some(c => c)) rows.push(cells)
       }
+
+      // Also dump the Start time <th> HTML so we can see what clickable
+      // element triggers the sort. Useful for diagnosing why automated
+      // clicks aren't toggling the sort order.
+      let startTimeHeaderHtml = null
+      let allTHs = []
+      const ths = Array.from(document.querySelectorAll('th'))
+      for (const th of ths) {
+        const txt = (th.textContent || '').trim()
+        allTHs.push({
+          text: txt.slice(0, 40),
+          ariaSort: th.getAttribute('aria-sort'),
+          cls: th.getAttribute('class'),
+          childTags: Array.from(th.children).map(c => `${c.tagName}.${(c.getAttribute('class') || '').slice(0, 50)}`),
+        })
+        if (txt.startsWith('Start time')) {
+          startTimeHeaderHtml = th.outerHTML.slice(0, 2000)
+        }
+      }
+
       return {
         url: location.href,
         rowCount: rows.length,
-        rows: rows.slice(0, 10), // first 10 rows
+        rows: rows.slice(0, 10),
+        allTHs,
+        startTimeHeaderHtml,
       }
     })
 
