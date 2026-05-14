@@ -13,11 +13,13 @@ import chromium from '@sparticuz/chromium'
 import puppeteer from 'puppeteer-core'
 
 // Pagination cap. Each "page" of TikTok's order list is ~20 orders, so
-// 6 pages = ~120 orders. The longest single LIVE session we've observed
-// produced ~30 orders, so 120 covers ~4 sessions back. Bigger than this
-// risks Vercel's 60s function ceiling for callers that also do other
-// work (auto-reconcile spends time on Supabase round-trips after).
-export const MAX_PAGES = 6
+// 20 pages = ~400 orders. Now that we're on Vercel Pro (300s function
+// timeout instead of 60s on Hobby), we have headroom to paginate deeply
+// enough to cover 24-72h windows even on high-volume shops (15k+ orders
+// in inventory) — pagination stops early via haveCoveredWindow() once
+// we've crossed the requested fromTs, so deep windows only "spend" the
+// pages they need.
+export const MAX_PAGES = 20
 
 // Convert "name1=v1; name2=v2" into Puppeteer's cookie object shape.
 // Domains are pinned to .tiktok.com so the cookies actually apply when

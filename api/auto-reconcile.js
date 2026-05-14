@@ -17,7 +17,11 @@ import { createClient } from '@supabase/supabase-js'
 import { harvestTikTokOrders } from './_lib/tiktok.js'
 
 export const config = {
-  maxDuration: 60,
+  // 300s on Vercel Pro (was 60 on Hobby). Auto-reconcile is dominated by
+  // Chromium startup + TikTok pagination — the extra headroom lets us
+  // paginate deep enough to cover 24h+ windows even with high-volume
+  // shops (15k+ orders in inventory).
+  maxDuration: 300,
 }
 
 const RECONCILE_THRESHOLD = 5

@@ -27,7 +27,9 @@ import { createClient } from '@supabase/supabase-js'
 import { harvestTikTokOrders, clusterLiveSessions } from './_lib/tiktok.js'
 
 export const config = {
-  maxDuration: 60,
+  // 300s on Vercel Pro — gives the watchdog room to harvest 48h of orders
+  // for multiple rooms even when the shop has heavy order volume.
+  maxDuration: 300,
 }
 
 const CRON_SECRET = process.env.CRON_SECRET
