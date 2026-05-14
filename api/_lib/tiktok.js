@@ -308,69 +308,61 @@ export async function harvestLiveSessionsFromAnalytics({ rawCookie }) {
     await new Promise(r => setTimeout(r, 3000))
 
     // Sort by Start time descending. CRITICAL: the page defaults to
-    // sort-by-GMV-rank, which means sessions with low GMV ($400 chill
-    // streams, short test streams, etc.) drop OUT of the visible top-N
-    // rows even when they're in the recent time window. We need
-    // chronological order so that ALL sessions in any recent window
-    // surface at the top.
+    // sort-by-GMV-rank, so low-GMV sessions ($400 chill streams) drop
+    // out of the visible top-10 even when they're in our time window.
+    // After sorting by time DESC, the most recent N sessions surface.
     //
-    // Probe (api/tiktok-analytics-live-probe) showed TikTok's
-    // Core Design table puts the actual click target inside
-    // `.core-table-sorter` — the SVG icon container, NOT the whole
-    // <th>. Clicking the th outer area doesn't fire the sort handler.
+    // Click strategy: click the sort icon, parse first row date, and
+    // keep clicking until first row's date is today/yesterday (i.e.
+    // descending order). TikTok's Core Design sort cycles default→
+    // asc→desc→default on repeated clicks, but we don't depend on
+    // knowing the exact cycle — just stop when first row IS the most
+    // recent we expect.
     //
-    // Click sequence approach: click the sorter icon; check first
-    // row's date; if not most-recent-first, click again (cycles to
-    // desc). aria-sort isn't populated reliably so we determine
-    // direction by inspecting the rendered row order.
-    const sortFirstFirstDate = await page.evaluate(() => {
-      const ths = Array.from(document.querySelectorAll('th'))
-      const target = ths.find(th => (th.textContent || '').trim().startsWith('Start time'))
-      if (!target) return null
-      const sorter = target.querySelector('.core-table-sorter') ||
-                     target.querySelector('.core-table-cell-with-sorter') ||
-                     target.querySelector('[class*="sort"]')
-      if (sorter) sorter.click()
-      // Return first data row's Start time column text so caller can
-      // detect direction
-      const firstRow = document.querySelector('tbody tr')
-      if (!firstRow) return null
-      const cells = firstRow.querySelectorAll('td')
-      // Start time is the 3rd column (0=rank, 1=info, 2=start time)
-      return cells.length >= 3 ? cells[2].textContent.trim() : null
-    }).catch(() => null)
-
-    await new Promise(r => setTimeout(r, 3000))
-
-    // Read first row's date AFTER the click and parse out the date
-    // string. If it doesn't look like the most recent (i.e. matches
-    // today / yesterday in PT), click again to flip direction.
-    const afterFirst = await page.evaluate(() => {
-      const firstRow = document.querySelector('tbody tr')
-      if (!firstRow) return null
-      const cells = firstRow.querySelectorAll('td')
-      return cells.length >= 3 ? cells[2].textContent.trim() : null
-    }).catch(() => null)
-
-    // Detect ascending: if first row date contains the EARLIEST date
-    // (e.g. "May 7" when we're on May 13), click again
-    const looksAscending = afterFirst && /May\s+0?[1-9],\s*\d{4}/.test(afterFirst)
-      && !/(May\s+1[2-9]|May\s+2\d|May\s+3\d)/.test(afterFirst)
-    if (looksAscending) {
-      await page.evaluate(() => {
+    // The actual click target is `.core-table-sorter` (the SVG icon
+    // container) — clicking the outer <th> doesn't fire the handler.
+    const clickSorter = async () => {
+      return await page.evaluate(() => {
         const ths = Array.from(document.querySelectorAll('th'))
         const target = ths.find(th => (th.textContent || '').trim().startsWith('Start time'))
-        if (target) {
-          const sorter = target.querySelector('.core-table-sorter') ||
-                         target.querySelector('.core-table-cell-with-sorter')
-          if (sorter) sorter.click()
-        }
-      }).catch(() => {})
-      await new Promise(r => setTimeout(r, 3000))
+        if (!target) return false
+        const sorter = target.querySelector('.core-table-sorter') ||
+                       target.querySelector('.core-table-cell-with-sorter') ||
+                       target.querySelector('[class*="sort"]')
+        if (!sorter) return false
+        sorter.click()
+        return true
+      }).catch(() => false)
     }
-    pageInfo.sortClicked = sortFirstFirstDate !== null
-    pageInfo.firstRowDateAfterSort = afterFirst
-    pageInfo.flippedToDesc = looksAscending
+    const readFirstRowDate = async () => {
+      return await page.evaluate(() => {
+        const firstRow = document.querySelector('tbody tr')
+        if (!firstRow) return null
+        const cells = firstRow.querySelectorAll('td')
+        return cells.length >= 3 ? cells[2].textContent.trim() : null
+      }).catch(() => null)
+    }
+    // Determine "today" in LA so we know what a "fresh" date looks like
+    const todayLA = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Los_Angeles',
+      month: 'short', day: 'numeric',
+    }).format(new Date())  // e.g. "May 13"
+
+    pageInfo.sortAttempts = []
+    let lastSeenDate = await readFirstRowDate()
+    pageInfo.sortAttempts.push({ click: 0, firstRowDate: lastSeenDate })
+
+    // Click up to 4 times to find the desc state.
+    for (let i = 1; i <= 4; i++) {
+      const ok = await clickSorter()
+      if (!ok) break
+      await new Promise(r => setTimeout(r, 2500))
+      const d = await readFirstRowDate()
+      pageInfo.sortAttempts.push({ click: i, firstRowDate: d })
+      // Heuristic: first row date that mentions today's month-day = desc
+      if (d && d.includes(todayLA)) break
+      lastSeenDate = d
+    }
 
     rawRows = await page.evaluate(() => {
       const out = []
