@@ -300,11 +300,19 @@ export default async function handler(req, res) {
   // ---- Step 1: load the stream count + items + previous count ----
   const { data: count, error: cErr } = await supabase
     .from('stream_counts')
-    .select('id, location_id, streamer_id, counted_by_id, count_time, location:locations(name), streamer:users!stream_counts_streamer_id_fkey(name), counted_by:users!stream_counts_counted_by_id_fkey(name)')
+    .select('id, location_id, streamer_id, counted_by_id, count_time, deleted, location:locations(name), streamer:users!stream_counts_streamer_id_fkey(name), counted_by:users!stream_counts_counted_by_id_fkey(name)')
     .eq('id', countId)
     .single()
   if (cErr || !count) {
     return res.status(404).json({ ok: false, error: `Stream count not found: ${cErr?.message || ''}` })
+  }
+  // Safety net: don't audit a count that's been soft-deleted. The /api/delete-
+  // stream-count endpoint marks the next audit needs_recompute, but if some
+  // race fires this endpoint against an already-deleted count we should
+  // refuse rather than write a fresh audit row that the AuditHistory page
+  // will then hide.
+  if (count.deleted === true) {
+    return res.status(410).json({ ok: false, error: 'Stream count has been deleted; skipping audit.' })
   }
   // Only TikTok Packheads is wired to the TikTok seller-center cookie /
   // product mappings right now. Other TikTok rooms (RocketsHQ, etc.) would
@@ -323,6 +331,11 @@ export default async function handler(req, res) {
   // Audit History even if a later step fails. window_from/window_to are
   // NOT NULL in the schema — seed them with the count's timestamp, then
   // overwrite once we've computed the real window.
+  //
+  // Clear needs_recompute on the way in: this run *is* the recompute, so
+  // by the time we land a fresh window/totals the "stale" badge should
+  // be gone. If the run fails downstream the audit becomes failed, which
+  // is a louder signal than a lingering stale flag anyway.
   await supabase
     .from('stream_reconciliations')
     .upsert({
@@ -333,6 +346,8 @@ export default async function handler(req, res) {
       window_from: count.count_time,
       window_to: count.count_time,
       status: 'running',
+      needs_recompute: false,
+      recompute_reason: null,
     }, { onConflict: 'stream_count_id' })
 
   const [itemsRes, prevCountRes] = await Promise.all([

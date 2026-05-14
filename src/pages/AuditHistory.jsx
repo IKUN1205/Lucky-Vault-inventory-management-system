@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/AuthContext'
+import { ToastContainer, useToast } from '../components/Toast'
 import {
   ShieldCheck,
   Filter,
@@ -14,6 +16,9 @@ import {
   ChevronRight,
   Loader2,
   Users,
+  Trash2,
+  RotateCcw,
+  X,
 } from 'lucide-react'
 
 // ============================================================================
@@ -33,6 +38,10 @@ const STATUS_META = {
 }
 
 export default function AuditHistory() {
+  const { user, isAdmin } = useAuth()
+  const { toasts, addToast, removeToast } = useToast()
+  const admin = isAdmin()
+
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -42,7 +51,98 @@ export default function AuditHistory() {
   const [filterFlaggedOnly, setFilterFlaggedOnly] = useState(false)
   const [searchText, setSearchText] = useState('')
 
+  // Admin-only state for the delete-count flow. `deletingRow` is the
+  // reconciliation row currently shown in the confirm modal (null = closed).
+  const [deletingRow, setDeletingRow] = useState(null)
+  const [deleteReason, setDeleteReason] = useState('')
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false)
+  // Set of stream_reconciliation ids currently being re-audited. Used to
+  // disable the Re-audit button + show a spinner.
+  const [reauditing, setReauditing] = useState(new Set())
+
   useEffect(() => { load() }, [])
+
+  // ---- Admin: delete a stream_count (and flag the next audit as stale) ----
+  const handleDelete = async () => {
+    if (!deletingRow || !user?.id) return
+    const reason = (deleteReason || '').trim()
+    if (!reason) {
+      addToast('Reason is required', 'error')
+      return
+    }
+    try {
+      setDeleteSubmitting(true)
+      const r = await fetch('/api/delete-stream-count', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          count_id: deletingRow.stream_count?.id,
+          caller_user_id: user.id,
+          reason,
+        }),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok || !data.ok) {
+        addToast(`Delete failed: ${data.error || r.status}`, 'error')
+        return
+      }
+      const tail = data.next_audit_needs_recompute
+        ? ' — next audit flagged for re-run'
+        : ''
+      addToast(`Count deleted${tail}. Lark notified.`, 'success')
+      setDeletingRow(null)
+      setDeleteReason('')
+      // Reload so the deleted row vanishes and any needs_recompute flags
+      // we just set show up.
+      load()
+    } catch (err) {
+      console.error('[delete-stream-count] failed:', err)
+      addToast(`Delete failed: ${err.message || err}`, 'error')
+    } finally {
+      setDeleteSubmitting(false)
+    }
+  }
+
+  // ---- Re-audit: fire /api/auto-reconcile for a stale row ----
+  //
+  // The endpoint upserts into stream_reconciliations on the same
+  // stream_count_id, so the existing row gets overwritten (window_from,
+  // totals, rows, etc.) and needs_recompute resets to false on the next
+  // load. Background fire-and-forget so the page stays snappy.
+  const handleReaudit = async (row) => {
+    const countId = row.stream_count?.id
+    if (!countId) return
+    setReauditing(prev => new Set(prev).add(row.id))
+    try {
+      // We don't use sendBeacon here because the page isn't unloading —
+      // we want a real response so we can show a result toast.
+      const r = await fetch('/api/auto-reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          count_id: countId,
+          trigger: 'manual_recompute',
+          triggered_by_user_id: user?.id || null,
+        }),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok || !data.ok) {
+        addToast(`Re-audit failed: ${data.error || r.status}`, 'error')
+      } else {
+        addToast('Re-audit done — refreshing.', 'success')
+        load()
+      }
+    } catch (err) {
+      console.error('[re-audit] failed:', err)
+      addToast(`Re-audit failed: ${err.message || err}`, 'error')
+    } finally {
+      setReauditing(prev => {
+        const next = new Set(prev)
+        next.delete(row.id)
+        return next
+      })
+    }
+  }
 
   const load = async () => {
     try {
@@ -50,12 +150,18 @@ export default function AuditHistory() {
       setError(null)
       // Join with stream_counts via FK relationship. The streamer and
       // location come along through the stream_counts join.
+      //
+      // We pull `deleted` on the stream_count so we can hide reconciliations
+      // tied to soft-deleted counts (admin retroactive delete or post-submit
+      // Undo). For the admin user, "deleted = as if never entered" — the
+      // audit row that was created for the now-deleted count must vanish
+      // from the page.
       const { data, error: e } = await supabase
         .from('stream_reconciliations')
         .select(`
           *,
           stream_count:stream_counts!stream_reconciliations_stream_count_id_fkey(
-            id, count_time, location_id, streamer_id, total_sold,
+            id, count_time, location_id, streamer_id, total_sold, deleted,
             location:locations(name),
             streamer:users!stream_counts_streamer_id_fkey(name)
           )
@@ -63,7 +169,10 @@ export default function AuditHistory() {
         .order('created_at', { ascending: false })
         .limit(200)
       if (e) throw e
-      setRows(data || [])
+      // Hide rows whose underlying stream_count was soft-deleted. Supabase
+      // doesn't filter joined tables server-side cleanly, so we filter here.
+      const visible = (data || []).filter(r => r.stream_count?.deleted !== true)
+      setRows(visible)
     } catch (err) {
       console.error(err)
       setError(err.message || 'Failed to load reconciliations')
@@ -209,6 +318,7 @@ export default function AuditHistory() {
                   <th className="pb-2 text-right">Flagged</th>
                   <th className="pb-2 text-center">Status</th>
                   <th className="pb-2 text-center">Lark</th>
+                  {admin && <th className="pb-2 text-center pr-2">Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -218,12 +328,112 @@ export default function AuditHistory() {
                     r={r}
                     expanded={expandedId === r.id}
                     onToggle={() => setExpandedId(expandedId === r.id ? null : r.id)}
+                    admin={admin}
+                    onAskDelete={() => { setDeletingRow(r); setDeleteReason('') }}
+                    onReaudit={() => handleReaudit(r)}
+                    reauditing={reauditing.has(r.id)}
                   />
                 ))}
               </tbody>
             </table>
           </div>
         )}
+      </div>
+
+      {/* Admin: Delete-count confirm modal. Stops event propagation aggressively
+          since rows underneath are click-to-expand. */}
+      {deletingRow && (
+        <DeleteCountModal
+          row={deletingRow}
+          reason={deleteReason}
+          setReason={setDeleteReason}
+          submitting={deleteSubmitting}
+          onCancel={() => { if (!deleteSubmitting) { setDeletingRow(null); setDeleteReason('') } }}
+          onConfirm={handleDelete}
+        />
+      )}
+
+      <ToastContainer toasts={toasts} onClose={removeToast} />
+    </div>
+  )
+}
+
+// Admin-only confirm modal for soft-deleting a count. Forces the user to
+// type a non-empty reason — the API also enforces this, but failing fast
+// in the UI avoids a wasted round-trip + makes the audit trail meaningful.
+function DeleteCountModal({ row, reason, setReason, submitting, onCancel, onConfirm }) {
+  const sc = row.stream_count || {}
+  const room = (sc.location?.name || '—').replace(/^Stream Room\s*-\s*/, '')
+  const streamer = sc.streamer?.name || '—'
+  const time = sc.count_time ? new Date(sc.count_time) : null
+  const when = time
+    ? time.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
+    : '—'
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-vault-surface border border-red-500/40 rounded-xl max-w-md w-full p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between mb-3">
+          <div className="flex items-center gap-2 text-red-300">
+            <Trash2 size={18} />
+            <h3 className="font-semibold text-base">Delete this stream count?</h3>
+          </div>
+          <button
+            onClick={onCancel}
+            disabled={submitting}
+            className="text-gray-500 hover:text-white p-1 -m-1"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="bg-vault-darker/60 border border-vault-border rounded-lg p-3 text-xs space-y-1 mb-3">
+          <div><span className="text-gray-500">Room:</span> <span className="text-white">{room}</span></div>
+          <div><span className="text-gray-500">Streamer:</span> <span className="text-white">{streamer}</span></div>
+          <div><span className="text-gray-500">Count time:</span> <span className="text-white">{when}</span></div>
+          <div><span className="text-gray-500">Reported:</span> <span className="text-white">{(row.total_system_units || 0).toLocaleString()} items</span></div>
+        </div>
+
+        <p className="text-xs text-gray-400 mb-3 leading-relaxed">
+          This soft-deletes the count — it disappears from reports, audit history, and turnover, as if never entered.
+          The next count at this room will be flagged for re-audit (its window was anchored to this one).
+          A Lark notification will be sent to the room group with your reason.
+        </p>
+
+        <label className="block text-xs text-gray-400 mb-1">Reason (required)</label>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          disabled={submitting}
+          rows={3}
+          placeholder="e.g. test data, accidental double-submit, wrong streamer attribution..."
+          className="w-full px-3 py-2 bg-vault-darker border border-vault-border rounded-lg text-white text-sm focus:outline-none focus:border-red-500/60 resize-none"
+          autoFocus
+        />
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button
+            onClick={onCancel}
+            disabled={submitting}
+            className="px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={submitting || !reason.trim()}
+            className="px-3 py-2 text-sm bg-red-500/20 border border-red-500/60 text-red-200 hover:bg-red-500/30 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+            Delete count
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -241,7 +451,7 @@ function StatCard({ label, value, subtext, colorClass = 'text-white' }) {
   )
 }
 
-function ReconRow({ r, expanded, onToggle }) {
+function ReconRow({ r, expanded, onToggle, admin, onAskDelete, onReaudit, reauditing }) {
   const time = r.stream_count?.count_time ? new Date(r.stream_count.count_time) : null
   const dayStr = time ? time.toLocaleDateString('en-CA') : '—'
   const timeStr = time ? time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
@@ -249,18 +459,26 @@ function ReconRow({ r, expanded, onToggle }) {
   const streamer = r.stream_count?.streamer?.name || '—'
   const meta = STATUS_META[r.status] || STATUS_META.success
   const StatusIcon = meta.icon
+  const stale = r.needs_recompute === true
 
   const diffColor =
     r.total_diff === 0 ? 'text-green-400' :
     r.total_diff > 0 ? 'text-yellow-400' :
     'text-red-400'
 
+  const colSpan = admin ? 11 : 10
+
   // Make the whole row clickable (apart from the lark icon / status pill).
   // The original chevron button was 14×14 — way too small a target.
+  //
+  // Stale rows get a yellow left-border so reviewers spot them at a glance
+  // without expanding. The full explanation lives in ExpandedDetail.
   return (
     <>
       <tr
-        className="border-b border-vault-border/50 hover:bg-vault-darker/30 cursor-pointer"
+        className={`border-b border-vault-border/50 hover:bg-vault-darker/30 cursor-pointer ${
+          stale ? 'bg-yellow-500/5' : ''
+        }`}
         onClick={onToggle}
       >
         <td className="py-2.5 pl-2 text-gray-500">
@@ -278,6 +496,14 @@ function ReconRow({ r, expanded, onToggle }) {
               title={`This count covered ${r.merged_session_count} LIVE sessions — per-streamer attribution may be unreliable. Expand for breakdown.`}
             >
               🔀 {r.merged_session_count}
+            </span>
+          )}
+          {stale && (
+            <span
+              className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-500/20 text-yellow-200 border border-yellow-500/40 align-middle"
+              title={r.recompute_reason || 'An upstream count was deleted; this audit\'s window is stale.'}
+            >
+              ⚠ Stale
             </span>
           )}
         </td>
@@ -305,10 +531,33 @@ function ReconRow({ r, expanded, onToggle }) {
             <span className="text-xs text-gray-600">—</span>
           )}
         </td>
+        {admin && (
+          <td className="py-2.5 pr-2 text-center">
+            <div className="flex items-center justify-center gap-1" onClick={(e) => e.stopPropagation()}>
+              {stale && (
+                <button
+                  onClick={onReaudit}
+                  disabled={reauditing}
+                  title="Re-run reconciliation with the corrected window"
+                  className="p-1 rounded text-yellow-300 hover:bg-yellow-500/10 disabled:opacity-50"
+                >
+                  {reauditing ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+                </button>
+              )}
+              <button
+                onClick={onAskDelete}
+                title="Soft-delete this count (admin only)"
+                className="p-1 rounded text-gray-500 hover:bg-red-500/10 hover:text-red-300"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </td>
+        )}
       </tr>
       {expanded && (
         <tr className="bg-vault-darker/30">
-          <td colSpan={10} className="px-2 py-3">
+          <td colSpan={colSpan} className="px-2 py-3">
             <ExpandedDetail r={r} />
           </td>
         </tr>
@@ -344,6 +593,24 @@ function ExpandedDetail({ r }) {
         {' · '}Triggered: <code>{r.triggered_by}</code>
         {' · '}Duration: {(r.duration_ms || 0).toLocaleString()}ms
       </div>
+
+      {/* Surfaced when an upstream count was deleted, since this audit's
+          window_from was anchored to that now-removed count. The numbers
+          above are still readable, but the reviewer should re-audit before
+          treating any diff as actionable. */}
+      {r.needs_recompute === true && (
+        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-2 text-yellow-200">
+          <div className="font-semibold flex items-center gap-1.5">
+            <AlertTriangle size={12} />
+            Stale audit — needs re-run
+          </div>
+          {r.recompute_reason && <div className="text-gray-300 mt-1">{r.recompute_reason}</div>}
+          <div className="text-gray-400 mt-1">
+            The window above no longer reflects the latest set of counts at this room. Click the
+            re-audit button (the ↺ icon on the row) to rerun reconciliation with the corrected window.
+          </div>
+        </div>
+      )}
 
       {/* P2 slice 3: TikTok's OFFICIAL per-session breakdown, scraped from
           Content Analytics → LIVE. Includes both LIVE-tagged orders AND

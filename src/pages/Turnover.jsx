@@ -81,6 +81,7 @@ export default function Turnover() {
         supabase
           .from('stream_counts')
           .select('id, count_time, location_id')
+          .eq('deleted', false)
           .gte('count_time', cutoff),
         // storefront_sales: location_id may not exist in this DB (schema drift
         // between app code and actual columns). Just pull the essentials and

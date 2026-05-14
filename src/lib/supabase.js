@@ -183,7 +183,10 @@ export const deletePlatformSale      = makeDeleter('platform_sales')
 export const deleteBusinessExpense   = makeDeleter('business_expenses')
 export const deleteHighValueItem     = makeDeleter('high_value_items')
 export const deleteHighValueMovement = makeDeleter('high_value_movements')
-export const deleteStreamCount       = makeDeleter('stream_counts')
+// NOTE: stream_counts uses soft-delete exclusively (see softDeleteStreamCount
+// below). Hard-deleting orphans the linked stream_reconciliation (ON DELETE
+// CASCADE), drops the Lark audit trail, and is unrecoverable — so we no
+// longer expose a hard-delete helper for this table.
 export const deleteOnlineOrder       = makeDeleter('online_orders')
 
 // ----- Online Orders (outbound shipment tracker) -----
@@ -537,13 +540,26 @@ export const createStreamCountItems = async (items) => {
 }
 
 // Soft-delete: mark a stream_count as deleted instead of removing the row.
-// Used by the Undo flow so the parent row stays as an audit trail (matching
-// the Lark notification that was already fired). fetchStreamCounts filters
-// these out, so Session History stays clean.
-export const softDeleteStreamCount = async (id) => {
+//
+// Two callers:
+//   1. Post-submit Undo flow (StreamCounts.jsx) — passes no opts. The row
+//      gets deleted=true + deleted_at=now() so we know WHEN, but
+//      deleted_by_id and deleted_reason stay null (the submitter undoing
+//      their own immediate submission isn't a forensic event worth tagging).
+//   2. Admin retroactive delete via /api/delete-stream-count — passes
+//      { deletedById, reason } so we have a full audit trail of who
+//      retracted what and why.
+//
+// fetchStreamCounts + Reports + Turnover + auto-reconcile + AuditHistory all
+// filter on `deleted=false` (or the join equivalent) so the row vanishes
+// from every downstream view — exactly as if it had never been entered.
+export const softDeleteStreamCount = async (id, opts = {}) => {
+  const patch = { deleted: true, deleted_at: new Date().toISOString() }
+  if (opts.deletedById) patch.deleted_by_id = opts.deletedById
+  if (opts.reason) patch.deleted_reason = opts.reason
   const { error } = await supabase
     .from('stream_counts')
-    .update({ deleted: true })
+    .update(patch)
     .eq('id', id)
   if (error) throw error
 }

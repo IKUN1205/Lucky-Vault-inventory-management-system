@@ -86,7 +86,9 @@ export default function Reports() {
       let streamCounts = []
       let streamCountItems = []
       try {
-        // Fetch recent stream counts, then filter by LOCAL date
+        // Fetch recent stream counts, then filter by LOCAL date.
+        // Exclude soft-deleted counts (Undo flow + admin retroactive delete)
+        // so retracted counts don't pollute reports.
         const { data: countsData, error: countsError } = await supabase
           .from('stream_counts')
           .select(`
@@ -95,6 +97,7 @@ export default function Reports() {
             streamer:users!stream_counts_streamer_id_fkey(name),
             counted_by:users!stream_counts_counted_by_id_fkey(name)
           `)
+          .eq('deleted', false)
           .order('count_time', { ascending: false })
           .limit(500)
         
