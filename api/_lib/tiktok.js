@@ -92,7 +92,12 @@ export function explodeOrderToLines(o) {
 export async function harvestTikTokOrders({ rawCookie, fromTs, toTs, liveOnly = true }) {
   const cookies = parseCookieHeader(rawCookie)
   const harvested = []
-  let pageInfo = { pagesLoaded: 1, hitOlderThanWindow: false, hitEndOfList: false }
+  let pageInfo = {
+    pagesLoaded: 1,
+    hitOlderThanWindow: false,
+    hitEndOfList: false,
+    paginationStrategies: [], // which click strategy worked per iteration
+  }
 
   const browser = await puppeteer.launch({
     args: chromium.args,
@@ -142,18 +147,46 @@ export async function harvestTikTokOrders({ rawCookie, fromTs, toTs, liveOnly = 
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {})
       await new Promise(r => setTimeout(r, 1500))
 
-      // Click the "next page" pagination arrow. TikTok uses Arco Design,
-      // so we try several common selectors for the next-page button.
+      // Click the page LI immediately after the currently-active one.
+      // TikTok seller-center uses `core-pagination-*` (NOT arco-* as
+      // initially assumed) — verified via /api/tiktok-pagination-probe
+      // on 2026-05-13. The active page is marked with .core-pagination-
+      // item-active; walking to the next valid sibling and clicking it
+      // matches the user's manual "click 2, then 3, then 4..." pattern
+      // exactly, which is what TikTok's lazy-load page fetcher responds
+      // to. We skip jumpers (the "..." gap items) and disabled items.
+      //
+      // Falls back to a few legacy selectors in case TikTok ever ships
+      // a redesign that swaps "core-" for something else.
       const clicked = await page.evaluate(() => {
-        const selectors = [
+        // Primary strategy: next sibling of active page
+        const active = document.querySelector('li.core-pagination-item-active')
+        if (active) {
+          let sib = active.nextElementSibling
+          while (sib) {
+            if (
+              sib.tagName === 'LI' &&
+              sib.classList.contains('core-pagination-item') &&
+              !sib.classList.contains('core-pagination-item-disabled') &&
+              !sib.classList.contains('core-pagination-item-jumper')
+            ) {
+              sib.click()
+              return `core-next-sibling[${sib.getAttribute('aria-label') || '?'}]`
+            }
+            sib = sib.nextElementSibling
+          }
+        }
+        // Fallback: any explicit "next" button (different design systems)
+        const fallbacks = [
+          '.core-pagination-item-next:not(.core-pagination-item-disabled)',
           '.arco-pagination-item-next:not(.arco-pagination-item-disabled)',
           '[class*="pagination-next"]:not([class*="disabled"])',
           'button[aria-label="Next"]:not([disabled])',
-          'li[title="Next Page"]:not(.arco-pagination-item-disabled)',
+          'li[aria-label="Next page"]:not([class*="disabled"])',
         ]
-        for (const sel of selectors) {
+        for (const sel of fallbacks) {
           const btn = document.querySelector(sel)
-          if (btn) { btn.click(); return sel }
+          if (btn) { btn.click(); return `fallback[${sel}]` }
         }
         return null
       }).catch(() => null)
@@ -162,8 +195,10 @@ export async function harvestTikTokOrders({ rawCookie, fromTs, toTs, liveOnly = 
 
       if (harvested.length === beforeCount) {
         pageInfo.hitEndOfList = !clicked
+        if (clicked) pageInfo.paginationStrategies.push(`${clicked}_no_new_orders`)
         break
       }
+      if (clicked) pageInfo.paginationStrategies.push(clicked)
       pageInfo.pagesLoaded = i + 1
     }
   } finally {
