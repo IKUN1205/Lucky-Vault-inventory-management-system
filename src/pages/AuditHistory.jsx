@@ -333,7 +333,10 @@ function ExpandedDetail({ r }) {
   const rows = Array.isArray(r.rows) ? r.rows : []
   const unmapped = Array.isArray(r.unmapped) ? r.unmapped : []
   const perCreator = Array.isArray(r.per_creator_breakdown) ? r.per_creator_breakdown : []
+  const analyticsSessions = Array.isArray(r.analytics_live_sessions) ? r.analytics_live_sessions : []
   const isMerged = (r.merged_session_count || 1) > 1
+  const analyticsTotalItems = analyticsSessions.reduce((s, x) => s + (x.items_sold || 0), 0)
+  const analyticsTotalGmv = analyticsSessions.reduce((s, x) => s + (x.gmv_usd || 0), 0)
   return (
     <div className="space-y-3 text-xs">
       <div className="text-gray-500">
@@ -341,6 +344,61 @@ function ExpandedDetail({ r }) {
         {' · '}Triggered: <code>{r.triggered_by}</code>
         {' · '}Duration: {(r.duration_ms || 0).toLocaleString()}ms
       </div>
+
+      {/* P2 slice 3: TikTok's OFFICIAL per-session breakdown, scraped from
+          Content Analytics → LIVE. Includes both LIVE-tagged orders AND
+          shop-tab attribution during the stream — more accurate than the
+          order-list per-creator block below (which only sees LIVE tags).
+          Shown when populated; missing on old rows that pre-date the
+          P2 integration. */}
+      {analyticsSessions.length > 0 && (
+        <div className="rounded-lg p-2 border bg-blue-500/10 border-blue-500/40">
+          <div className="text-xs font-semibold mb-1.5 flex items-center gap-1.5 text-blue-300">
+            <Users size={12} />
+            🎯 TikTok Official LIVE sessions ({analyticsSessions.length})
+            <span className="ml-auto text-blue-200/70 font-normal">
+              {analyticsTotalItems.toLocaleString()} items · ${analyticsTotalGmv.toFixed(2)} GMV
+            </span>
+          </div>
+          <table className="w-full">
+            <thead>
+              <tr className="text-left text-gray-500 text-[10px] uppercase">
+                <th className="pb-0.5">Title</th>
+                <th className="pb-0.5">Start</th>
+                <th className="pb-0.5 text-right">Duration</th>
+                <th className="pb-0.5 text-right">Items</th>
+                <th className="pb-0.5 text-right">SKUs</th>
+                <th className="pb-0.5 text-right">Customers</th>
+                <th className="pb-0.5 text-right">GMV</th>
+              </tr>
+            </thead>
+            <tbody>
+              {analyticsSessions.map((s, i) => {
+                const fmt = (u) => u ? new Date(u * 1000).toLocaleString([], {
+                  weekday: 'short', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                }) : '—'
+                const durH = Math.floor((s.duration_minutes || 0) / 60)
+                const durM = (s.duration_minutes || 0) % 60
+                const durStr = durH ? `${durH}h${durM ? ` ${durM}m` : ''}` : `${durM}m`
+                return (
+                  <tr key={s.live_id || i} className="border-t border-vault-border/30">
+                    <td className="py-0.5 text-gray-200 max-w-[280px] truncate" title={s.title}>{s.title || '(untitled)'}</td>
+                    <td className="py-0.5 text-gray-400">{fmt(s.start_unix)}</td>
+                    <td className="py-0.5 text-right text-gray-500">{durStr}</td>
+                    <td className="py-0.5 text-right text-gray-200 font-semibold">{(s.items_sold || 0).toLocaleString()}</td>
+                    <td className="py-0.5 text-right text-gray-500">{(s.sku_orders || 0).toLocaleString()}</td>
+                    <td className="py-0.5 text-right text-gray-500">{(s.customers || 0).toLocaleString()}</td>
+                    <td className="py-0.5 text-right text-gray-300">${(s.gmv_usd || 0).toFixed(2)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          <div className="mt-1 text-[10px] text-blue-200/60">
+            Source: TikTok Seller Center → Content Analytics → LIVE. Items count includes both LIVE-tagged orders and shop-tab attribution. Compare to the per-creator block below (order-list LIVE-tag aggregation only) to see how much of the count was non-LIVE-tagged.
+          </div>
+        </div>
+      )}
 
       {/* L1: per-creator breakdown. Shown whenever per_creator_breakdown
           is populated — single-session counts get a tidy one-row table,
