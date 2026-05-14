@@ -544,11 +544,15 @@ export const createStreamCountItems = async (items) => {
 // Two callers:
 //   1. Post-submit Undo flow (StreamCounts.jsx) — passes no opts. The row
 //      gets deleted=true + deleted_at=now() so we know WHEN, but
-//      deleted_by_id and deleted_reason stay null (the submitter undoing
-//      their own immediate submission isn't a forensic event worth tagging).
+//      deleted_by_id, deleted_reason, and delete_mode stay null (the
+//      submitter undoing their own immediate submission isn't a forensic
+//      event worth tagging).
 //   2. Admin retroactive delete via /api/delete-stream-count — passes
-//      { deletedById, reason } so we have a full audit trail of who
-//      retracted what and why.
+//      { deletedById, reason, mode } so we have a full audit trail of who
+//      retracted what, why, and which flavor of delete (retract = reversed
+//      inventory; hide = inventory unchanged). NOTE: the server endpoint
+//      writes these fields itself rather than calling this helper, so this
+//      branch is forward-compat scaffolding only.
 //
 // fetchStreamCounts + Reports + Turnover + auto-reconcile + AuditHistory all
 // filter on `deleted=false` (or the join equivalent) so the row vanishes
@@ -557,6 +561,7 @@ export const softDeleteStreamCount = async (id, opts = {}) => {
   const patch = { deleted: true, deleted_at: new Date().toISOString() }
   if (opts.deletedById) patch.deleted_by_id = opts.deletedById
   if (opts.reason) patch.deleted_reason = opts.reason
+  if (opts.mode === 'retract' || opts.mode === 'hide') patch.delete_mode = opts.mode
   const { error } = await supabase
     .from('stream_counts')
     .update(patch)

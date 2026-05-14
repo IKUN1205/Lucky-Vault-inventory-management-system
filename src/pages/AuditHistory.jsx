@@ -53,8 +53,12 @@ export default function AuditHistory() {
 
   // Admin-only state for the delete-count flow. `deletingRow` is the
   // reconciliation row currently shown in the confirm modal (null = closed).
+  // `deleteMode` is 'retract' (reverse inventory + hide) or 'hide' (hide only).
+  // Initial mode is decided when the modal opens, based on whether a
+  // subsequent count exists at the same room — see openDeleteModal.
   const [deletingRow, setDeletingRow] = useState(null)
   const [deleteReason, setDeleteReason] = useState('')
+  const [deleteMode, setDeleteMode] = useState('hide')
   const [deleteSubmitting, setDeleteSubmitting] = useState(false)
   // Set of stream_reconciliation ids currently being re-audited. Used to
   // disable the Re-audit button + show a spinner.
@@ -62,12 +66,47 @@ export default function AuditHistory() {
 
   useEffect(() => { load() }, [])
 
+  // Decide whether 'retract' is even an option for a given row. Looks at
+  // all currently-loaded rows at the same location with a later count_time
+  // — if any are found, retract would double-correct inventory, so the
+  // modal greys it out and we force 'hide'.
+  //
+  // Note: this only checks the loaded window (last 200 audits). If a
+  // subsequent count exists beyond that window the server-side enforcement
+  // in /api/delete-stream-count will reject the retract anyway — UI optimism
+  // is fine.
+  const hasSubsequentCount = (row) => {
+    const here = row.stream_count
+    if (!here) return false
+    return rows.some(r => {
+      if (r.id === row.id) return false
+      const other = r.stream_count
+      if (!other || other.deleted === true) return false
+      if (other.location_id !== here.location_id) return false
+      return new Date(other.count_time).getTime() > new Date(here.count_time).getTime()
+    })
+  }
+
+  const openDeleteModal = (row) => {
+    setDeletingRow(row)
+    setDeleteReason('')
+    // If there's a later count at this room, retract is unsafe — default
+    // (and constrain) to 'hide'. Otherwise default to 'retract' since
+    // most admin-deletes outside the test-data case are operator-error
+    // retractions.
+    setDeleteMode(hasSubsequentCount(row) ? 'hide' : 'retract')
+  }
+
   // ---- Admin: delete a stream_count (and flag the next audit as stale) ----
   const handleDelete = async () => {
     if (!deletingRow || !user?.id) return
     const reason = (deleteReason || '').trim()
     if (!reason) {
       addToast('Reason is required', 'error')
+      return
+    }
+    if (deleteMode !== 'retract' && deleteMode !== 'hide') {
+      addToast('Pick a delete mode (Retract or Hide)', 'error')
       return
     }
     try {
@@ -79,6 +118,7 @@ export default function AuditHistory() {
           count_id: deletingRow.stream_count?.id,
           caller_user_id: user.id,
           reason,
+          mode: deleteMode,
         }),
       })
       const data = await r.json().catch(() => ({}))
@@ -86,10 +126,14 @@ export default function AuditHistory() {
         addToast(`Delete failed: ${data.error || r.status}`, 'error')
         return
       }
+      const modeLabel = data.mode === 'retract' ? 'Retracted' : 'Hidden'
+      const reversed = data.mode === 'retract' && typeof data.deltas_reversed === 'number'
+        ? ` (${data.deltas_reversed} inventory line${data.deltas_reversed === 1 ? '' : 's'} reversed)`
+        : ''
       const tail = data.next_audit_needs_recompute
         ? ' — next audit flagged for re-run'
         : ''
-      addToast(`Count deleted${tail}. Lark notified.`, 'success')
+      addToast(`${modeLabel}${reversed}${tail}. Lark notified.`, 'success')
       setDeletingRow(null)
       setDeleteReason('')
       // Reload so the deleted row vanishes and any needs_recompute flags
@@ -329,7 +373,7 @@ export default function AuditHistory() {
                     expanded={expandedId === r.id}
                     onToggle={() => setExpandedId(expandedId === r.id ? null : r.id)}
                     admin={admin}
-                    onAskDelete={() => { setDeletingRow(r); setDeleteReason('') }}
+                    onAskDelete={() => openDeleteModal(r)}
                     onReaudit={() => handleReaudit(r)}
                     reauditing={reauditing.has(r.id)}
                   />
@@ -347,6 +391,9 @@ export default function AuditHistory() {
           row={deletingRow}
           reason={deleteReason}
           setReason={setDeleteReason}
+          mode={deleteMode}
+          setMode={setDeleteMode}
+          retractBlocked={hasSubsequentCount(deletingRow)}
           submitting={deleteSubmitting}
           onCancel={() => { if (!deleteSubmitting) { setDeletingRow(null); setDeleteReason('') } }}
           onConfirm={handleDelete}
@@ -358,10 +405,15 @@ export default function AuditHistory() {
   )
 }
 
-// Admin-only confirm modal for soft-deleting a count. Forces the user to
-// type a non-empty reason — the API also enforces this, but failing fast
-// in the UI avoids a wasted round-trip + makes the audit trail meaningful.
-function DeleteCountModal({ row, reason, setReason, submitting, onCancel, onConfirm }) {
+// Admin-only confirm modal for soft-deleting a count. Two modes:
+//   - retract: reverse inventory + hide. Only safe if no subsequent count
+//     exists at the same room (otherwise reversal double-corrects).
+//   - hide:    don't touch inventory, just hide everywhere. Always safe.
+//
+// `retractBlocked` is precomputed by the parent based on currently-loaded
+// rows; when true, the Retract radio is disabled and a yellow note explains
+// why. The server enforces the same gate regardless.
+function DeleteCountModal({ row, reason, setReason, mode, setMode, retractBlocked, submitting, onCancel, onConfirm }) {
   const sc = row.stream_count || {}
   const room = (sc.location?.name || '—').replace(/^Stream Room\s*-\s*/, '')
   const streamer = sc.streamer?.name || '—'
@@ -375,7 +427,7 @@ function DeleteCountModal({ row, reason, setReason, submitting, onCancel, onConf
       onClick={onCancel}
     >
       <div
-        className="bg-vault-surface border border-red-500/40 rounded-xl max-w-md w-full p-5 shadow-2xl"
+        className="bg-vault-surface border border-red-500/40 rounded-xl max-w-lg w-full p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between mb-3">
@@ -400,19 +452,41 @@ function DeleteCountModal({ row, reason, setReason, submitting, onCancel, onConf
           <div><span className="text-gray-500">Reported:</span> <span className="text-white">{(row.total_system_units || 0).toLocaleString()} items</span></div>
         </div>
 
-        <p className="text-xs text-gray-400 mb-3 leading-relaxed">
-          This soft-deletes the count — it disappears from reports, audit history, and turnover, as if never entered.
-          The next count at this room will be flagged for re-audit (its window was anchored to this one).
-          A Lark notification will be sent to the room group with your reason.
-        </p>
+        <label className="block text-xs text-gray-400 mb-1">Delete mode</label>
+        <div className="space-y-2 mb-3">
+          <ModeOption
+            id="retract"
+            active={mode === 'retract'}
+            disabled={retractBlocked || submitting}
+            onSelect={() => setMode('retract')}
+            title={<>🔄 <span className="font-semibold">Retract</span> — operator input error</>}
+            body="Reverse every inventory delta from this count AND hide it from reports. Use when someone counted the wrong number and missed the in-app Undo window. The system will behave as if this count never happened."
+            hint={retractBlocked
+              ? '⚠️ Not available: a later count already exists at this room. Reversing now would double-correct inventory (the later count already adjusted from this count\'s state). Use Hide instead, or delete the later count first.'
+              : 'Safe: no later count exists at this room.'}
+            hintColor={retractBlocked ? 'text-yellow-300' : 'text-green-400'}
+          />
+          <ModeOption
+            id="hide"
+            active={mode === 'hide'}
+            disabled={submitting}
+            onSelect={() => setMode('hide')}
+            title={<>🧹 <span className="font-semibold">Hide</span> — test data / cleanup</>}
+            body="Don't touch inventory — just hide this count from reports, audit history, and turnover. Use when inventory is already correct (e.g. a later count fixed it) but you want this test/erroneous row out of the data."
+            hint="Always safe. Inventory is unchanged."
+            hintColor="text-gray-500"
+          />
+        </div>
 
         <label className="block text-xs text-gray-400 mb-1">Reason (required)</label>
         <textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           disabled={submitting}
-          rows={3}
-          placeholder="e.g. test data, accidental double-submit, wrong streamer attribution..."
+          rows={2}
+          placeholder={mode === 'retract'
+            ? 'e.g. streamer typo\'d 10 instead of 100; missed Undo window...'
+            : 'e.g. test count for debugging; inventory already correct...'}
           className="w-full px-3 py-2 bg-vault-darker border border-vault-border rounded-lg text-white text-sm focus:outline-none focus:border-red-500/60 resize-none"
           autoFocus
         />
@@ -427,15 +501,50 @@ function DeleteCountModal({ row, reason, setReason, submitting, onCancel, onConf
           </button>
           <button
             onClick={onConfirm}
-            disabled={submitting || !reason.trim()}
+            disabled={submitting || !reason.trim() || (mode === 'retract' && retractBlocked)}
             className="px-3 py-2 text-sm bg-red-500/20 border border-red-500/60 text-red-200 hover:bg-red-500/30 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-            Delete count
+            {mode === 'retract' ? 'Retract count' : 'Hide count'}
           </button>
         </div>
       </div>
     </div>
+  )
+}
+
+// Radio-like option row for the delete mode picker. We use a card-style
+// layout instead of a bare <input type=radio> so each option has room
+// for its description + safety hint.
+function ModeOption({ id, active, disabled, onSelect, title, body, hint, hintColor }) {
+  const base = 'w-full text-left rounded-lg p-3 border transition'
+  const cls = disabled
+    ? `${base} bg-vault-darker/30 border-vault-border/40 opacity-50 cursor-not-allowed`
+    : active
+      ? `${base} bg-red-500/10 border-red-500/50`
+      : `${base} bg-vault-darker/40 border-vault-border hover:border-vault-gold/40 cursor-pointer`
+  return (
+    <button
+      type="button"
+      onClick={disabled ? undefined : onSelect}
+      disabled={disabled}
+      aria-pressed={active}
+      data-mode={id}
+      className={cls}
+    >
+      <div className="flex items-start gap-2">
+        <div
+          className={`mt-1 flex-shrink-0 w-3.5 h-3.5 rounded-full border-2 ${
+            active ? 'border-red-300 bg-red-300' : 'border-gray-500'
+          }`}
+        />
+        <div className="flex-1">
+          <div className="text-sm text-white">{title}</div>
+          <div className="text-xs text-gray-400 mt-0.5 leading-relaxed">{body}</div>
+          {hint && <div className={`text-[11px] mt-1 ${hintColor || 'text-gray-500'}`}>{hint}</div>}
+        </div>
+      </div>
+    </button>
   )
 }
 

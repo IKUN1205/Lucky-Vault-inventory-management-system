@@ -1,33 +1,37 @@
 // api/delete-stream-count.js
 //
-// Admin-only soft-delete for a stream_counts row. Used when Will (or any
-// admin) needs to retroactively retract a count that was entered by mistake
-// — e.g. a test count, a wrong-streamer attribution, a duplicate.
+// Admin-only soft-delete for a stream_counts row. Two modes:
 //
-// Why this lives in an API endpoint rather than a client-side mutation:
-//   1. Admin gate must be server-checked. Filtering the UI button isn't
-//      enough — anyone who knows the table name could hit Supabase directly.
-//   2. The operation is multi-step (mark deleted → find downstream audit →
-//      flag for recompute → send Lark) and must be atomic from the
-//      caller's perspective: either every step succeeds and we ping Lark,
-//      or we bail without partial damage.
-//   3. Lark dispatch is inlined the same way auto-reconcile.js does it
-//      (Vercel Auth blocks inter-function HTTP loopback with 401), so we
-//      can't just POST to /api/lark-notify.
+//   - 'retract' — operator made an input error and missed the in-app Undo.
+//     The system should behave as if the count never happened: reverse
+//     every inventory delta AND hide the row everywhere. Only allowed
+//     when NO subsequent count exists at the same location, otherwise
+//     reversing would double-correct (the subsequent count already
+//     adjusted inventory based on the now-wrong starting state).
+//
+//   - 'hide'    — test data / cleanup. Inventory is already correct
+//     (typically because a subsequent count fixed any drift). The row
+//     gets stripped from reports + audit history but inventory is left
+//     alone. Always allowed.
+//
+// Both modes go through soft-delete in the DB (deleted=true + deleted_at
+// + deleted_by + deleted_reason + delete_mode) so the audit trail stays
+// intact and misclicks can be unwound at the SQL level.
 //
 // POST body:
-//   { count_id, caller_user_id, reason }
+//   { count_id, caller_user_id, reason, mode }       // mode required
 //
 // Response:
-//   200 { ok, deleted_count_id, next_audit_id?, next_audit_needs_recompute,
-//         lark_result }
-//   400 / 403 / 404 / 410 / 500 with error string
+//   200 { ok, mode, deleted_count_id, deltas_reversed?,
+//         next_audit_id?, next_audit_needs_recompute, lark_results }
+//   400 / 403 / 404 / 409 / 410 / 500 with error string
 
 import { createClient } from '@supabase/supabase-js'
 
 export const config = {
-  // Quick op — load count, two writes, two Lark POSTs. 30s is plenty.
-  maxDuration: 30,
+  // Inventory reversal in retract mode iterates over every item — still
+  // bounded (a single count's items list, typically < 50 rows). 60s plenty.
+  maxDuration: 60,
 }
 
 function supabaseAdmin() {
@@ -42,7 +46,7 @@ function supabaseAdmin() {
   return createClient(url, key, { auth: { persistSession: false } })
 }
 
-// Per-room webhook map. Mirrors api/lark-notify.js and api/auto-reconcile.js
+// Per-room webhook map. Mirrors api/lark-notify.js + api/auto-reconcile.js
 // — duplicated rather than HTTP-looped because Vercel Auth blocks
 // inter-function calls with 401.
 function getRoomWebhook(roomName) {
@@ -77,18 +81,26 @@ function formatCountTimePT(iso) {
   }).format(new Date(iso)) + ' PT'
 }
 
-function buildDeletedMessage({ roomName, streamerName, countedByName, countTimeIso, deletedByName, reason }) {
+function buildDeletedMessage({ mode, roomName, streamerName, countedByName, countTimeIso, deletedByName, reason, deltasReversed }) {
   const room = (roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')
   const lines = []
-  lines.push(`🗑️ Stream Count DELETED — ${room}`)
+  if (mode === 'retract') {
+    lines.push(`🔄 Stream Count RETRACTED — ${room}`)
+  } else {
+    lines.push(`🧹 Stream Count HIDDEN — ${room}`)
+  }
   lines.push(`Original counter: ${countedByName || '?'} (was recording ${streamerName || '?'}'s session)`)
   lines.push(`Original count time: ${formatCountTimePT(countTimeIso)}`)
-  lines.push(`Deleted by: ${deletedByName || '?'} at ${nowLocalStamp()}`)
+  lines.push(`Action by: ${deletedByName || '?'} at ${nowLocalStamp()}`)
   if (reason && reason.trim()) {
     lines.push(`Reason: ${reason.trim()}`)
   }
   lines.push('')
-  lines.push('⚠️ The Stream Count + Reconciliation message for this session is VOID. The next streamer to count this room will get an extended audit window that covers any sales since the previous valid count.')
+  if (mode === 'retract') {
+    lines.push(`⚠️ Operator input error. Inventory has been restored to the pre-count state${typeof deltasReversed === 'number' ? ` (${deltasReversed} item line${deltasReversed === 1 ? '' : 's'} reversed)` : ''}. Treat the original Stream Count + Reconciliation message above as VOID.`)
+  } else {
+    lines.push('🧹 Cleanup-only delete. Inventory is unchanged (already corrected by subsequent count(s)). The original Stream Count message above is being removed from audit history; numbers it reported should no longer be acted on.')
+  }
   return lines.join('\n')
 }
 
@@ -107,23 +119,59 @@ async function sendLark(url, text) {
   }
 }
 
+// Server-side inventory update — same logic as src/lib/supabase.js
+// updateInventory but using the supabaseAdmin client and stripped down to
+// the quantity-only case (we never need to touch avg_cost_basis when
+// reversing a count's delta, since count submissions don't recalc cost
+// basis to begin with). Negative deltas are allowed; the inventory table
+// permits negative quantity in this codebase.
+async function reverseInventoryDelta(supabase, { productId, locationId, deltaToReverse }) {
+  // deltaToReverse is the *original* delta (positive or negative). We want
+  // to apply -deltaToReverse to restore the pre-count state.
+  const reversal = -deltaToReverse
+  const { data: existing, error: lookupErr } = await supabase
+    .from('inventory')
+    .select('id, quantity')
+    .eq('product_id', productId)
+    .eq('location_id', locationId)
+    .maybeSingle()
+  if (lookupErr) throw new Error(`Inventory lookup failed: ${lookupErr.message}`)
+  if (existing) {
+    const newQuantity = (existing.quantity || 0) + reversal
+    const { error: updErr } = await supabase
+      .from('inventory')
+      .update({ quantity: newQuantity, last_updated: new Date().toISOString() })
+      .eq('id', existing.id)
+    if (updErr) throw new Error(`Inventory update failed: ${updErr.message}`)
+  } else {
+    // No row yet — insert with the reversal delta. (Edge case: a count
+    // touched a product that has since been moved away from this location
+    // and the inventory row was deleted. Reversing recreates the row.)
+    const { error: insErr } = await supabase
+      .from('inventory')
+      .insert({ product_id: productId, location_id: locationId, quantity: reversal })
+    if (insErr) throw new Error(`Inventory insert failed: ${insErr.message}`)
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST')
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
   }
 
-  const { count_id, caller_user_id, reason } = req.body || {}
+  const { count_id, caller_user_id, reason, mode } = req.body || {}
   if (!count_id || typeof count_id !== 'string') {
     return res.status(400).json({ ok: false, error: 'count_id is required' })
   }
   if (!caller_user_id || typeof caller_user_id !== 'string') {
     return res.status(400).json({ ok: false, error: 'caller_user_id is required' })
   }
-  // Force a reason — deletes without a written reason are exactly the
-  // class of action we want a paper trail on.
   if (!reason || typeof reason !== 'string' || !reason.trim()) {
     return res.status(400).json({ ok: false, error: 'reason is required (admin must document why)' })
+  }
+  if (mode !== 'retract' && mode !== 'hide') {
+    return res.status(400).json({ ok: false, error: `mode must be 'retract' or 'hide' (got ${JSON.stringify(mode)})` })
   }
 
   let supabase
@@ -171,7 +219,62 @@ export default async function handler(req, res) {
     return res.status(410).json({ ok: false, error: 'Stream count is already deleted' })
   }
 
-  // ---- Soft-delete the count ----
+  // ---- Look up subsequent count at same location ----
+  // Needed for: (a) retract safety gate, (b) marking the next audit as
+  // needs_recompute (independent of mode). Run once here.
+  const { data: nextCount } = await supabase
+    .from('stream_counts')
+    .select('id')
+    .eq('location_id', count.location_id)
+    .eq('deleted', false)
+    .gt('count_time', count.count_time)
+    .order('count_time', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+
+  // ---- Retract safety gate ----
+  if (mode === 'retract' && nextCount?.id) {
+    return res.status(409).json({
+      ok: false,
+      error: 'Retract not allowed: a subsequent count already exists at this room. Reversing inventory now would double-correct (the subsequent count already adjusted from the wrong starting state). Use mode=hide instead, or delete the subsequent count(s) first.',
+    })
+  }
+
+  // ---- For retract: load items, reverse each inventory delta ----
+  let deltasReversed = 0
+  if (mode === 'retract') {
+    const { data: items, error: itemsErr } = await supabase
+      .from('stream_count_items')
+      .select('product_id, expected_qty, actual_qty')
+      .eq('stream_count_id', count_id)
+    if (itemsErr) {
+      return res.status(500).json({ ok: false, error: `Failed to load items: ${itemsErr.message}` })
+    }
+    // delta originally applied = actual_qty - expected_qty
+    // (positive = inventory added; negative = inventory subtracted/sold)
+    // Reversal applies -delta. We do this BEFORE marking the row deleted
+    // so a mid-flow crash leaves the row recoverable + visible (better
+    // than a deleted row with half-reversed inventory).
+    for (const it of (items || [])) {
+      const delta = (it.actual_qty || 0) - (it.expected_qty || 0)
+      if (delta === 0) continue
+      try {
+        await reverseInventoryDelta(supabase, {
+          productId: it.product_id,
+          locationId: count.location_id,
+          deltaToReverse: delta,
+        })
+        deltasReversed++
+      } catch (err) {
+        return res.status(500).json({
+          ok: false,
+          error: `Failed to reverse inventory for product ${it.product_id}: ${err.message}. NO changes have been committed.`,
+        })
+      }
+    }
+  }
+
+  // ---- Soft-delete the count (both modes) ----
   const { error: delErr } = await supabase
     .from('stream_counts')
     .update({
@@ -179,10 +282,14 @@ export default async function handler(req, res) {
       deleted_at: new Date().toISOString(),
       deleted_by_id: caller.id,
       deleted_reason: reason.trim(),
+      delete_mode: mode,
     })
     .eq('id', count_id)
   if (delErr) {
-    return res.status(500).json({ ok: false, error: `Failed to soft-delete count: ${delErr.message}` })
+    return res.status(500).json({
+      ok: false,
+      error: `Failed to soft-delete count: ${delErr.message}. WARNING: inventory may have been partially reversed if mode=retract; reconcile manually.`,
+    })
   }
 
   // ---- Flag the downstream audit ----
@@ -190,58 +297,43 @@ export default async function handler(req, res) {
   // auto-reconcile computes its window_from as the previous count's
   // count_time. So the immediately-next count at this location had its
   // window anchored to the now-deleted count's count_time → its audit
-  // is now stale (the window should expand backward to whatever the
-  // count BEFORE the deleted one was). Mark needs_recompute so the
-  // reviewer in AuditHistory sees a warning and can hit Re-audit.
+  // is now stale. Mark needs_recompute so the reviewer in AuditHistory
+  // sees a warning and can hit Re-audit.
   //
-  // No other audit row is affected: counts after the immediately-next
-  // one have window_froms that reference counts *they* came after,
-  // independent of the deleted row.
+  // This branch only runs for mode='hide' (mode='retract' was rejected
+  // above if nextCount exists), but the check is identical — kept here
+  // for clarity.
   let nextAuditId = null
   let nextAuditMarked = false
-  {
-    const { data: nextCount } = await supabase
-      .from('stream_counts')
+  if (nextCount?.id) {
+    const { data: nextAudit } = await supabase
+      .from('stream_reconciliations')
       .select('id')
-      .eq('location_id', count.location_id)
-      .eq('deleted', false)
-      .gt('count_time', count.count_time)
-      .order('count_time', { ascending: true })
-      .limit(1)
+      .eq('stream_count_id', nextCount.id)
       .maybeSingle()
-    if (nextCount?.id) {
-      const { data: nextAudit } = await supabase
+    if (nextAudit?.id) {
+      nextAuditId = nextAudit.id
+      const { error: recomputeErr } = await supabase
         .from('stream_reconciliations')
-        .select('id')
-        .eq('stream_count_id', nextCount.id)
-        .maybeSingle()
-      if (nextAudit?.id) {
-        nextAuditId = nextAudit.id
-        const { error: recomputeErr } = await supabase
-          .from('stream_reconciliations')
-          .update({
-            needs_recompute: true,
-            recompute_reason: `Upstream count deleted by ${caller.name || 'admin'} at ${nowLocalStamp()} — window_from is now stale.`,
-          })
-          .eq('id', nextAudit.id)
-        if (!recomputeErr) nextAuditMarked = true
-      }
+        .update({
+          needs_recompute: true,
+          recompute_reason: `Upstream count deleted (${mode}) by ${caller.name || 'admin'} at ${nowLocalStamp()} — window_from is now stale.`,
+        })
+        .eq('id', nextAudit.id)
+      if (!recomputeErr) nextAuditMarked = true
     }
   }
 
   // ---- Send Lark notification ----
-  //
-  // Dual-target dispatch: main group brief + room-specific group. Same
-  // pattern as the stream_count + stream_count_undone notifications in
-  // api/lark-notify.js. We inline the dispatch (instead of POSTing to
-  // /api/lark-notify) because Vercel Auth blocks inter-function loopback.
   const text = buildDeletedMessage({
+    mode,
     roomName: count.location?.name,
     streamerName: count.streamer?.name,
     countedByName: count.counted_by?.name,
     countTimeIso: count.count_time,
     deletedByName: caller.name,
     reason: reason.trim(),
+    deltasReversed: mode === 'retract' ? deltasReversed : undefined,
   })
 
   const mainWebhook = process.env.LARK_WEBHOOK_URL
@@ -252,7 +344,9 @@ export default async function handler(req, res) {
 
   return res.status(200).json({
     ok: true,
+    mode,
     deleted_count_id: count.id,
+    deltas_reversed: mode === 'retract' ? deltasReversed : null,
     next_audit_id: nextAuditId,
     next_audit_needs_recompute: nextAuditMarked,
     lark_results: larkResults,
