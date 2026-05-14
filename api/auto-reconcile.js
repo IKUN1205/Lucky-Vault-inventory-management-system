@@ -14,7 +14,7 @@
 // avoid an extra HTTP hop. Total runtime ~30-40s.
 
 import { createClient } from '@supabase/supabase-js'
-import { harvestTikTokOrders } from './_lib/tiktok.js'
+import { harvestTikTokOrders, clusterLiveSessions } from './_lib/tiktok.js'
 
 export const config = {
   // 300s on Vercel Pro (was 60 on Hobby). Auto-reconcile is dominated by
@@ -335,40 +335,28 @@ export default async function handler(req, res) {
     }
   }
 
-  // Per-creator breakdown. Each TikTok order line carries live_creator
-  // (extracted in explodeOrderToLines). When a stream count covers
-  // multiple LIVE sessions (the streamer who was supposed to count
-  // before going live skipped it), this map will have >1 entry — that's
-  // the signal that the overall audit's per-streamer attribution is
-  // unreliable, even if the combined totals match. lark + audit-history
-  // surface this as a "MERGED" indicator so the human reviewer doesn't
-  // mistake a coincidentally-matching combined total for a clean audit.
-  const creatorMap = new Map()
-  for (const l of lines) {
-    const creator = l.live_creator || '(unknown)'
-    const entry = creatorMap.get(creator) || {
-      creator,
-      total_qty: 0,
-      line_count: 0,
-      earliest_unix: Infinity,
-      latest_unix: 0,
-    }
-    entry.total_qty += l.quantity
-    entry.line_count += 1
-    if (l.create_unix) {
-      entry.earliest_unix = Math.min(entry.earliest_unix, l.create_unix)
-      entry.latest_unix = Math.max(entry.latest_unix, l.create_unix)
-    }
-    creatorMap.set(creator, entry)
-  }
-  const perCreator = Array.from(creatorMap.values())
-    .map(c => ({
-      ...c,
-      // Normalise the sentinel back to null for storage
-      earliest_unix: c.earliest_unix === Infinity ? null : c.earliest_unix,
-    }))
-    .sort((a, b) => (a.earliest_unix || 0) - (b.earliest_unix || 0))
-  const mergedSessionCount = perCreator.length
+  // Per-session breakdown (was per-creator until 2026-05-13 P1.2).
+  // Use clusterLiveSessions instead of distinct-creator counting: a single
+  // creator can do MULTIPLE sessions in the same window (e.g. Trey plays
+  // Mon evening AND Wed evening, with nobody counting in between). The
+  // old "distinct creators" approach saw that as 1 session and missed the
+  // skipped count between them. clusterLiveSessions splits on (creator,
+  // time gap > 4h) so same-creator-multiple-sessions correctly counts as
+  // 2+ sessions and triggers the MERGED audit indicator.
+  //
+  // The output schema stays { creator, total_qty, line_count,
+  // earliest_unix, latest_unix } for backwards compatibility with the
+  // per_creator_breakdown column + the Audit History UI rendering. Just
+  // map session_start/end → earliest/latest.
+  const sessions = clusterLiveSessions(lines, { gapHours: 4 })
+  const perCreator = sessions.map(s => ({
+    creator: s.creator,
+    total_qty: s.total_qty,
+    line_count: s.line_count,
+    earliest_unix: s.session_start_unix,
+    latest_unix: s.session_end_unix,
+  }))
+  const mergedSessionCount = sessions.length
 
   // Count side, by product_id, signed (positive = sold/missing,
   // negative = found/appeared)
