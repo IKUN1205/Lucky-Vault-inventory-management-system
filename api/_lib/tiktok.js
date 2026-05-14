@@ -307,6 +307,62 @@ export async function harvestLiveSessionsFromAnalytics({ rawCookie }) {
     }
     await new Promise(r => setTimeout(r, 3000))
 
+    // Sort by Start time descending. CRITICAL: the page defaults to
+    // sort-by-GMV-rank, which means sessions with low GMV ($400 chill
+    // streams, short test streams, etc.) drop OUT of the visible top-N
+    // rows even when they're in the recent time window. We need
+    // chronological order so that ALL sessions in any recent window
+    // surface at the top.
+    //
+    // The Start time header is a clickable <th>. Each click cycles
+    // through sort states: default → asc → desc → default. We click
+    // once: usually default→asc. If we end up ascending, click again
+    // to get descending. We detect by checking the aria-sort attribute
+    // or the column header's class.
+    const sortApplied = await page.evaluate(() => {
+      // Find the <th> with the text "Start time"
+      const ths = Array.from(document.querySelectorAll('th'))
+      const target = ths.find(th => (th.textContent || '').trim().startsWith('Start time'))
+      if (!target) return { found: false }
+
+      // Find the actual click target — sometimes there's a sort icon inside
+      const clickable = target.querySelector('[class*="sort"]') ||
+                        target.querySelector('button') ||
+                        target
+      clickable.click()
+      const ariaAfterFirst = target.getAttribute('aria-sort') || ''
+      const classAfterFirst = target.className || ''
+      return { found: true, ariaAfterFirst, classAfterFirst }
+    }).catch(() => ({ found: false }))
+
+    if (sortApplied.found) {
+      await new Promise(r => setTimeout(r, 2500))
+      // Inspect: if we're now ascending, click once more to flip to desc
+      const isAsc = await page.evaluate(() => {
+        const ths = Array.from(document.querySelectorAll('th'))
+        const target = ths.find(th => (th.textContent || '').trim().startsWith('Start time'))
+        if (!target) return false
+        const aria = (target.getAttribute('aria-sort') || '').toLowerCase()
+        const cls = (target.className || '').toLowerCase()
+        return /asc|ascending/.test(aria) || /asc(?!end\w*-disable)/.test(cls)
+      }).catch(() => false)
+
+      if (isAsc) {
+        await page.evaluate(() => {
+          const ths = Array.from(document.querySelectorAll('th'))
+          const target = ths.find(th => (th.textContent || '').trim().startsWith('Start time'))
+          if (target) {
+            const clickable = target.querySelector('[class*="sort"]') ||
+                              target.querySelector('button') ||
+                              target
+            clickable.click()
+          }
+        }).catch(() => {})
+        await new Promise(r => setTimeout(r, 2500))
+      }
+    }
+    pageInfo.sortApplied = sortApplied
+
     rawRows = await page.evaluate(() => {
       const out = []
       const trs = document.querySelectorAll('table tr')
