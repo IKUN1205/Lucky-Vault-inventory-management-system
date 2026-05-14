@@ -14,7 +14,11 @@
 // avoid an extra HTTP hop. Total runtime ~30-40s.
 
 import { createClient } from '@supabase/supabase-js'
-import { harvestTikTokOrders, clusterLiveSessions } from './_lib/tiktok.js'
+import {
+  harvestTikTokOrders,
+  clusterLiveSessions,
+  harvestLiveSessionsFromAnalytics,
+} from './_lib/tiktok.js'
 
 export const config = {
   // 300s on Vercel Pro (was 60 on Hobby). Auto-reconcile is dominated by
@@ -400,6 +404,38 @@ export default async function handler(req, res) {
   const flaggedRows = rows.filter(r => r.flagged)
   const unmapped = Array.from(unmappedMap.entries()).map(([name, qty]) => ({ name, qty }))
 
+  // ---- Step 4.5: harvest TikTok's official per-session breakdown ----
+  // Scrape Content Analytics → LIVE for each session that overlaps the
+  // recon window. This is TikTok's own ground truth — counts both LIVE-
+  // tagged orders AND shop-tab attribution during the stream, so it
+  // closes the gap between "what the order list says" (LIVE-tag only)
+  // and "what actually sold during this session".
+  //
+  // Non-fatal: if the scrape fails, we still save the order-list based
+  // recon. Pro tier 300s timeout gives us room — current measured
+  // runtime ~50s for analytics + ~30-80s for order list = well under.
+  let analyticsLiveSessions = []
+  let analyticsHarvestError = null
+  try {
+    const rawCookie = process.env.TIKTOK_COOKIE
+    const { sessions } = await harvestLiveSessionsFromAnalytics({ rawCookie })
+    // Filter to sessions that overlap the recon window. A session overlaps
+    // if EITHER its start OR end is within [fromTs, toTs], OR if it
+    // entirely contains the window (long session covering shorter recon).
+    // fromTs can be null when there's no previous count — then we accept
+    // any session whose start is <= now (i.e. all visible sessions).
+    analyticsLiveSessions = sessions.filter(s => {
+      if (!s.start_unix) return false
+      if (s.start_unix > toTs) return false  // future / after window
+      if (fromTs == null) return true
+      const end = s.end_unix || s.start_unix
+      return end >= fromTs
+    })
+  } catch (err) {
+    analyticsHarvestError = err.message || String(err)
+    console.error('[auto-reconcile] analytics-live harvest failed:', err)
+  }
+
   // ---- Step 5: save reconciliation ----
   const savedRecord = {
     ...baseRecord,
@@ -412,6 +448,7 @@ export default async function handler(req, res) {
     unmapped,
     merged_session_count: mergedSessionCount,
     per_creator_breakdown: perCreator,
+    analytics_live_sessions: analyticsLiveSessions,
     status: 'success',
     duration_ms: Date.now() - started,
   }
@@ -501,6 +538,9 @@ export default async function handler(req, res) {
       pages_loaded: pageInfo?.pagesLoaded || 1,
       hit_older_than_window: pageInfo?.hitOlderThanWindow || false,
       hit_end_of_list: pageInfo?.hitEndOfList || false,
+      analytics_live_session_count: analyticsLiveSessions.length,
+      analytics_live_total_items_sold: analyticsLiveSessions.reduce((s, x) => s + (x.items_sold || 0), 0),
+      analytics_harvest_error: analyticsHarvestError,
     },
     lark: larkResult,
     duration_ms: Date.now() - started,
