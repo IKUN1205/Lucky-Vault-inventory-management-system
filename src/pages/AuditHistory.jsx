@@ -357,6 +357,14 @@ function ReconRow({ r, expanded, onToggle, admin, onAskDelete, onReaudit, reaudi
   const meta = STATUS_META[r.status] || STATUS_META.success
   const StatusIcon = meta.icon
   const stale = r.needs_recompute === true
+  const failed = r.status === 'failed'
+  // Either condition means the audit needs to be re-run:
+  //   - stale: upstream count was deleted, window_from is wrong
+  //   - failed: the original auto-reconcile run never completed (e.g.
+  //     TikTok cookie was expired, Puppeteer crashed, timeout)
+  // Both are recoverable by calling /api/auto-reconcile again — the
+  // endpoint upserts on stream_count_id so the existing row is overwritten.
+  const needsRerun = stale || failed
 
   const diffColor =
     r.total_diff === 0 ? 'text-green-400' :
@@ -431,12 +439,20 @@ function ReconRow({ r, expanded, onToggle, admin, onAskDelete, onReaudit, reaudi
         {admin && (
           <td className="py-2.5 pr-2 text-center">
             <div className="flex items-center justify-center gap-1" onClick={(e) => e.stopPropagation()}>
-              {stale && (
+              {needsRerun && (
                 <button
                   onClick={onReaudit}
                   disabled={reauditing}
-                  title="Re-run reconciliation with the corrected window"
-                  className="p-1 rounded text-yellow-300 hover:bg-yellow-500/10 disabled:opacity-50"
+                  title={
+                    stale
+                      ? 'Re-run reconciliation with the corrected window'
+                      : `Re-run reconciliation (last attempt failed: ${r.error_message || 'unknown'})`
+                  }
+                  className={`p-1 rounded disabled:opacity-50 ${
+                    stale
+                      ? 'text-yellow-300 hover:bg-yellow-500/10'
+                      : 'text-red-300 hover:bg-red-500/10'
+                  }`}
                 >
                   {reauditing ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
                 </button>
