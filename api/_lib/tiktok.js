@@ -227,6 +227,205 @@ export async function harvestTikTokOrders({ rawCookie, fromTs, toTs, liveOnly = 
   }
 }
 
+// Harvest the per-LIVE-session table from TikTok seller-center's
+// Content Analytics → LIVE page. The DOM scraping path is intentional:
+// the data is rendered server-side (or hydrated very early) so the JSON
+// XHR isn't reliably catchable via response interception. Reading the
+// table cells is brittle to UI changes but works today and matches the
+// numbers Will sees in his browser.
+//
+// Returns an array of sessions, each with:
+//   { live_id, title, start_unix, end_unix, duration_minutes,
+//     gmv_usd, items_sold, sku_orders, customers, ctor_pct,
+//     live_ctr_pct, views, avg_price_usd, raw_row }
+//
+// `start_unix` / `end_unix` are best-effort: TikTok displays times in
+// LA (PT) without an offset suffix, so we parse the displayed time and
+// add the PT→UTC offset for the date in question. DST-aware via the
+// Intl API.
+export async function harvestLiveSessionsFromAnalytics({ rawCookie }) {
+  const cookies = parseCookieHeader(rawCookie)
+  const browser = await puppeteer.launch({
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless,
+  })
+  let rawRows = []
+  let pageInfo = { rowCount: 0, capturedAt: Date.now() }
+  try {
+    const page = await browser.newPage()
+    await page.setUserAgent(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    )
+    await page.setCookie(...cookies)
+    await page.goto('https://seller-us.tiktok.com/compass/analytics-live?shop_region=US', {
+      waitUntil: 'networkidle2',
+      timeout: 50_000,
+    })
+    if (/login|signin|account\/verify/i.test(page.url())) {
+      throw new Error('TikTok cookies stale — got redirected to login.')
+    }
+    // The LIVE table is hydrated lazily — wait until rows appear (or
+    // give up after 25s).
+    try {
+      await page.waitForFunction(
+        () => document.querySelectorAll('table tr').length > 1,
+        { timeout: 25_000 }
+      )
+    } catch {}
+    // Small extra dwell so all rows render
+    await new Promise(r => setTimeout(r, 4000))
+
+    rawRows = await page.evaluate(() => {
+      const out = []
+      const trs = document.querySelectorAll('table tr')
+      for (const tr of trs) {
+        const cells = Array.from(tr.querySelectorAll('th,td'))
+          .map(c => (c.textContent || '').trim())
+        if (cells.length >= 10) out.push(cells)  // header has fewer, data rows have 12
+      }
+      return out
+    })
+    pageInfo.rowCount = rawRows.length
+  } finally {
+    await browser.close()
+  }
+
+  // Strip header row if present (first cell is "Rank" or empty header)
+  const dataRows = rawRows.filter(r => {
+    if (!r[0]) return true  // top-3 rows have rank icon → empty cell
+    if (/^\d+$/.test(r[0])) return true  // ranked numerically
+    return false  // header row "Rank, LIVE info, ..."
+  })
+
+  const sessions = dataRows.map(parseLiveAnalyticsRow).filter(Boolean)
+  return { sessions, pageInfo, rawRowCount: rawRows.length }
+}
+
+// Parse one row of the Analytics LIVE table. Cells are concatenated when
+// TikTok's UI uses sub-elements (no separator in textContent), so we have
+// to split with regex.
+function parseLiveAnalyticsRow(cells) {
+  if (cells.length < 11) return null
+  // [rank, liveInfo, timeAndDur, gmv, ctor, views, liveCtr, skuOrders,
+  //  customers, itemsSold, avgPrice, action]
+  const [, liveInfo, timeAndDur, gmv, ctor, views, liveCtr, skuOrders,
+         customers, itemsSold, avgPrice] = cells
+
+  // "OP, Nikke, Hololive W/YaziID:7637127856388147982"
+  const m = liveInfo.match(/^(.*?)ID:(\d+)\s*$/)
+  const title = (m ? m[1] : liveInfo).trim()
+  const live_id = m ? m[2] : null
+
+  // "May 7, 2026, 4:40 AM7h 19m"  (note narrow no-break space U+202F)
+  // We split on the pattern: "<date>, <h:mm> <AM|PM>" then duration follows.
+  const tdNormalised = timeAndDur.replace(/ /g, ' ').replace(/ /g, ' ')
+  const tdMatch = tdNormalised.match(/^(.+?\d{1,2}:\d{2}\s*[AP]M)\s*(.*)$/)
+  const startTimeStr = tdMatch ? tdMatch[1] : tdNormalised
+  const durationStr = tdMatch ? tdMatch[2].trim() : ''
+
+  // Parse PT-displayed time to unix. JS Date.parse doesn't reliably
+  // accept "PT" or "PDT", so we parse as if UTC then add the correct
+  // PT→UTC offset for that wall-clock date (DST-aware via Intl).
+  const startUnix = parsePtWallClockToUnix(startTimeStr)
+  const durationMinutes = parseDurationToMinutes(durationStr)
+  const endUnix = startUnix && durationMinutes
+    ? startUnix + durationMinutes * 60
+    : null
+
+  return {
+    live_id,
+    title,
+    start_unix: startUnix,
+    end_unix: endUnix,
+    duration_minutes: durationMinutes,
+    gmv_usd: parseDollar(gmv),
+    items_sold: parseInt(itemsSold.replace(/,/g, ''), 10) || 0,
+    sku_orders: parseInt(skuOrders.replace(/,/g, ''), 10) || 0,
+    customers: parseInt(customers.replace(/,/g, ''), 10) || 0,
+    ctor_pct: parsePercent(ctor),
+    live_ctr_pct: parsePercent(liveCtr),
+    views: parseInt(views.replace(/,/g, ''), 10) || 0,
+    avg_price_usd: parseDollar(avgPrice),
+    raw_row: cells,
+  }
+}
+
+// "$2,948.39" → 2948.39  ;  "" → 0
+function parseDollar(s) {
+  if (!s) return 0
+  return parseFloat(String(s).replace(/[$,]/g, '')) || 0
+}
+
+// "13.37 %" → 13.37  ;  "" → 0
+function parsePercent(s) {
+  if (!s) return 0
+  return parseFloat(String(s).replace(/[%\s]/g, '')) || 0
+}
+
+// "7h 19m" / "7h" / "19m" → minutes
+function parseDurationToMinutes(s) {
+  if (!s) return 0
+  let total = 0
+  const h = s.match(/(\d+)\s*h/)
+  const m = s.match(/(\d+)\s*m/)
+  if (h) total += parseInt(h[1], 10) * 60
+  if (m) total += parseInt(m[1], 10)
+  return total
+}
+
+// Parse a PT wall-clock display ("May 7, 2026, 4:40 AM") to a unix
+// timestamp (seconds). DST-aware: we figure out whether the date falls
+// in PDT (UTC-7) or PST (UTC-8) by formatting a candidate moment with
+// Intl in the LA timezone and seeing what offset matches.
+function parsePtWallClockToUnix(s) {
+  if (!s) return null
+  // Strategy: build an ISO string with -07:00 (PDT) first, check whether
+  // the resulting moment formats back to the SAME wall clock when
+  // expressed in LA. If yes, that's correct. If not, try -08:00 (PST).
+  const monthMap = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6,
+    Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 }
+  const m = s.match(/^(\w+)\s+(\d+),\s*(\d+),\s*(\d+):(\d+)\s*([AP])M$/i)
+  if (!m) return null
+  const [, mon, day, year, hourS, minS, ampm] = m
+  const month = monthMap[mon.slice(0, 3)]
+  if (!month) return null
+  let hour = parseInt(hourS, 10) % 12
+  if (ampm.toUpperCase() === 'P') hour += 12
+  const minute = parseInt(minS, 10)
+
+  for (const offset of [7, 8]) {  // try PDT, then PST
+    // PT moment → corresponding UTC moment by adding offset hours
+    const utcMs = Date.UTC(parseInt(year), month - 1, parseInt(day), hour + offset, minute, 0)
+    const candidate = new Date(utcMs)
+    // Check whether LA local time of this moment matches the input
+    const laParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Los_Angeles',
+      year: 'numeric', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', hour12: true,
+    }).formatToParts(candidate)
+    const get = (t) => laParts.find(p => p.type === t)?.value
+    const laMonth = get('month')
+    const laDay = parseInt(get('day'), 10)
+    const laYear = parseInt(get('year'), 10)
+    const laHour = parseInt(get('hour'), 10)
+    const laMinute = parseInt(get('minute'), 10)
+    const laAmPm = (get('dayPeriod') || '').toUpperCase()
+    let laHour12 = laHour % 12
+    if (laAmPm === 'PM') laHour12 += 12
+    if (laYear === parseInt(year) &&
+        laMonth === mon.slice(0, 3) &&
+        laDay === parseInt(day) &&
+        laHour12 === hour &&
+        laMinute === minute) {
+      return Math.floor(utcMs / 1000)
+    }
+  }
+  // Couldn't reconcile — fall back to PDT (LA default for most of year)
+  return Math.floor(Date.UTC(parseInt(year), month - 1, parseInt(day), hour + 7, minute, 0) / 1000)
+}
+
 // Cluster a list of harvested order lines into "LIVE sessions". A session
 // is a contiguous run of orders from the same creator with no gap larger
 // than `gapHours` between adjacent orders. Returns one entry per session,
