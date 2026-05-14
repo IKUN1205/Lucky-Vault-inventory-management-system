@@ -9,7 +9,7 @@
     },
     {
       "path": "/api/detect-missing-counts",
-      "schedule": "0 */2 * * *"
+      "schedule": "0 14 * * *"
     }
   ]
 }
