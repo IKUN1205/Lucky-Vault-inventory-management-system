@@ -4,6 +4,7 @@ import { fetchSingleByIdentifier, fetchCardSets } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SellSingleModal from '../components/SellSingleModal'
 import QuickIntakeModal from '../components/QuickIntakeModal'
+import BulkSellModal from '../components/BulkSellModal'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
 import {
@@ -38,7 +39,7 @@ export default function SinglesScan() {
   const { user } = useAuth()
   const navigate = useNavigate()
 
-  const [mode, setMode] = useState('intake')   // 'intake' | 'sell' | 'batch_intake'
+  const [mode, setMode] = useState('intake')   // 'intake' | 'sell' | 'batch_intake' | 'batch_sell'
   const [cert, setCert] = useState('')
   const [processing, setProcessing] = useState(false)
   const [history, setHistory] = useState([])   // [{ ts, cert, mode, ok, msg, single? }, ...]
@@ -46,6 +47,13 @@ export default function SinglesScan() {
   // Batch Intake mode accumulates scanned cert#s. User finalises with the
   // "Continue to Bulk Add" button → /singles/bulk-add?certs=...
   const [batchQueue, setBatchQueue] = useState([])
+  // Batch Sell mode accumulates verified-sellable singles (looked up to
+  // confirm in_inventory). When user clicks "Continue to Bulk Sell" we
+  // open BulkSellModal with the full card data so they don't have to wait
+  // for another fetch.
+  const [sellQueue, setSellQueue] = useState([])
+  // BulkSellModal open flag
+  const [showBulkSell, setShowBulkSell] = useState(false)
   // Quick intake modal — opens when single-intake scan hits a brand-new
   // identifier. Holds the scanned id so the modal can pre-fill it.
   const [pendingIntake, setPendingIntake] = useState(null)
@@ -131,6 +139,34 @@ export default function SinglesScan() {
             msg: `Queued for batch intake (${batchQueue.length + 1} total)`
           })
         }
+      } else if (mode === 'batch_sell') {
+        // Same identity validation as single-sell, but instead of opening
+        // the Sell modal now, we queue the card. User finalises the whole
+        // batch in BulkSellModal.
+        if (!existing) {
+          pushHistory({ cert: trimmed, mode, ok: false, msg: 'Not in inventory — cannot queue for sell' })
+        } else if (existing.status === 'sold') {
+          pushHistory({
+            cert: trimmed, mode, ok: false,
+            msg: `Already sold on ${existing.sale_date || '?'}`,
+            single: existing
+          })
+        } else if (existing.status !== 'in_inventory') {
+          pushHistory({
+            cert: trimmed, mode, ok: false,
+            msg: `Status is "${existing.status}" — can only sell from in_inventory`,
+            single: existing
+          })
+        } else if (sellQueue.some(s => s.id === existing.id)) {
+          pushHistory({ cert: trimmed, mode, ok: false, msg: 'Already in the sell queue (duplicate scan)' })
+        } else {
+          setSellQueue(prev => [...prev, existing])
+          pushHistory({
+            cert: trimmed, mode, ok: true,
+            msg: `Queued for batch sell (${sellQueue.length + 1} total)`,
+            single: existing
+          })
+        }
       } else if (mode === 'sell') {
         if (!existing) {
           pushHistory({
@@ -212,8 +248,8 @@ export default function SinglesScan() {
         </div>
       </Instructions>
 
-      {/* Mode toggle */}
-      <div className="grid grid-cols-3 gap-3 mb-6">
+      {/* Mode toggle — 4 columns: Intake (single/batch) + Sell (single/batch) */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <button
           type="button"
           onClick={() => handleModeChange('intake')}
@@ -228,7 +264,7 @@ export default function SinglesScan() {
             <span className="font-semibold text-sm">Intake (single)</span>
           </div>
           <p className="text-gray-400 text-xs">
-            Scan one slab → jump to Add Single with cert pre-filled. Best for adding a single card mid-stream.
+            Scan one card → fill quick intake form inline. Save & scan next.
           </p>
         </button>
         <button
@@ -245,7 +281,7 @@ export default function SinglesScan() {
             <span className="font-semibold text-sm">Batch intake</span>
           </div>
           <p className="text-gray-400 text-xs">
-            Scan many slabs in a row. They queue up below. Click <strong>Continue to Bulk Add</strong> to fill all card details together.
+            Scan many cards. Queue below. Click <strong>Continue to Bulk Add</strong> to fill details together.
           </p>
         </button>
         <button
@@ -259,15 +295,80 @@ export default function SinglesScan() {
         >
           <div className="flex items-center gap-2 text-red-300 mb-1">
             <DollarSign size={16} />
-            <span className="font-semibold text-sm">Sell</span>
+            <span className="font-semibold text-sm">Sell (single)</span>
           </div>
           <p className="text-gray-400 text-xs">
-            Scan a slab to record its sale. Opens the Sell modal with the card loaded — fill price + channel.
+            Scan one card → opens Sell modal with card loaded. Fill price + channel.
+          </p>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleModeChange('batch_sell')}
+          className={`card text-left transition-all border-2 ${
+            mode === 'batch_sell'
+              ? 'border-orange-500/60 bg-orange-500/10'
+              : 'border-transparent hover:border-vault-border'
+          }`}
+        >
+          <div className="flex items-center gap-2 text-orange-300 mb-1">
+            <DollarSign size={16} />
+            <span className="font-semibold text-sm">Batch sell</span>
+          </div>
+          <p className="text-gray-400 text-xs">
+            Scan many cards. Queue below. Click <strong>Continue to Bulk Sell</strong> to enter prices + channels for all at once.
           </p>
         </button>
       </div>
 
-      {/* Batch queue (only visible in batch_intake mode and when there's something queued) */}
+      {/* Batch SELL queue (only visible in batch_sell mode and non-empty) */}
+      {mode === 'batch_sell' && sellQueue.length > 0 && (
+        <div className="card mb-6 border-orange-500/40 border-2">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 text-orange-300">
+              <DollarSign size={16} />
+              <h3 className="font-semibold text-sm">Sell queue ({sellQueue.length})</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSellQueue([])}
+                className="text-xs text-gray-400 hover:text-white flex items-center gap-1"
+              >
+                <X size={12} /> Clear queue
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowBulkSell(true)}
+                className="btn btn-primary text-sm py-1.5 px-3"
+              >
+                Continue to Bulk Sell <ArrowRight size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {sellQueue.map((s, i) => (
+              <span
+                key={s.id}
+                className="badge badge-info font-mono text-xs flex items-center gap-1"
+                title={`${s.card_name} ${s.card_number || ''}`}
+              >
+                {s.tcg_id || s.cert_number || '?'}
+                <span className="text-gray-400 normal-case">— {s.card_name}</span>
+                <button
+                  type="button"
+                  onClick={() => setSellQueue(prev => prev.filter((_, idx) => idx !== i))}
+                  className="hover:text-red-300"
+                  title="Remove from queue"
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Batch INTAKE queue (only visible in batch_intake mode and when there's something queued) */}
       {mode === 'batch_intake' && batchQueue.length > 0 && (
         <div className="card mb-6 border-vault-gold/40 border-2">
           <div className="flex items-center justify-between mb-3">
@@ -342,7 +443,10 @@ export default function SinglesScan() {
             {processing
               ? <Loader2 className="animate-spin" size={18} />
               : <>
-                  {mode === 'intake' ? 'Intake' : mode === 'batch_intake' ? 'Queue' : 'Sell'}
+                  {mode === 'intake' ? 'Intake'
+                    : mode === 'batch_intake' ? 'Queue'
+                    : mode === 'batch_sell' ? 'Queue'
+                    : 'Sell'}
                   <ArrowRight size={18} />
                 </>}
           </button>
@@ -436,6 +540,39 @@ export default function SinglesScan() {
               single: updated
             })
             setPendingSell(null)
+            refocus()
+          }}
+        />
+      )}
+
+      {/* Bulk sell modal — opens from Batch Sell mode's "Continue" button.
+          Lets user fill in price/fees/channel per queued card and submit
+          all at once via markSinglesAsSoldBatch. */}
+      {showBulkSell && sellQueue.length > 0 && (
+        <BulkSellModal
+          cards={sellQueue}
+          currentUserId={user?.id}
+          addToast={addToast}
+          onCancel={() => {
+            setShowBulkSell(false)
+            refocus()
+          }}
+          onSold={(soldCards) => {
+            soldCards.forEach(c => {
+              pushHistory({
+                cert: c.tcg_id || c.cert_number || '?',
+                mode: 'batch_sell',
+                ok: true,
+                msg: `Sold ${c.card_name} for $${Number(c.sale_price_usd || 0).toFixed(2)} via ${c.sale_channel || '?'}`,
+                single: c
+              })
+            })
+            // Remove sold cards from the queue (in case there were any failures, the remaining stay)
+            const soldIds = new Set(soldCards.map(c => c.id))
+            setSellQueue(prev => prev.filter(s => !soldIds.has(s.id)))
+            if (soldCards.length === sellQueue.length) {
+              setShowBulkSell(false)
+            }
             refocus()
           }}
         />

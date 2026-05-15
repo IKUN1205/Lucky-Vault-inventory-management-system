@@ -7,7 +7,7 @@ import SellSingleModal from '../components/SellSingleModal'
 import { useAuth } from '../lib/AuthContext'
 import {
   Layers, Plus, Search, X, TrendingUp, TrendingDown,
-  Package, DollarSign, Trash2
+  Package, DollarSign, Trash2, ChevronUp, ChevronDown
 } from 'lucide-react'
 
 const BRAND_OPTIONS = ['Pokemon', 'One Piece', 'Magic', 'Yu-Gi-Oh!', 'Other']
@@ -58,6 +58,47 @@ export default function SinglesInventory() {
   // Sell modal: holds the single being sold (null = closed)
   const [sellingSingle, setSellingSingle] = useState(null)
 
+  // Sortable columns. `column` matches a key in the SORT_KEYS map below;
+  // `direction` toggles asc/desc. Default: most recently acquired first.
+  const [sort, setSort] = useState({ column: 'acquired', direction: 'desc' })
+
+  // Extract the comparable value for each column. Returns null for missing
+  // values — those sort to the END regardless of direction (sort stability
+  // for "unpriced" rows).
+  const SORT_KEYS = {
+    card:     (s) => (s.card_name || '').toLowerCase(),
+    set:      (s) => (s.set?.name || '').toLowerCase(),
+    form:     (s) => `${s.form}-${s.grading_company || ''}-${s.grade || ''}-${s.condition || ''}`,
+    qty:      (s) => s.form === 'raw' ? (s.quantity || 1) : 1,
+    cost:     (s) => s.acquisition_cost_usd != null ? Number(s.acquisition_cost_usd) : null,
+    market:   (s) => s.current_market_price_usd != null ? Number(s.current_market_price_usd) : null,
+    pl:       (s) => {
+      // Unrealized for in_inventory, realized for sold
+      const qty = s.form === 'raw' ? (s.quantity || 1) : 1
+      const cost = s.acquisition_cost_usd != null ? Number(s.acquisition_cost_usd) : null
+      if (s.status === 'sold') {
+        const price = s.sale_price_usd != null ? Number(s.sale_price_usd) : null
+        const fees = s.sale_fees_usd != null ? Number(s.sale_fees_usd) : 0
+        return (price != null && cost != null) ? (price - fees) - cost * qty : null
+      }
+      const market = s.current_market_price_usd != null ? Number(s.current_market_price_usd) : null
+      return (market != null && cost != null) ? (market - cost) * qty : null
+    },
+    sale:     (s) => s.sale_price_usd != null ? Number(s.sale_price_usd) : null,
+    channel:  (s) => (s.sale_channel || '').toLowerCase(),
+    location: (s) => (s.location?.name || '').toLowerCase(),
+    acquired: (s) => s.date_acquired || '',
+    sold:     (s) => s.sale_date || '',
+  }
+
+  const toggleSort = (column) => {
+    setSort(prev => prev.column === column
+      ? { column, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+      // Sensible default per column type: text → asc, numeric/date → desc
+      : { column, direction: ['card','set','form','channel','location'].includes(column) ? 'asc' : 'desc' }
+    )
+  }
+
   // Re-load when status filter changes (status is the only server-side filter)
   useEffect(() => {
     loadData()
@@ -102,7 +143,7 @@ export default function SinglesInventory() {
   // is overkill for v1 (inventory is small enough); revisit if rows grow.
   const filteredSingles = useMemo(() => {
     const search = filters.search.trim().toLowerCase()
-    return singles.filter(s => {
+    const list = singles.filter(s => {
       if (filters.brand && s.brand !== filters.brand) return false
       if (filters.language && s.language !== filters.language) return false
       if (filters.form && s.form !== filters.form) return false
@@ -118,7 +159,24 @@ export default function SinglesInventory() {
       }
       return true
     })
-  }, [singles, filters])
+    // Sort: nulls always sort to the END regardless of direction so that
+    // unpriced/unknown rows don't pollute the top of either order.
+    const getter = SORT_KEYS[sort.column] || SORT_KEYS.acquired
+    const dir = sort.direction === 'asc' ? 1 : -1
+    return [...list].sort((a, b) => {
+      const av = getter(a)
+      const bv = getter(b)
+      // Treat empty strings as null for sort purposes
+      const aIsNull = av === null || av === undefined || av === ''
+      const bIsNull = bv === null || bv === undefined || bv === ''
+      if (aIsNull && bIsNull) return 0
+      if (aIsNull) return 1   // null to end
+      if (bIsNull) return -1
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
+      return String(av).localeCompare(String(bv)) * dir
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [singles, filters, sort])
 
   // Aggregate metrics across the filtered view.
   //
@@ -385,24 +443,24 @@ export default function SinglesInventory() {
           <table className="w-full text-sm">
             <thead className="border-b border-vault-border text-gray-400 text-xs uppercase">
               <tr>
-                <th className="text-left px-4 py-3">Card</th>
-                <th className="text-left px-4 py-3">Set</th>
-                <th className="text-left px-4 py-3">Form</th>
-                <th className="text-right px-4 py-3">Qty</th>
-                <th className="text-right px-4 py-3">Cost (USD)</th>
+                <SortHeader col="card"     align="left"  sort={sort} onToggle={toggleSort}>Card</SortHeader>
+                <SortHeader col="set"      align="left"  sort={sort} onToggle={toggleSort}>Set</SortHeader>
+                <SortHeader col="form"     align="left"  sort={sort} onToggle={toggleSort}>Form</SortHeader>
+                <SortHeader col="qty"      align="right" sort={sort} onToggle={toggleSort}>Qty</SortHeader>
+                <SortHeader col="cost"     align="right" sort={sort} onToggle={toggleSort}>Cost (USD)</SortHeader>
                 {viewingSold ? (
                   <>
-                    <th className="text-right px-4 py-3">Sale (USD)</th>
-                    <th className="text-left  px-4 py-3">Channel</th>
-                    <th className="text-right px-4 py-3">Realized P/L</th>
-                    <th className="text-left  px-4 py-3">Sold</th>
+                    <SortHeader col="sale"     align="right" sort={sort} onToggle={toggleSort}>Sale (USD)</SortHeader>
+                    <SortHeader col="channel"  align="left"  sort={sort} onToggle={toggleSort}>Channel</SortHeader>
+                    <SortHeader col="pl"       align="right" sort={sort} onToggle={toggleSort}>Realized P/L</SortHeader>
+                    <SortHeader col="sold"     align="left"  sort={sort} onToggle={toggleSort}>Sold</SortHeader>
                   </>
                 ) : (
                   <>
-                    <th className="text-right px-4 py-3">Market (USD)</th>
-                    <th className="text-right px-4 py-3">P/L</th>
-                    <th className="text-left  px-4 py-3">Location</th>
-                    <th className="text-left  px-4 py-3">Acquired</th>
+                    <SortHeader col="market"   align="right" sort={sort} onToggle={toggleSort}>Market (USD)</SortHeader>
+                    <SortHeader col="pl"       align="right" sort={sort} onToggle={toggleSort}>P/L</SortHeader>
+                    <SortHeader col="location" align="left"  sort={sort} onToggle={toggleSort}>Location</SortHeader>
+                    <SortHeader col="acquired" align="left"  sort={sort} onToggle={toggleSort}>Acquired</SortHeader>
                   </>
                 )}
                 <th className="px-4 py-3"></th>
@@ -573,5 +631,28 @@ export default function SinglesInventory() {
         />
       )}
     </div>
+  )
+}
+
+// Clickable column header. Shows ↑/↓ arrow on the active sort column.
+// `align` = 'left' | 'right' for text-align; non-active arrow is faint
+// so users can tell columns ARE sortable without the page looking busy.
+function SortHeader({ col, align = 'left', sort, onToggle, children }) {
+  const active = sort.column === col
+  const Arrow = sort.direction === 'asc' ? ChevronUp : ChevronDown
+  const justify = align === 'right' ? 'justify-end' : 'justify-start'
+  return (
+    <th className={`px-4 py-3 text-${align} select-none`}>
+      <button
+        type="button"
+        onClick={() => onToggle(col)}
+        className={`flex items-center gap-1 ${justify} w-full hover:text-vault-gold transition ${
+          active ? 'text-vault-gold' : 'text-gray-400'
+        }`}
+      >
+        <span>{children}</span>
+        <Arrow size={12} className={active ? 'opacity-100' : 'opacity-30'} />
+      </button>
+    </th>
   )
 }

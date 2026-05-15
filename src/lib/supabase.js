@@ -918,6 +918,32 @@ export const fetchSingleByCert = fetchSingleByIdentifier
 // transaction (the whole row flips to status=sold). Splitting a stack into
 // "sold N" + "remaining (qty - N)" needs a follow-up — see TODO in
 // SellSingleModal.jsx.
+// Bulk-sell helper used by the Scan page's Batch Sell mode. Takes an
+// array of { id, saleData } pairs and marks each as sold, one UPDATE per
+// row. Not atomic at the DB level (Supabase has no batch UPDATE with
+// per-row payload) but written as a Promise.all so the round-trips
+// parallelise — much faster than awaiting each one.
+//
+// Returns: { ok: [...updated rows], failed: [{ id, error }, ...] }
+//
+// Each row's audit log entry is written by markSingleAsSold which we call
+// internally, so the Activity Log gets per-card events for free.
+export const markSinglesAsSoldBatch = async (entries) => {
+  if (!Array.isArray(entries) || entries.length === 0) return { ok: [], failed: [] }
+  const results = await Promise.all(entries.map(async (e) => {
+    try {
+      const updated = await markSingleAsSold(e.id, e.saleData)
+      return { kind: 'ok', row: updated }
+    } catch (err) {
+      return { kind: 'failed', id: e.id, error: err.message || String(err) }
+    }
+  }))
+  return {
+    ok: results.filter(r => r.kind === 'ok').map(r => r.row),
+    failed: results.filter(r => r.kind === 'failed').map(r => ({ id: r.id, error: r.error })),
+  }
+}
+
 export const markSingleAsSold = async (id, saleData) => {
   const patch = {
     status: 'sold',
