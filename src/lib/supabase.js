@@ -745,6 +745,32 @@ export const softDeleteSingle = async (id, deletedById, reason = null) => {
   return data
 }
 
+// Look up a single by its graded-slab cert#. Used by the Scan page to
+// route an incoming barcode to the right next step (intake / sell / dupe
+// warning). We match against the UNIQUE partial index on cert_number
+// (graded, non-deleted), so this returns at most one row.
+//
+// Returns: the matching single row WITH joined set/location/acquirer/sold_by
+// for the Sell modal context, or null if no match.
+export const fetchSingleByCert = async (certNumber) => {
+  const trimmed = (certNumber || '').trim()
+  if (!trimmed) return null
+  const { data, error } = await supabase
+    .from('singles')
+    .select(`
+      *,
+      set:card_sets(id, brand, name, code, language),
+      location:locations(id, name),
+      acquirer:users!singles_acquirer_id_fkey(id, name),
+      sold_by:users!singles_sold_by_id_fkey(id, name)
+    `)
+    .eq('cert_number', trimmed)
+    .or('deleted.is.null,deleted.eq.false')
+    .maybeSingle()
+  if (error) throw error
+  return data
+}
+
 // Mark a single as sold — records the sale price + channel + date + fees +
 // buyer (all optional except sale_price_usd, enforced in the caller form)
 // and flips status to 'sold'. Backed by the sale_* columns added by

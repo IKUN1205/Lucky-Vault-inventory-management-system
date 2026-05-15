@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   fetchCardSets,
   fetchLocations,
@@ -36,6 +36,12 @@ export default function AddSingle() {
   const { toasts, addToast, removeToast } = useToast()
   const { user } = useAuth()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+
+  // URL prefill — used by the Scan page to deep-link with a pre-scanned
+  // cert#. Only consumed once on mount via the initial form state below.
+  const initialCert = searchParams.get('cert') || ''
+  const initialForm = searchParams.get('form') === 'graded' ? 'graded' : 'raw'
 
   const [cardSets, setCardSets] = useState([])
   const [locations, setLocations] = useState([])
@@ -56,17 +62,17 @@ export default function AddSingle() {
     card_number: '',
     variant: '',
 
-    // Form
-    form: 'raw',
+    // Form (URL ?form= overrides default, defaults to 'raw')
+    form: initialForm,
 
     // Raw-specific
     condition: 'NM',
     quantity: 1,
 
-    // Graded-specific
+    // Graded-specific (URL ?cert= prefill from the Scan page deep-link)
     grading_company: '',
     grade: '',
-    cert_number: '',
+    cert_number: initialCert,
 
     // Cost (optional in v1)
     acquisition_cost_native: '',

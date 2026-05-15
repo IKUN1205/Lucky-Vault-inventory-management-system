@@ -31,6 +31,7 @@ import StreamSessions from './pages/StreamSessions'
 import AuditHistory from './pages/AuditHistory'
 import SinglesInventory from './pages/SinglesInventory'
 import AddSingle from './pages/AddSingle'
+import SinglesScan from './pages/SinglesScan'
 
 // Components
 import Layout from './components/Layout'
@@ -153,6 +154,9 @@ function AppRoutes() {
       } />
       <Route path="/singles/add" element={
         <ProtectedRoute path="/singles/add"><Layout><AddSingle /></Layout></ProtectedRoute>
+      } />
+      <Route path="/singles/scan" element={
+        <ProtectedRoute path="/singles/scan"><Layout><SinglesScan /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
