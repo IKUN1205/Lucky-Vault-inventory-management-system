@@ -803,10 +803,10 @@ function fmtFormDescriptor(body) {
   return `Raw ${cond}${qty}`.trim()
 }
 
-// 📥 Charizard ex 199/197 (Surging Sparks) · Raw NM ×1 · $50 · TCG 642242 · by Will
+// 📥 INTAKE — Charizard ex 199/197 (Surging Sparks) · Raw NM ×1 · $50 · TCG 642242 · by Will
 function buildSingleIntake(body) {
   if (!body.card_name) throw new Error('card_name is required')
-  const parts = [`📥 ${fmtCardIdent(body)}`, fmtFormDescriptor(body)]
+  const parts = [`📥 INTAKE — ${fmtCardIdent(body)}`, fmtFormDescriptor(body)]
   const cost = fmtUsd(body.cost_usd)
   if (cost) parts.push(cost)
   // TCG ID only useful for raw (graded already shows #cert above)
@@ -815,34 +815,34 @@ function buildSingleIntake(body) {
   return parts.join(' · ')
 }
 
-// 📦 5 cards added · $215 total · by Will
+// 📦 BULK INTAKE — 5 cards added · $215 total · by Will
 function buildBulkIntake(body) {
   const n = Number(body.count) || 0
-  const parts = [`📦 ${n} card${n === 1 ? '' : 's'} added`]
+  const parts = [`📦 BULK INTAKE — ${n} card${n === 1 ? '' : 's'} added`]
   const total = fmtUsd(body.total_cost_usd)
   if (total) parts.push(`${total} total`)
   if (body.operator_name) parts.push(`by ${body.operator_name}`)
   return parts.join(' · ')
 }
 
-// 💰 Charizard ex 199/197 (Surging Sparks) · sold $80 via eBay → ebay_user_xyz · by Will
+// 💰 SOLD — Charizard ex 199/197 (Surging Sparks) · $80 via eBay → ebay_user_xyz · by Will
 function buildSingleSold(body) {
   if (!body.card_name) throw new Error('card_name is required')
-  const parts = [`💰 ${fmtCardIdent(body)}`]
+  const parts = [`💰 SOLD — ${fmtCardIdent(body)}`]
   const sale = fmtUsd(body.sale_price_usd)
   const channel = body.sale_channel || '?'
-  let saleSeg = `sold ${sale || 'unknown'} via ${channel}`
+  let saleSeg = `${sale || 'unknown'} via ${channel}`
   if (body.buyer_name) saleSeg += ` → ${body.buyer_name}`
   parts.push(saleSeg)
   if (body.operator_name) parts.push(`by ${body.operator_name}`)
   return parts.join(' · ')
 }
 
-// 💰 5 cards sold · $400 via eBay · P/L +$98 · by Will
-// 💰 5 cards sold · $400 via mixed channels · P/L +$98 · by Will
+// 💰 BULK SOLD — 5 cards · $400 via eBay · P/L +$98 · by Will
+// 💰 BULK SOLD — 5 cards · $400 via mixed channels · P/L +$98 · by Will
 function buildBulkSold(body) {
   const n = Number(body.count) || 0
-  const parts = [`💰 ${n} card${n === 1 ? '' : 's'} sold`]
+  const parts = [`💰 BULK SOLD — ${n} card${n === 1 ? '' : 's'}`]
   const total = fmtUsd(body.total_sale_usd)
   const channels = Array.isArray(body.channels) ? body.channels : []
   const channelStr = channels.length === 1 ? channels[0] : 'mixed channels'
@@ -857,11 +857,11 @@ function buildBulkSold(body) {
   return parts.join(' · ')
 }
 
-// 🗑 Charizard ex 199/197 deleted · reason: "test data" · by Will
+// 🗑 DELETED — Charizard ex 199/197 · reason: "test data" · by Will
 function buildSingleDeleted(body) {
   if (!body.card_name) throw new Error('card_name is required')
   const cardCore = `${body.card_name}${body.card_number ? ` ${body.card_number}` : ''}`
-  const parts = [`🗑 ${cardCore} deleted`]
+  const parts = [`🗑 DELETED — ${cardCore}`]
   if (body.reason && body.reason.trim()) {
     parts.push(`reason: "${body.reason.trim()}"`)
   }
