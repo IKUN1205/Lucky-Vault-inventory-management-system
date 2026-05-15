@@ -645,3 +645,102 @@ export const createPaymentMethod = async (name) => {
   if (error) throw error
   return data
 }
+
+// ============================================
+// SINGLES (card_sets + singles) — v1: inventory only
+// ============================================
+// All helpers below are additive; nothing above this banner is modified.
+// Sales / box-break-pull tracing / Lark notifications are intentionally absent
+// (v2 scope). When those are added, append new helpers below — do not edit
+// existing ones in place.
+
+export const fetchCardSets = async (filters = {}) => {
+  let query = supabase.from('card_sets').select('*').eq('active', true)
+  if (filters.brand) query = query.eq('brand', filters.brand)
+  if (filters.language) query = query.eq('language', filters.language)
+  const { data, error } = await query
+    .order('brand')
+    .order('language')
+    .order('release_date', { ascending: false, nullsFirst: false })
+    .order('name')
+  if (error) throw error
+  return data || []
+}
+
+export const createCardSet = async (cardSet) => {
+  const { data, error } = await supabase
+    .from('card_sets')
+    .insert(cardSet)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+// Fetch singles with joined set / location / acquirer / vendor for the
+// inventory page. Soft-deleted rows are filtered out by default.
+export const fetchSingles = async (filters = {}) => {
+  let query = supabase
+    .from('singles')
+    .select(`
+      *,
+      set:card_sets(id, brand, name, code, language),
+      location:locations(id, name),
+      acquirer:users!singles_acquirer_id_fkey(id, name),
+      vendor:vendors(id, name)
+    `)
+    .or('deleted.is.null,deleted.eq.false')
+
+  if (filters.brand) query = query.eq('brand', filters.brand)
+  if (filters.language) query = query.eq('language', filters.language)
+  if (filters.form) query = query.eq('form', filters.form)
+  if (filters.set_id) query = query.eq('set_id', filters.set_id)
+  if (filters.status) query = query.eq('status', filters.status)
+  if (filters.grading_company) query = query.eq('grading_company', filters.grading_company)
+  if (filters.location_id) query = query.eq('location_id', filters.location_id)
+  if (filters.min_market_price != null) query = query.gte('current_market_price_usd', filters.min_market_price)
+  if (filters.max_market_price != null) query = query.lte('current_market_price_usd', filters.max_market_price)
+
+  const { data, error } = await query.order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+export const createSingle = async (single) => {
+  const { data, error } = await supabase
+    .from('singles')
+    .insert(single)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export const updateSingle = async (id, updates) => {
+  const { data, error } = await supabase
+    .from('singles')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+// Soft-delete a single. Matches the LV convention used elsewhere
+// (deleted_at + deleted_by_id + deleted_reason on the same row).
+export const softDeleteSingle = async (id, deletedById, reason = null) => {
+  const { data, error } = await supabase
+    .from('singles')
+    .update({
+      deleted: true,
+      deleted_at: new Date().toISOString(),
+      deleted_by_id: deletedById || null,
+      deleted_reason: reason
+    })
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}

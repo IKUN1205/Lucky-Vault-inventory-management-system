@@ -29,6 +29,8 @@ import Audit from './pages/Audit'
 import StorefrontImport from './pages/StorefrontImport'
 import StreamSessions from './pages/StreamSessions'
 import AuditHistory from './pages/AuditHistory'
+import SinglesInventory from './pages/SinglesInventory'
+import AddSingle from './pages/AddSingle'
 
 // Components
 import Layout from './components/Layout'
@@ -145,6 +147,12 @@ function AppRoutes() {
       } />
       <Route path="/audit-history" element={
         <ProtectedRoute path="/audit-history"><Layout><AuditHistory /></Layout></ProtectedRoute>
+      } />
+      <Route path="/singles" element={
+        <ProtectedRoute path="/singles"><Layout><SinglesInventory /></Layout></ProtectedRoute>
+      } />
+      <Route path="/singles/add" element={
+        <ProtectedRoute path="/singles/add"><Layout><AddSingle /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
