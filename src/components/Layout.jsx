@@ -121,7 +121,11 @@ export default function Layout({ children }) {
   }
 
   return (
-    <div className="min-h-screen flex">
+    // h-screen (not min-h-screen) so the document height equals the viewport
+    // and the sidebar/main can scroll INDEPENDENTLY via their own overflow:auto
+    // rather than the whole page scrolling together (which made the sidebar
+    // fly off-screen when the main content was tall — e.g. Singles Inventory).
+    <div className="h-screen flex overflow-hidden">
       {/* Mobile menu button */}
       <button
         className="lg:hidden fixed top-4 left-4 z-50 p-2 bg-vault-surface rounded-lg border border-vault-border"
