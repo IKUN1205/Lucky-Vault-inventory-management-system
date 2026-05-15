@@ -39,7 +39,18 @@ export default function SinglesScan() {
   const { user } = useAuth()
   const navigate = useNavigate()
 
-  const [mode, setMode] = useState('intake')   // 'intake' | 'sell' | 'batch_intake' | 'batch_sell'
+  // Two-tier mode picker (per user feedback 2026-05-15):
+  //   actionType — what kind of action (intake new cards vs sell existing)
+  //   flowMode   — single (one at a time, modal pops immediately) vs
+  //                batch (queue scans, process all at end)
+  // The combined `mode` string is derived for downstream branching logic.
+  const [actionType, setActionType] = useState('intake')   // 'intake' | 'sell'
+  const [flowMode, setFlowMode] = useState('single')        // 'single' | 'batch'
+  const mode = (
+    actionType === 'intake'
+      ? (flowMode === 'batch' ? 'batch_intake' : 'intake')
+      : (flowMode === 'batch' ? 'batch_sell' : 'sell')
+  )
   const [cert, setCert] = useState('')
   const [processing, setProcessing] = useState(false)
   const [history, setHistory] = useState([])   // [{ ts, cert, mode, ok, msg, single? }, ...]
@@ -214,9 +225,15 @@ export default function SinglesScan() {
     }
   }
 
-  const handleModeChange = (next) => {
+  const setActionTypeSafe = (next) => {
     if (processing) return
-    setMode(next)
+    setActionType(next)
+    setCert('')
+    refocus()
+  }
+  const setFlowModeSafe = (next) => {
+    if (processing) return
+    setFlowMode(next)
     setCert('')
     refocus()
   }
@@ -248,76 +265,87 @@ export default function SinglesScan() {
         </div>
       </Instructions>
 
-      {/* Mode toggle — 4 columns: Intake (single/batch) + Sell (single/batch) */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      {/* Tier 1 — Intake vs Sell. Solid-filled active state so it's
+          unmistakable which action you're in. */}
+      <div className="grid grid-cols-2 gap-3 mb-3">
         <button
           type="button"
-          onClick={() => handleModeChange('intake')}
-          className={`card text-left transition-all border-2 ${
-            mode === 'intake'
-              ? 'border-green-500/60 bg-green-500/10'
-              : 'border-transparent hover:border-vault-border'
+          onClick={() => setActionTypeSafe('intake')}
+          className={`p-5 rounded-xl text-left transition-all border-2 ${
+            actionType === 'intake'
+              ? 'bg-green-500/25 border-green-400 text-white shadow-lg shadow-green-500/20'
+              : 'bg-vault-darker/40 border-vault-border text-gray-400 hover:border-green-500/40 hover:text-green-300'
           }`}
         >
-          <div className="flex items-center gap-2 text-green-400 mb-1">
-            <Package size={16} />
-            <span className="font-semibold text-sm">Intake (single)</span>
+          <div className="flex items-center gap-2 mb-1">
+            <Package size={20} className={actionType === 'intake' ? 'text-green-300' : ''} />
+            <span className="font-bold text-base">Intake</span>
+            {actionType === 'intake' && <span className="ml-auto text-green-300 text-xs uppercase font-semibold tracking-wider">Active</span>}
           </div>
-          <p className="text-gray-400 text-xs">
-            Scan one card → fill quick intake form inline. Save & scan next.
+          <p className={`text-xs ${actionType === 'intake' ? 'text-green-100/80' : 'text-gray-500'}`}>
+            Scan to add new cards to inventory.
           </p>
         </button>
         <button
           type="button"
-          onClick={() => handleModeChange('batch_intake')}
-          className={`card text-left transition-all border-2 ${
-            mode === 'batch_intake'
-              ? 'border-vault-gold/60 bg-vault-gold/10'
-              : 'border-transparent hover:border-vault-border'
+          onClick={() => setActionTypeSafe('sell')}
+          className={`p-5 rounded-xl text-left transition-all border-2 ${
+            actionType === 'sell'
+              ? 'bg-red-500/25 border-red-400 text-white shadow-lg shadow-red-500/20'
+              : 'bg-vault-darker/40 border-vault-border text-gray-400 hover:border-red-500/40 hover:text-red-300'
           }`}
         >
-          <div className="flex items-center gap-2 text-vault-gold mb-1">
-            <Layers size={16} />
-            <span className="font-semibold text-sm">Batch intake</span>
+          <div className="flex items-center gap-2 mb-1">
+            <DollarSign size={20} className={actionType === 'sell' ? 'text-red-300' : ''} />
+            <span className="font-bold text-base">Sell</span>
+            {actionType === 'sell' && <span className="ml-auto text-red-300 text-xs uppercase font-semibold tracking-wider">Active</span>}
           </div>
-          <p className="text-gray-400 text-xs">
-            Scan many cards. Queue below. Click <strong>Continue to Bulk Add</strong> to fill details together.
+          <p className={`text-xs ${actionType === 'sell' ? 'text-red-100/80' : 'text-gray-500'}`}>
+            Scan to record sales of cards already in inventory.
           </p>
         </button>
-        <button
-          type="button"
-          onClick={() => handleModeChange('sell')}
-          className={`card text-left transition-all border-2 ${
-            mode === 'sell'
-              ? 'border-red-500/60 bg-red-500/10'
-              : 'border-transparent hover:border-vault-border'
-          }`}
-        >
-          <div className="flex items-center gap-2 text-red-300 mb-1">
-            <DollarSign size={16} />
-            <span className="font-semibold text-sm">Sell (single)</span>
-          </div>
-          <p className="text-gray-400 text-xs">
-            Scan one card → opens Sell modal with card loaded. Fill price + channel.
-          </p>
-        </button>
-        <button
-          type="button"
-          onClick={() => handleModeChange('batch_sell')}
-          className={`card text-left transition-all border-2 ${
-            mode === 'batch_sell'
-              ? 'border-orange-500/60 bg-orange-500/10'
-              : 'border-transparent hover:border-vault-border'
-          }`}
-        >
-          <div className="flex items-center gap-2 text-orange-300 mb-1">
-            <DollarSign size={16} />
-            <span className="font-semibold text-sm">Batch sell</span>
-          </div>
-          <p className="text-gray-400 text-xs">
-            Scan many cards. Queue below. Click <strong>Continue to Bulk Sell</strong> to enter prices + channels for all at once.
-          </p>
-        </button>
+      </div>
+
+      {/* Tier 2 — Single (modal pops immediately) vs Batch (queue and
+          process all at end). Always visible so users can see and toggle
+          it freely. Pill-style toggle for compact + clear active state. */}
+      <div className="flex items-center gap-3 mb-6 px-1">
+        <span className="text-xs text-gray-400 uppercase font-semibold tracking-wider">
+          Flow:
+        </span>
+        <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40">
+          <button
+            type="button"
+            onClick={() => setFlowModeSafe('single')}
+            className={`px-4 py-1.5 text-sm rounded-md transition ${
+              flowMode === 'single'
+                ? 'bg-vault-gold text-vault-dark font-semibold'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Single
+          </button>
+          <button
+            type="button"
+            onClick={() => setFlowModeSafe('batch')}
+            className={`px-4 py-1.5 text-sm rounded-md transition ${
+              flowMode === 'batch'
+                ? 'bg-vault-gold text-vault-dark font-semibold'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Batch
+          </button>
+        </div>
+        <span className="text-xs text-gray-500 ml-2">
+          {flowMode === 'single'
+            ? (actionType === 'intake'
+                ? 'Each scan opens the quick intake form right away.'
+                : 'Each scan opens the Sell modal right away.')
+            : (actionType === 'intake'
+                ? 'Scans queue below — click "Continue to Bulk Add" when done.'
+                : 'Scans queue below — click "Continue to Bulk Sell" when done.')}
+        </span>
       </div>
 
       {/* Batch SELL queue (only visible in batch_sell mode and non-empty) */}
