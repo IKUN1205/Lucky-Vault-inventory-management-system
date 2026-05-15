@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fetchSingleByIdentifier } from '../lib/supabase'
+import { fetchSingleByIdentifier, fetchCardSets } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SellSingleModal from '../components/SellSingleModal'
+import QuickIntakeModal from '../components/QuickIntakeModal'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
 import {
@@ -45,12 +46,21 @@ export default function SinglesScan() {
   // Batch Intake mode accumulates scanned cert#s. User finalises with the
   // "Continue to Bulk Add" button → /singles/bulk-add?certs=...
   const [batchQueue, setBatchQueue] = useState([])
+  // Quick intake modal — opens when single-intake scan hits a brand-new
+  // identifier. Holds the scanned id so the modal can pre-fill it.
+  const [pendingIntake, setPendingIntake] = useState(null)
+  // Pre-fetched card_sets so the modal opens instantly without spinner
+  const [cardSets, setCardSets] = useState([])
   const inputRef = useRef(null)
 
   // Auto-focus on mount + re-focus after every scan so the scanner can
   // chain reads without the user clicking.
   useEffect(() => {
     inputRef.current?.focus()
+    // Pre-fetch card_sets once for the intake modal
+    fetchCardSets()
+      .then(setCardSets)
+      .catch(err => console.warn('[SinglesScan] card_sets pre-fetch failed:', err))
   }, [])
 
   const refocus = () => {
@@ -85,21 +95,12 @@ export default function SinglesScan() {
           })
           addToast?.(`Scanned ${trimmed} already in inventory`, 'error')
         } else {
-          // Not found → navigate to Add Single with prefill. We pass
-          // `cert=` regardless of identifier type — AddSingle reads it
-          // as cert_number for graded, but Gary's raw workflow needs a
-          // different field. For now we just put the scanned value in
-          // the cert_number slot and the user picks form on the form.
-          // (Future: pass tcg_id explicitly via URL param.)
-          pushHistory({
-            cert: trimmed,
-            mode,
-            ok: true,
-            msg: 'Opening Add Single...',
-            redirected: true
-          })
-          navigate(`/singles/add?cert=${encodeURIComponent(trimmed)}`)
-          return // skip the cert-clear + refocus, page is unmounting
+          // Not found → open in-page QuickIntakeModal pre-filled with this
+          // scanner-read identifier. Keeps the user on the Scan page so they
+          // can chain-scan continuously instead of navigating away each time.
+          setPendingIntake(trimmed)
+          // Don't push to history yet — wait for the modal's onCreated to
+          // log the actual success (or onCancel to log the abort).
         }
       } else if (mode === 'batch_intake') {
         // Dedupe within the current queue. Also check DB to warn about
@@ -428,13 +429,47 @@ export default function SinglesScan() {
           }}
           onSold={(updated) => {
             pushHistory({
-              cert: updated.cert_number,
+              cert: updated.cert_number || updated.tcg_id || '?',
               mode: 'sell',
               ok: true,
               msg: `Sold for $${Number(updated.sale_price_usd || 0).toFixed(2)} via ${updated.sale_channel || 'unknown'}`,
               single: updated
             })
             setPendingSell(null)
+            refocus()
+          }}
+        />
+      )}
+
+      {/* Quick intake modal — fires when Intake-mode scan hits a NEW
+          identifier. Stays in-page so the scanner gun can chain reads
+          across many cards without navigation round-trips. */}
+      {pendingIntake && (
+        <QuickIntakeModal
+          scannedId={pendingIntake}
+          cardSets={cardSets}
+          setCardSets={setCardSets}
+          currentUserId={user?.id}
+          addToast={addToast}
+          onCancel={() => {
+            pushHistory({
+              cert: pendingIntake,
+              mode: 'intake',
+              ok: false,
+              msg: 'Cancelled — not added'
+            })
+            setPendingIntake(null)
+            refocus()
+          }}
+          onCreated={(created) => {
+            pushHistory({
+              cert: pendingIntake,
+              mode: 'intake',
+              ok: true,
+              msg: `Added ${created.card_name || ''} ${created.card_number || ''}`.trim(),
+              single: created
+            })
+            setPendingIntake(null)
             refocus()
           }}
         />
