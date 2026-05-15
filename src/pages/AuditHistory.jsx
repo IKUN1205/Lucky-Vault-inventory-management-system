@@ -358,13 +358,11 @@ function ReconRow({ r, expanded, onToggle, admin, onAskDelete, onReaudit, reaudi
   const StatusIcon = meta.icon
   const stale = r.needs_recompute === true
   const failed = r.status === 'failed'
-  // Either condition means the audit needs to be re-run:
-  //   - stale: upstream count was deleted, window_from is wrong
-  //   - failed: the original auto-reconcile run never completed (e.g.
-  //     TikTok cookie was expired, Puppeteer crashed, timeout)
-  // Both are recoverable by calling /api/auto-reconcile again — the
-  // endpoint upserts on stream_count_id so the existing row is overwritten.
-  const needsRerun = stale || failed
+  // stale / failed only affect the re-audit button's color + tooltip —
+  // the button itself is always rendered for admins (see Actions cell
+  // below) because /api/auto-reconcile is upsert-only and re-running
+  // is always safe. Even a Done row may need a re-run after a logic
+  // change like the windowTo fix.
 
   const diffColor =
     r.total_diff === 0 ? 'text-green-400' :
@@ -439,24 +437,32 @@ function ReconRow({ r, expanded, onToggle, admin, onAskDelete, onReaudit, reaudi
         {admin && (
           <td className="py-2.5 pr-2 text-center">
             <div className="flex items-center justify-center gap-1" onClick={(e) => e.stopPropagation()}>
-              {needsRerun && (
-                <button
-                  onClick={onReaudit}
-                  disabled={reauditing}
-                  title={
-                    stale
-                      ? 'Re-run reconciliation with the corrected window'
-                      : `Re-run reconciliation (last attempt failed: ${r.error_message || 'unknown'})`
-                  }
-                  className={`p-1 rounded disabled:opacity-50 ${
-                    stale
-                      ? 'text-yellow-300 hover:bg-yellow-500/10'
-                      : 'text-red-300 hover:bg-red-500/10'
-                  }`}
-                >
-                  {reauditing ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
-                </button>
-              )}
+              {/* Re-audit is ALWAYS available to admins. /api/auto-reconcile
+                  is upsert-only (same stream_count_id overwrites the row),
+                  so re-running is idempotent and safe. The icon color +
+                  tooltip differ by current state so users still see WHY
+                  a row might need re-running (stale window, prior failure)
+                  vs just wanting to refresh against current logic. */}
+              <button
+                onClick={onReaudit}
+                disabled={reauditing}
+                title={
+                  stale
+                    ? 'Re-run reconciliation with the corrected window'
+                    : failed
+                      ? `Re-run reconciliation (last attempt failed: ${r.error_message || 'unknown'})`
+                      : 'Re-audit this count (refresh against current TikTok data + window logic)'
+                }
+                className={`p-1 rounded disabled:opacity-50 ${
+                  stale
+                    ? 'text-yellow-300 hover:bg-yellow-500/10'
+                    : failed
+                      ? 'text-red-300 hover:bg-red-500/10'
+                      : 'text-gray-500 hover:bg-vault-gold/10 hover:text-vault-gold'
+                }`}
+              >
+                {reauditing ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+              </button>
               <button
                 onClick={onAskDelete}
                 title="Soft-delete this count (admin only)"
