@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { fetchSingles, fetchCardSets, fetchLocations, softDeleteSingle } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
+import SellSingleModal from '../components/SellSingleModal'
 import { useAuth } from '../lib/AuthContext'
 import {
   Layers, Plus, Search, X, TrendingUp, TrendingDown,
@@ -16,7 +17,22 @@ const FORM_OPTIONS = [
   { value: 'raw', label: 'Raw only' },
   { value: 'graded', label: 'Graded only' }
 ]
+const STATUS_OPTIONS = [
+  { value: 'in_inventory', label: 'In inventory' },
+  { value: 'sold',         label: 'Sold' },
+  { value: '',             label: 'All (incl. sent / listed / lost)' }
+]
 const GRADING_COMPANY_OPTIONS = ['PSA', 'BGS', 'CGC', 'SGC', 'Other']
+
+const CHANNEL_LABEL = {
+  ebay:      'eBay',
+  whatnot:   'Whatnot',
+  comc:      'COMC',
+  tcgplayer: 'TCGplayer',
+  in_person: 'In Person',
+  trade_out: 'Trade Out',
+  other:     'Other'
+}
 
 export default function SinglesInventory() {
   const { toasts, addToast, removeToast } = useToast()
@@ -35,18 +51,25 @@ export default function SinglesInventory() {
     set_id: '',
     grading_company: '',
     location_id: '',
-    search: ''
+    search: '',
+    status: 'in_inventory'   // 'in_inventory' / 'sold' / '' (all)
   })
 
+  // Sell modal: holds the single being sold (null = closed)
+  const [sellingSingle, setSellingSingle] = useState(null)
+
+  // Re-load when status filter changes (status is the only server-side filter)
   useEffect(() => {
     loadData()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.status])
 
   const loadData = async () => {
     setLoading(true)
     try {
+      const singlesFilter = filters.status ? { status: filters.status } : {}
       const [singlesData, setsData, locData] = await Promise.all([
-        fetchSingles({ status: 'in_inventory' }),
+        fetchSingles(singlesFilter),
         fetchCardSets(),
         fetchLocations('Physical')
       ])
@@ -69,7 +92,8 @@ export default function SinglesInventory() {
   const clearFilters = () => {
     setFilters({
       brand: '', language: '', form: '', set_id: '',
-      grading_company: '', location_id: '', search: ''
+      grading_company: '', location_id: '', search: '',
+      status: 'in_inventory'   // keep status default — wiping it to '' would slow the page
     })
   }
 
@@ -97,12 +121,22 @@ export default function SinglesInventory() {
   }, [singles, filters])
 
   // Aggregate metrics across the filtered view.
+  //
+  // Two "value" totals:
+  //   - totalMarket   — for in_inventory rows (current market price; unrealized)
+  //   - totalSale     — for sold rows (actual sale price - fees; realized)
+  //
+  // We compute both regardless of the status filter so summary cards can
+  // show whichever matches the current view, and a single "all" view can
+  // surface lifetime totals later.
   const metrics = useMemo(() => {
     let totalUnits = 0
     let totalCost = 0
     let totalMarket = 0
+    let totalSaleNet = 0    // sale_price - fees
     let costRows = 0
     let marketRows = 0
+    let saleRows = 0
     for (const s of filteredSingles) {
       const qty = s.form === 'raw' ? (s.quantity || 1) : 1
       totalUnits += qty
@@ -114,17 +148,27 @@ export default function SinglesInventory() {
         totalMarket += Number(s.current_market_price_usd) * qty
         marketRows++
       }
+      if (s.status === 'sold' && s.sale_price_usd != null) {
+        const fees = s.sale_fees_usd != null ? Number(s.sale_fees_usd) : 0
+        totalSaleNet += Number(s.sale_price_usd) - fees
+        saleRows++
+      }
     }
     return {
       cardCount: filteredSingles.length,
       totalUnits,
       totalCost,
       totalMarket,
-      profitLoss: totalMarket - totalCost,
+      totalSaleNet,
+      unrealizedPl: totalMarket - totalCost,
+      realizedPl:   totalSaleNet - totalCost,
       costRows,
-      marketRows
+      marketRows,
+      saleRows
     }
   }, [filteredSingles])
+
+  const viewingSold = filters.status === 'sold'
 
   // Sets for the active brand+language filter (so the Set dropdown shrinks
   // sensibly as the user narrows).
@@ -182,13 +226,19 @@ export default function SinglesInventory() {
 
       <Instructions>
         <div className="space-y-2 text-gray-300 text-sm">
-          <p className="font-medium text-white">v1 scope — inventory only.</p>
-          <p>Sales recording, box-break pull tracing, and P&amp;L reports are coming in v2.</p>
-          <p>The existing High Value page is unchanged and continues to work for legacy $100+ items.</p>
+          <p className="font-medium text-white">In-flow + out-flow tracking.</p>
+          <p>
+            Click <strong>Add Single</strong> to record a new card. Hit the <strong>$</strong> button on a row to record a sale (price, channel, fees, buyer). Use the <strong>Status</strong> filter to switch between in-inventory and sold views.
+          </p>
+          <p className="text-gray-400 text-xs">
+            Still pending: box-break pull tracing, photo uploads, raw-stack partial sales. The existing High Value page is unchanged.
+          </p>
         </div>
       </Instructions>
 
-      {/* Summary cards */}
+      {/* Summary cards — values shown depend on Status filter:
+          in_inventory → Market value + Unrealized P/L
+          sold         → Sale net (price-fees) + Realized P/L */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <div className="card">
           <p className="text-gray-400 text-sm">Cards / Units</p>
@@ -206,24 +256,49 @@ export default function SinglesInventory() {
             ${metrics.totalCost.toLocaleString(undefined, { maximumFractionDigits: 2 })}
           </p>
         </div>
-        <div className="card">
-          <p className="text-gray-400 text-sm">
-            Market value
-            <span className="text-gray-600 text-xs ml-1">({metrics.marketRows} priced)</span>
-          </p>
-          <p className="font-display text-2xl font-bold text-blue-400">
-            ${metrics.totalMarket.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-          </p>
-        </div>
-        <div className="card">
-          <p className="text-gray-400 text-sm">Unrealized P/L</p>
-          <p className={`font-display text-2xl font-bold flex items-center gap-1 ${
-            metrics.profitLoss >= 0 ? 'text-green-400' : 'text-red-400'
-          }`}>
-            {metrics.profitLoss >= 0 ? <TrendingUp size={20} /> : <TrendingDown size={20} />}
-            ${Math.abs(metrics.profitLoss).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-          </p>
-        </div>
+        {viewingSold ? (
+          <>
+            <div className="card">
+              <p className="text-gray-400 text-sm">
+                Sale net (post-fees)
+                <span className="text-gray-600 text-xs ml-1">({metrics.saleRows} sold)</span>
+              </p>
+              <p className="font-display text-2xl font-bold text-green-400">
+                ${metrics.totalSaleNet.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </p>
+            </div>
+            <div className="card">
+              <p className="text-gray-400 text-sm">Realized P/L</p>
+              <p className={`font-display text-2xl font-bold flex items-center gap-1 ${
+                metrics.realizedPl >= 0 ? 'text-green-400' : 'text-red-400'
+              }`}>
+                {metrics.realizedPl >= 0 ? <TrendingUp size={20} /> : <TrendingDown size={20} />}
+                ${Math.abs(metrics.realizedPl).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="card">
+              <p className="text-gray-400 text-sm">
+                Market value
+                <span className="text-gray-600 text-xs ml-1">({metrics.marketRows} priced)</span>
+              </p>
+              <p className="font-display text-2xl font-bold text-blue-400">
+                ${metrics.totalMarket.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </p>
+            </div>
+            <div className="card">
+              <p className="text-gray-400 text-sm">Unrealized P/L</p>
+              <p className={`font-display text-2xl font-bold flex items-center gap-1 ${
+                metrics.unrealizedPl >= 0 ? 'text-green-400' : 'text-red-400'
+              }`}>
+                {metrics.unrealizedPl >= 0 ? <TrendingUp size={20} /> : <TrendingDown size={20} />}
+                ${Math.abs(metrics.unrealizedPl).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </p>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Filters */}
@@ -242,6 +317,10 @@ export default function SinglesInventory() {
               />
             </div>
           </div>
+
+          <select name="status" value={filters.status} onChange={handleFilterChange}>
+            {STATUS_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+          </select>
 
           <select name="brand" value={filters.brand} onChange={handleFilterChange}>
             <option value="">All brands</option>
@@ -311,11 +390,22 @@ export default function SinglesInventory() {
                 <th className="text-left px-4 py-3">Form</th>
                 <th className="text-right px-4 py-3">Qty</th>
                 <th className="text-right px-4 py-3">Cost (USD)</th>
-                <th className="text-right px-4 py-3">Market (USD)</th>
-                <th className="text-right px-4 py-3">P/L</th>
-                <th className="text-left px-4 py-3">Location</th>
-                <th className="text-left px-4 py-3">Acquired</th>
-                {isAdmin() && <th className="px-4 py-3"></th>}
+                {viewingSold ? (
+                  <>
+                    <th className="text-right px-4 py-3">Sale (USD)</th>
+                    <th className="text-left  px-4 py-3">Channel</th>
+                    <th className="text-right px-4 py-3">Realized P/L</th>
+                    <th className="text-left  px-4 py-3">Sold</th>
+                  </>
+                ) : (
+                  <>
+                    <th className="text-right px-4 py-3">Market (USD)</th>
+                    <th className="text-right px-4 py-3">P/L</th>
+                    <th className="text-left  px-4 py-3">Location</th>
+                    <th className="text-left  px-4 py-3">Acquired</th>
+                  </>
+                )}
+                <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
@@ -323,9 +413,19 @@ export default function SinglesInventory() {
                 const qty = s.form === 'raw' ? (s.quantity || 1) : 1
                 const costEach = s.acquisition_cost_usd
                 const marketEach = s.current_market_price_usd
-                const pl = (costEach != null && marketEach != null)
+                const unrealized = (costEach != null && marketEach != null)
                   ? (Number(marketEach) - Number(costEach)) * qty
                   : null
+                // Realized P/L = (sale_price - fees) - (cost * qty)
+                const salePriceNum = s.sale_price_usd != null ? Number(s.sale_price_usd) : null
+                const feesNum = s.sale_fees_usd != null ? Number(s.sale_fees_usd) : 0
+                const saleNet = salePriceNum != null ? salePriceNum - feesNum : null
+                const realized = (saleNet != null && costEach != null)
+                  ? saleNet - Number(costEach) * qty
+                  : null
+
+                const isSold = s.status === 'sold'
+
                 return (
                   <tr
                     key={s.id}
@@ -366,40 +466,104 @@ export default function SinglesInventory() {
                         ? `$${Number(costEach).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
                         : '—'}
                     </td>
-                    <td className="px-4 py-3 text-right text-blue-400">
-                      {marketEach != null
-                        ? `$${Number(marketEach).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                        : '—'}
-                    </td>
-                    <td className={`px-4 py-3 text-right ${
-                      pl == null ? 'text-gray-500'
-                        : pl >= 0 ? 'text-green-400'
-                        : 'text-red-400'
-                    }`}>
-                      {pl == null
-                        ? '—'
-                        : `${pl >= 0 ? '+' : ''}$${Math.abs(pl).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
-                    </td>
-                    <td className="px-4 py-3 text-gray-300">{s.location?.name || '—'}</td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">{s.date_acquired}</td>
-                    {isAdmin() && (
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(s)}
-                          className="text-gray-500 hover:text-red-400"
-                          title="Soft-delete"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </td>
+
+                    {viewingSold ? (
+                      <>
+                        <td className="px-4 py-3 text-right text-green-400">
+                          {salePriceNum != null
+                            ? <>
+                                ${salePriceNum.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                {feesNum > 0 && (
+                                  <div className="text-gray-500 text-xs">
+                                    fees ${feesNum.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                  </div>
+                                )}
+                              </>
+                            : '—'}
+                        </td>
+                        <td className="px-4 py-3 text-gray-300">
+                          {s.sale_channel ? (CHANNEL_LABEL[s.sale_channel] || s.sale_channel) : '—'}
+                          {s.buyer_name && (
+                            <div className="text-gray-500 text-xs">→ {s.buyer_name}</div>
+                          )}
+                        </td>
+                        <td className={`px-4 py-3 text-right ${
+                          realized == null ? 'text-gray-500'
+                            : realized >= 0 ? 'text-green-400'
+                            : 'text-red-400'
+                        }`}>
+                          {realized == null
+                            ? '—'
+                            : `${realized >= 0 ? '+' : ''}$${Math.abs(realized).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 text-xs">{s.sale_date || '—'}</td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="px-4 py-3 text-right text-blue-400">
+                          {marketEach != null
+                            ? `$${Number(marketEach).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                            : '—'}
+                        </td>
+                        <td className={`px-4 py-3 text-right ${
+                          unrealized == null ? 'text-gray-500'
+                            : unrealized >= 0 ? 'text-green-400'
+                            : 'text-red-400'
+                        }`}>
+                          {unrealized == null
+                            ? '—'
+                            : `${unrealized >= 0 ? '+' : ''}$${Math.abs(unrealized).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
+                        </td>
+                        <td className="px-4 py-3 text-gray-300">{s.location?.name || '—'}</td>
+                        <td className="px-4 py-3 text-gray-500 text-xs">{s.date_acquired}</td>
+                      </>
                     )}
+
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        {/* Sell button: only on in_inventory rows */}
+                        {!isSold && s.status === 'in_inventory' && (
+                          <button
+                            type="button"
+                            onClick={() => setSellingSingle(s)}
+                            className="text-gray-500 hover:text-green-400"
+                            title="Record sale"
+                          >
+                            <DollarSign size={16} />
+                          </button>
+                        )}
+                        {isAdmin() && (
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(s)}
+                            className="text-gray-500 hover:text-red-400"
+                            title="Soft-delete"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* Sell modal — rendered last so it stacks above the table */}
+      {sellingSingle && (
+        <SellSingleModal
+          single={sellingSingle}
+          currentUserId={user?.id}
+          addToast={addToast}
+          onCancel={() => setSellingSingle(null)}
+          onSold={() => {
+            setSellingSingle(null)
+            loadData()
+          }}
+        />
       )}
     </div>
   )

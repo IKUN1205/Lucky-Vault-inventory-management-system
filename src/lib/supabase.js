@@ -744,3 +744,52 @@ export const softDeleteSingle = async (id, deletedById, reason = null) => {
   if (error) throw error
   return data
 }
+
+// Mark a single as sold — records the sale price + channel + date + fees +
+// buyer (all optional except sale_price_usd, enforced in the caller form)
+// and flips status to 'sold'. Backed by the sale_* columns added by
+// scripts/add_singles_sale_columns.sql.
+//
+// `saleData` shape:
+//   {
+//     sale_price_usd:   number,             // required
+//     sale_channel:     string,             // 'ebay'|'whatnot'|'comc'|'tcgplayer'|'in_person'|'trade_out'|'other'
+//     sale_date:        'YYYY-MM-DD',       // required
+//     sale_fees_usd?:   number,
+//     sale_price_native?: number,
+//     sale_currency?:   string,             // defaults to 'USD'
+//     buyer_name?:      string,
+//     sale_notes?:      string,
+//     sold_by_id?:      uuid                // caller's user.id
+//   }
+//
+// Note for v2: raw stacks with quantity > 1 are currently sold as a single
+// transaction (the whole row flips to status=sold). Splitting a stack into
+// "sold N" + "remaining (qty - N)" needs a follow-up — see TODO in
+// SellSingleModal.jsx.
+export const markSingleAsSold = async (id, saleData) => {
+  const patch = {
+    status: 'sold',
+    sale_price_usd: saleData.sale_price_usd,
+    sale_channel: saleData.sale_channel || null,
+    sale_date: saleData.sale_date,
+    sale_fees_usd: saleData.sale_fees_usd ?? null,
+    sale_price_native: saleData.sale_price_native ?? null,
+    sale_currency: saleData.sale_currency || 'USD',
+    buyer_name: saleData.buyer_name || null,
+    sale_notes: saleData.sale_notes || null,
+    sold_by_id: saleData.sold_by_id || null
+  }
+  const { data, error } = await supabase
+    .from('singles')
+    .update(patch)
+    .eq('id', id)
+    .select(`
+      *,
+      set:card_sets(id, brand, name, code, language),
+      location:locations(id, name)
+    `)
+    .single()
+  if (error) throw error
+  return data
+}
