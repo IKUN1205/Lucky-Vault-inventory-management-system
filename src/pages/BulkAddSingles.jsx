@@ -6,7 +6,8 @@ import {
   fetchVendors,
   fetchUsers,
   createSinglesBatch,
-  convertToUSD
+  convertToUSD,
+  notifySinglesLark
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
@@ -243,6 +244,14 @@ export default function BulkAddSingles() {
         }
       })
       const created = await createSinglesBatch(payload)
+      // Fire-and-forget Lark notification with batch summary
+      const totalCost = created.reduce((s, c) => s + (Number(c.acquisition_cost_usd) || 0), 0)
+      notifySinglesLark({
+        type: 'bulk_intake',
+        count: created.length,
+        total_cost_usd: totalCost > 0 ? totalCost : null,
+        operator_name: user?.name,
+      })
       addToast(`Added ${created.length} single${created.length === 1 ? '' : 's'} to inventory`, 'success')
       navigate('/singles')
     } catch (err) {

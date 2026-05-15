@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Package, X, Loader2, Plus } from 'lucide-react'
-import { createSingle, convertToUSD } from '../lib/supabase'
+import { createSingle, convertToUSD, notifySinglesLark } from '../lib/supabase'
 import AddCardSetModal from './AddCardSetModal'
 
 // ============================================================================
@@ -31,6 +31,7 @@ export default function QuickIntakeModal({
   cardSets,
   setCardSets,   // so we can append new sets created via AddCardSetModal
   currentUserId,
+  currentUserName,
   addToast,
   onCancel,
   onCreated,
@@ -118,6 +119,22 @@ export default function QuickIntakeModal({
         notes: form.notes.trim() || null,
       }
       const created = await createSingle(payload)
+      // Fire-and-forget Lark notification — must not block on success
+      notifySinglesLark({
+        type: 'single_intake',
+        card_name: created.card_name,
+        card_number: created.card_number,
+        set_name: setRow?.name,
+        form: created.form,
+        condition: created.condition,
+        quantity: created.quantity,
+        grading_company: created.grading_company,
+        grade: created.grade,
+        cert_number: created.cert_number,
+        tcg_id: created.tcg_id,
+        cost_usd: created.acquisition_cost_usd,
+        operator_name: currentUserName,
+      })
       addToast?.(`Added ${created.card_name}`, 'success')
       onCreated?.(created)
     } catch (err) {

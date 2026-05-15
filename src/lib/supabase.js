@@ -649,6 +649,28 @@ export const createPaymentMethod = async (name) => {
 // ============================================
 // SINGLES (card_sets + singles) — v1: inventory only
 // ============================================
+
+// Fire-and-forget Lark notification for singles events. Must NOT throw or
+// reject — singles inventory writes already succeeded by the time we call
+// this, so a Lark failure should be invisible to the user. We just log
+// the error in console and move on.
+//
+// Each event type's payload shape is documented in api/lark-notify.js
+// (buildSingleIntake / buildBulkIntake / etc.).
+export const notifySinglesLark = (payload) => {
+  try {
+    fetch('/api/lark-notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      keepalive: true,  // survives page unload (e.g. user navigates away after save)
+    }).catch(err => {
+      console.warn('[notifySinglesLark] failed (non-fatal):', err)
+    })
+  } catch (err) {
+    console.warn('[notifySinglesLark] threw synchronously (non-fatal):', err)
+  }
+}
 // All helpers below are additive; nothing above this banner is modified.
 // Sales / box-break-pull tracing / Lark notifications are intentionally absent
 // (v2 scope). When those are added, append new helpers below — do not edit

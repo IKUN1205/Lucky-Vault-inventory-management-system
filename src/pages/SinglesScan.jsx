@@ -554,6 +554,7 @@ export default function SinglesScan() {
         <SellSingleModal
           single={pendingSell}
           currentUserId={user?.id}
+          currentUserName={user?.name}
           addToast={addToast}
           onCancel={() => {
             setPendingSell(null)
@@ -580,6 +581,7 @@ export default function SinglesScan() {
         <BulkSellModal
           cards={sellQueue}
           currentUserId={user?.id}
+          currentUserName={user?.name}
           addToast={addToast}
           onCancel={() => {
             setShowBulkSell(false)
@@ -615,6 +617,7 @@ export default function SinglesScan() {
           cardSets={cardSets}
           setCardSets={setCardSets}
           currentUserId={user?.id}
+          currentUserName={user?.name}
           addToast={addToast}
           onCancel={() => {
             pushHistory({

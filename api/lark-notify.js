@@ -88,6 +88,15 @@ export default async function handler(req, res) {
     return handleReceive(body, res)
   }
 
+  // ----- Singles in-and-out events --------------------------------------
+  // All five route to the same "inventory in/out" Lark group, configured
+  // via LARK_WEBHOOK_INVENTORY_IO (falls back to LARK_WEBHOOK_URL).
+  if (type === 'single_intake')   return handleSinglesEvent(body, res, buildSingleIntake)
+  if (type === 'bulk_intake')     return handleSinglesEvent(body, res, buildBulkIntake)
+  if (type === 'single_sold')     return handleSinglesEvent(body, res, buildSingleSold)
+  if (type === 'bulk_sold')       return handleSinglesEvent(body, res, buildBulkSold)
+  if (type === 'single_deleted')  return handleSinglesEvent(body, res, buildSingleDeleted)
+
   // Per-stream reconciliation should land in the room's own group, not the
   // main "all activity" channel. Fall back to main URL if no room webhook
   // is configured for the room (so messages aren't silently dropped).
@@ -722,4 +731,140 @@ function formatUnixShortPT(unix) {
   }).formatToParts(d)
   const get = (t) => parts.find(p => p.type === t)?.value || ''
   return `${get('weekday')} ${get('hour')}:${get('minute')} PT`
+}
+
+// ============================================================================
+// Singles in-and-out event handlers
+// ============================================================================
+// Five terse one-line templates routed to the "inventory in/out" Lark group
+// (LARK_WEBHOOK_INVENTORY_IO). Each handler is fire-and-forget from the
+// frontend after a successful Supabase write — failures here MUST NOT block
+// the main operation (which already succeeded by the time we get here).
+// ============================================================================
+
+function getInventoryIoWebhook() {
+  return process.env.LARK_WEBHOOK_INVENTORY_IO || process.env.LARK_WEBHOOK_URL || null
+}
+
+// Shared dispatcher — runs a builder function and posts to the inventory
+// in/out webhook. The builder is a pure (body → string).
+async function handleSinglesEvent(body, res, builder) {
+  const url = getInventoryIoWebhook()
+  if (!url) {
+    console.error('[lark-notify] singles event: no LARK_WEBHOOK_INVENTORY_IO configured')
+    return res.status(500).json({ error: 'No webhook configured (set LARK_WEBHOOK_INVENTORY_IO)' })
+  }
+  let text
+  try {
+    text = builder(body)
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Invalid payload' })
+  }
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ msg_type: 'text', content: { text } }),
+    })
+    const txt = await r.text()
+    if (!r.ok) return res.status(502).json({ error: 'Lark webhook failed', status: r.status, details: txt })
+    return res.status(200).json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to call Lark webhook', message: String(err?.message || err) })
+  }
+}
+
+// Format USD currency, omitting cents when whole. "$50" not "$50.00".
+function fmtUsd(n) {
+  if (n == null || isNaN(Number(n))) return null
+  const num = Number(n)
+  return `$${num % 1 === 0 ? num.toFixed(0) : num.toFixed(2)}`
+}
+
+// Identify a card in one line: "Charizard ex 199/197 (Surging Sparks)"
+function fmtCardIdent(body) {
+  const name = (body.card_name || '').trim()
+  const number = (body.card_number || '').trim()
+  const setName = (body.set_name || '').trim()
+  const idCore = `${name}${number ? ` ${number}` : ''}`.trim() || '(unknown)'
+  return setName ? `${idCore} (${setName})` : idCore
+}
+
+// "Raw NM ×2" or "PSA 10 #12345678"
+function fmtFormDescriptor(body) {
+  if (body.form === 'graded') {
+    const co = body.grading_company || '?'
+    const grade = body.grade || '?'
+    const cert = body.cert_number ? ` #${body.cert_number}` : ''
+    return `${co} ${grade}${cert}`
+  }
+  const cond = body.condition || ''
+  const qty = body.quantity > 1 ? ` ×${body.quantity}` : ''
+  return `Raw ${cond}${qty}`.trim()
+}
+
+// 📥 Charizard ex 199/197 (Surging Sparks) · Raw NM ×1 · $50 · TCG 642242 · by Will
+function buildSingleIntake(body) {
+  if (!body.card_name) throw new Error('card_name is required')
+  const parts = [`📥 ${fmtCardIdent(body)}`, fmtFormDescriptor(body)]
+  const cost = fmtUsd(body.cost_usd)
+  if (cost) parts.push(cost)
+  // TCG ID only useful for raw (graded already shows #cert above)
+  if (body.form !== 'graded' && body.tcg_id) parts.push(`TCG ${body.tcg_id}`)
+  if (body.operator_name) parts.push(`by ${body.operator_name}`)
+  return parts.join(' · ')
+}
+
+// 📦 5 cards added · $215 total · by Will
+function buildBulkIntake(body) {
+  const n = Number(body.count) || 0
+  const parts = [`📦 ${n} card${n === 1 ? '' : 's'} added`]
+  const total = fmtUsd(body.total_cost_usd)
+  if (total) parts.push(`${total} total`)
+  if (body.operator_name) parts.push(`by ${body.operator_name}`)
+  return parts.join(' · ')
+}
+
+// 💰 Charizard ex 199/197 (Surging Sparks) · sold $80 via eBay → ebay_user_xyz · by Will
+function buildSingleSold(body) {
+  if (!body.card_name) throw new Error('card_name is required')
+  const parts = [`💰 ${fmtCardIdent(body)}`]
+  const sale = fmtUsd(body.sale_price_usd)
+  const channel = body.sale_channel || '?'
+  let saleSeg = `sold ${sale || 'unknown'} via ${channel}`
+  if (body.buyer_name) saleSeg += ` → ${body.buyer_name}`
+  parts.push(saleSeg)
+  if (body.operator_name) parts.push(`by ${body.operator_name}`)
+  return parts.join(' · ')
+}
+
+// 💰 5 cards sold · $400 via eBay · P/L +$98 · by Will
+// 💰 5 cards sold · $400 via mixed channels · P/L +$98 · by Will
+function buildBulkSold(body) {
+  const n = Number(body.count) || 0
+  const parts = [`💰 ${n} card${n === 1 ? '' : 's'} sold`]
+  const total = fmtUsd(body.total_sale_usd)
+  const channels = Array.isArray(body.channels) ? body.channels : []
+  const channelStr = channels.length === 1 ? channels[0] : 'mixed channels'
+  if (total) parts.push(`${total} via ${channelStr}`)
+  else parts.push(`via ${channelStr}`)
+  if (body.realized_pl_usd != null) {
+    const pl = Number(body.realized_pl_usd)
+    const sign = pl >= 0 ? '+' : '-'
+    parts.push(`P/L ${sign}${fmtUsd(Math.abs(pl))}`)
+  }
+  if (body.operator_name) parts.push(`by ${body.operator_name}`)
+  return parts.join(' · ')
+}
+
+// 🗑 Charizard ex 199/197 deleted · reason: "test data" · by Will
+function buildSingleDeleted(body) {
+  if (!body.card_name) throw new Error('card_name is required')
+  const cardCore = `${body.card_name}${body.card_number ? ` ${body.card_number}` : ''}`
+  const parts = [`🗑 ${cardCore} deleted`]
+  if (body.reason && body.reason.trim()) {
+    parts.push(`reason: "${body.reason.trim()}"`)
+  }
+  if (body.operator_name) parts.push(`by ${body.operator_name}`)
+  return parts.join(' · ')
 }

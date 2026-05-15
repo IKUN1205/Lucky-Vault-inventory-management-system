@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { DollarSign, X, Loader2, TrendingUp, TrendingDown } from 'lucide-react'
-import { markSingleAsSold } from '../lib/supabase'
+import { markSingleAsSold, notifySinglesLark } from '../lib/supabase'
 
 // ============================================================================
 // SellSingleModal — record a single's sale (out-flow)
@@ -26,7 +26,7 @@ const CHANNEL_OPTIONS = [
   { value: 'other',      label: 'Other' }
 ]
 
-export default function SellSingleModal({ single, currentUserId, onCancel, onSold, addToast }) {
+export default function SellSingleModal({ single, currentUserId, currentUserName, onCancel, onSold, addToast }) {
   const [form, setForm] = useState({
     sale_price_usd: '',
     sale_channel: 'ebay',
@@ -75,6 +75,17 @@ export default function SellSingleModal({ single, currentUserId, onCancel, onSol
         buyer_name: form.buyer_name || null,
         sale_notes: form.sale_notes || null,
         sold_by_id: currentUserId || null
+      })
+      // Fire-and-forget Lark notification
+      notifySinglesLark({
+        type: 'single_sold',
+        card_name: updated.card_name,
+        card_number: updated.card_number,
+        set_name: updated.set?.name,
+        sale_price_usd: updated.sale_price_usd,
+        sale_channel: updated.sale_channel,
+        buyer_name: updated.buyer_name,
+        operator_name: currentUserName,
       })
       addToast?.('Sale recorded — card moved to sold status', 'success')
       onSold?.(updated)

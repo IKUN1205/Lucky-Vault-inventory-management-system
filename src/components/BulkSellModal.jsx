@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { DollarSign, X, Loader2, TrendingUp, TrendingDown, Trash2 } from 'lucide-react'
-import { markSinglesAsSoldBatch } from '../lib/supabase'
+import { markSinglesAsSoldBatch, notifySinglesLark } from '../lib/supabase'
 
 // ============================================================================
 // BulkSellModal — record sales for N queued cards in one go
@@ -27,7 +27,7 @@ const CHANNEL_OPTIONS = [
   { value: 'other',      label: 'Other' },
 ]
 
-export default function BulkSellModal({ cards, currentUserId, addToast, onCancel, onSold }) {
+export default function BulkSellModal({ cards, currentUserId, currentUserName, addToast, onCancel, onSold }) {
   const today = new Date().toISOString().slice(0, 10)
   const [common, setCommon] = useState({
     sale_date: today,
@@ -98,6 +98,26 @@ export default function BulkSellModal({ cards, currentUserId, addToast, onCancel
         }
       }))
       const result = await markSinglesAsSoldBatch(entries)
+      // Fire-and-forget Lark notification with batch summary (only if some succeeded)
+      if (result.ok.length > 0) {
+        const totalSale = result.ok.reduce((s, c) => s + (Number(c.sale_price_usd) || 0), 0)
+        const totalFees = result.ok.reduce((s, c) => s + (Number(c.sale_fees_usd) || 0), 0)
+        const totalCost = result.ok.reduce((s, c) => {
+          const qty = c.form === 'raw' ? (c.quantity || 1) : 1
+          return s + (Number(c.acquisition_cost_usd) || 0) * qty
+        }, 0)
+        const realizedPl = (totalSale - totalFees) - totalCost
+        // Unique channels across the batch (for "mixed channels" detection)
+        const channels = Array.from(new Set(result.ok.map(c => c.sale_channel).filter(Boolean)))
+        notifySinglesLark({
+          type: 'bulk_sold',
+          count: result.ok.length,
+          total_sale_usd: totalSale,
+          channels,
+          realized_pl_usd: totalCost > 0 ? realizedPl : null,
+          operator_name: currentUserName,
+        })
+      }
       if (result.failed.length === 0) {
         addToast?.(`Sold ${result.ok.length} card${result.ok.length === 1 ? '' : 's'}`, 'success')
         onSold?.(result.ok)

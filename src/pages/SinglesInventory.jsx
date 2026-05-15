@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { fetchSingles, fetchCardSets, fetchLocations, softDeleteSingle } from '../lib/supabase'
+import { fetchSingles, fetchCardSets, fetchLocations, softDeleteSingle, notifySinglesLark } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import SellSingleModal from '../components/SellSingleModal'
@@ -249,6 +249,14 @@ export default function SinglesInventory() {
     if (reason === null) return // user cancelled
     try {
       await softDeleteSingle(single.id, user.id, reason || null)
+      // Fire-and-forget Lark notification
+      notifySinglesLark({
+        type: 'single_deleted',
+        card_name: single.card_name,
+        card_number: single.card_number,
+        reason: reason || null,
+        operator_name: user?.name,
+      })
       addToast('Single removed', 'success')
       loadData()
     } catch (error) {
@@ -622,6 +630,7 @@ export default function SinglesInventory() {
         <SellSingleModal
           single={sellingSingle}
           currentUserId={user?.id}
+          currentUserName={user?.name}
           addToast={addToast}
           onCancel={() => setSellingSingle(null)}
           onSold={() => {
