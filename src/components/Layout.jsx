@@ -83,13 +83,16 @@ const navSections = [
     ]
   },
   {
+    // Singles workflow simplification (per boss directive 2026-05-15):
+    // Scan is the primary entry point for both intake (single + batch) and
+    // sell. Add Single and Bulk Add pages still EXIST and are reachable via
+    // Scan's deep-links (?cert= / ?certs= URLs), but no longer in the
+    // sidebar — scanner is the daily-driver path.
     title: 'Singles',
     items: [
-      { path: '/singles', label: 'Singles Inventory', icon: Layers },
-      { path: '/singles/add', label: 'Add Single', icon: PlusCircle },
-      { path: '/singles/bulk-add', label: 'Bulk Add', icon: CopyPlus },
-      { path: '/singles/scan', label: 'Scan Singles', icon: ScanLine },
-      { path: '/singles/log', label: 'Activity Log', icon: HistoryIcon },
+      { path: '/singles',      label: 'Singles Inventory', icon: Layers },
+      { path: '/singles/scan', label: 'Scan Singles',      icon: ScanLine },
+      { path: '/singles/log',  label: 'Activity Log',      icon: HistoryIcon },
     ]
   },
   {

@@ -857,16 +857,25 @@ export const softDeleteSingle = async (id, deletedById, reason = null) => {
   return data
 }
 
-// Look up a single by its graded-slab cert#. Used by the Scan page to
-// route an incoming barcode to the right next step (intake / sell / dupe
-// warning). We match against the UNIQUE partial index on cert_number
-// (graded, non-deleted), so this returns at most one row.
+// Look up a single by either its graded-slab cert# OR its raw-card
+// TCG ID — whichever matches first. Used by the Scan page to route an
+// incoming barcode to the right next step (intake / sell / dupe warn).
 //
-// Returns: the matching single row WITH joined set/location/acquirer/sold_by
-// for the Sell modal context, or null if no match.
-export const fetchSingleByCert = async (certNumber) => {
-  const trimmed = (certNumber || '').trim()
+// The two identifier columns are UNIQUE among non-deleted rows:
+//   - cert_number  → graded slabs (PSA / CGC / BGS / SGC)
+//   - tcg_id       → raw cards (TCGplayer product ID, used by Gary's sheet)
+//
+// So a single OR query is enough; at most one row matches.
+//
+// Returns: the matching row with joined set/location/acquirer/sold_by, or
+// null if no match.
+export const fetchSingleByIdentifier = async (idString) => {
+  const trimmed = (idString || '').trim()
   if (!trimmed) return null
+  // Supabase escapes special chars but quotes inside .or() need to be safe.
+  // Strip anything that would confuse the parser. Our IDs are alphanumeric.
+  const safe = trimmed.replace(/[^A-Za-z0-9_-]/g, '')
+  if (!safe) return null
   const { data, error } = await supabase
     .from('singles')
     .select(`
@@ -876,12 +885,16 @@ export const fetchSingleByCert = async (certNumber) => {
       acquirer:users!singles_acquirer_id_fkey(id, name),
       sold_by:users!singles_sold_by_id_fkey(id, name)
     `)
-    .eq('cert_number', trimmed)
+    .or(`cert_number.eq.${safe},tcg_id.eq.${safe}`)
     .or('deleted.is.null,deleted.eq.false')
     .maybeSingle()
   if (error) throw error
   return data
 }
+
+// Backward-compat alias — old call sites keep working. New code should
+// prefer fetchSingleByIdentifier.
+export const fetchSingleByCert = fetchSingleByIdentifier
 
 // Mark a single as sold — records the sale price + channel + date + fees +
 // buyer (all optional except sale_price_usd, enforced in the caller form)

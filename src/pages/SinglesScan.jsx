@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fetchSingleByCert } from '../lib/supabase'
+import { fetchSingleByIdentifier } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SellSingleModal from '../components/SellSingleModal'
 import Instructions from '../components/Instructions'
@@ -71,7 +71,7 @@ export default function SinglesScan() {
     }
     setProcessing(true)
     try {
-      const existing = await fetchSingleByCert(trimmed)
+      const existing = await fetchSingleByIdentifier(trimmed)
 
       if (mode === 'intake') {
         if (existing) {
@@ -83,10 +83,14 @@ export default function SinglesScan() {
             msg: `Already in inventory (${existing.status}). Card: ${existing.card_name} ${existing.card_number || ''}`,
             single: existing
           })
-          addToast?.(`Cert ${trimmed} already in inventory`, 'error')
+          addToast?.(`Scanned ${trimmed} already in inventory`, 'error')
         } else {
           // Not found → navigate to Add Single with prefill. We pass
-          // form=graded since cert# only exists for graded slabs.
+          // `cert=` regardless of identifier type — AddSingle reads it
+          // as cert_number for graded, but Gary's raw workflow needs a
+          // different field. For now we just put the scanned value in
+          // the cert_number slot and the user picks form on the form.
+          // (Future: pass tcg_id explicitly via URL param.)
           pushHistory({
             cert: trimmed,
             mode,
@@ -94,7 +98,7 @@ export default function SinglesScan() {
             msg: 'Opening Add Single...',
             redirected: true
           })
-          navigate(`/singles/add?cert=${encodeURIComponent(trimmed)}&form=graded`)
+          navigate(`/singles/add?cert=${encodeURIComponent(trimmed)}`)
           return // skip the cert-clear + refocus, page is unmounting
         }
       } else if (mode === 'batch_intake') {
@@ -199,10 +203,10 @@ export default function SinglesScan() {
       <Instructions>
         <div className="space-y-2 text-gray-300 text-sm">
           <p>
-            Pick a mode, then scan a slab's cert# barcode. The input is auto-focused — your scanner gun just needs to send "digits + Enter" and the page does the rest.
+            Pick a mode, then scan a card's barcode. The input is auto-focused — your scanner gun just needs to send "digits + Enter" and the page does the rest.
           </p>
           <p className="text-gray-400 text-xs">
-            Intake mode opens Add Single pre-filled when the cert is new. Sell mode opens the sale modal when the cert is already in inventory. Raw cards (no cert#) aren't handled here — use Add Single / the inventory page directly.
+            Supports both <strong>TCG ID</strong> (raw cards — TCGplayer product code on the storage sleeve barcode) and <strong>cert#</strong> (graded slabs — PSA/CGC/BGS/SGC). The page tries both columns on every scan, so you don't need to tell it which kind of card you're scanning.
           </p>
         </div>
       </Instructions>
@@ -324,7 +328,7 @@ export default function SinglesScan() {
             value={cert}
             onChange={(e) => setCert(e.target.value)}
             disabled={processing}
-            placeholder="Scan or type a PSA / CGC / BGS / SGC cert number..."
+            placeholder="Scan or type a TCG ID (raw) or PSA/CGC/BGS/SGC cert# (graded)..."
             className="font-mono text-base flex-1"
             autoComplete="off"
             spellCheck={false}

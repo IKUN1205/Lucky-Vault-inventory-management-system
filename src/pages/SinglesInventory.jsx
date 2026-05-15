@@ -111,7 +111,7 @@ export default function SinglesInventory() {
       if (filters.location_id && s.location_id !== filters.location_id) return false
       if (search) {
         const haystack = [
-          s.card_name, s.card_number, s.variant, s.cert_number,
+          s.card_name, s.card_number, s.variant, s.cert_number, s.tcg_id,
           s.set?.name, s.set?.code, s.notes
         ].filter(Boolean).join(' ').toLowerCase()
         if (!haystack.includes(search)) return false
@@ -312,7 +312,7 @@ export default function SinglesInventory() {
                 name="search"
                 value={filters.search}
                 onChange={handleFilterChange}
-                placeholder="Search card name, number, cert#, set, notes..."
+                placeholder="Search card name, number, TCG ID, cert#, set, notes..."
                 className="pl-10"
               />
             </div>
@@ -451,13 +451,20 @@ export default function SinglesInventory() {
                             {s.grading_company} {s.grade}
                           </span>
                           {s.cert_number && (
-                            <div className="text-gray-500 text-xs mt-1">#{s.cert_number}</div>
+                            <div className="text-gray-500 text-xs mt-1 font-mono">#{s.cert_number}</div>
                           )}
                         </div>
                       ) : (
-                        <span className="badge badge-secondary text-xs">
-                          Raw {s.condition || ''}
-                        </span>
+                        <div>
+                          <span className="badge badge-secondary text-xs">
+                            Raw {s.condition || ''}
+                          </span>
+                          {s.tcg_id && (
+                            <div className="text-gray-500 text-xs mt-1 font-mono">
+                              TCG {s.tcg_id}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </td>
                     <td className="px-4 py-3 text-right text-gray-300">{qty}</td>
