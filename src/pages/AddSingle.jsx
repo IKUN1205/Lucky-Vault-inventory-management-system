@@ -10,8 +10,9 @@ import {
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
+import AddCardSetModal from '../components/AddCardSetModal'
 import { useAuth } from '../lib/AuthContext'
-import { Layers, Save, ArrowLeft } from 'lucide-react'
+import { Layers, Save, ArrowLeft, Plus } from 'lucide-react'
 
 const BRANDS = ['Pokemon', 'One Piece', 'Magic', 'Yu-Gi-Oh!', 'Other']
 const LANGUAGES = ['EN', 'JP', 'KR', 'CN']
@@ -42,6 +43,7 @@ export default function AddSingle() {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [showAddSetModal, setShowAddSetModal] = useState(false)
 
   const today = new Date().toISOString().split('T')[0]
 
@@ -316,11 +318,22 @@ export default function AddSingle() {
           </div>
 
           <div className="md:col-span-2">
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Set * <span className="text-gray-500 text-xs">({filteredSets.length} {form.brand} / {form.language} sets)</span>
-            </label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-medium text-gray-300">
+                Set * <span className="text-gray-500 text-xs">({filteredSets.length} {form.brand} / {form.language} sets)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowAddSetModal(true)}
+                className="text-xs text-vault-gold hover:text-amber-300 flex items-center gap-1"
+              >
+                <Plus size={12} /> Add new set
+              </button>
+            </div>
             <select name="set_id" value={form.set_id} onChange={handleChange} required>
-              <option value="">Select a set...</option>
+              <option value="">
+                {filteredSets.length === 0 ? `No ${form.brand} / ${form.language} sets yet — click "Add new set"` : 'Select a set...'}
+              </option>
               {filteredSets.map(s => (
                 <option key={s.id} value={s.id}>
                   {s.name}{s.code ? ` [${s.code}]` : ''}
@@ -329,7 +342,7 @@ export default function AddSingle() {
             </select>
             {filteredSets.length === 0 && (
               <p className="text-yellow-400 text-xs mt-1">
-                No sets for {form.brand} / {form.language}. Ask an admin to add one to card_sets.
+                Don't see your set? Hit <strong>+ Add new set</strong> above to create one inline. It'll be available for everyone going forward.
               </p>
             )}
           </div>
@@ -545,6 +558,34 @@ export default function AddSingle() {
           </button>
         </div>
       </form>
+
+      {/* Inline "create new card set" modal — used when the dropdown doesn't
+          have the set the user needs (Magic / Yu-Gi-Oh / Lorcana / new
+          Pokemon releases / One Piece KR / etc.). On success we append the
+          new row to local cardSets state and auto-select it, so the user
+          stays in the Add Single flow. */}
+      {showAddSetModal && (
+        <AddCardSetModal
+          initialBrand={form.brand}
+          initialLanguage={form.language}
+          addToast={addToast}
+          onCancel={() => setShowAddSetModal(false)}
+          onCreated={(newSet) => {
+            setCardSets(prev => [...prev, newSet])
+            setForm(f => ({
+              ...f,
+              // Switch the form's brand/language to match the new set in case
+              // the user created one in a different combo than they were
+              // currently looking at, so set_id is actually valid for the
+              // form's filteredSets list.
+              brand: newSet.brand,
+              language: newSet.language,
+              set_id: newSet.id
+            }))
+            setShowAddSetModal(false)
+          }}
+        />
+      )}
     </div>
   )
 }
