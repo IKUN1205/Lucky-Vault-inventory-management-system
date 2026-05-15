@@ -274,7 +274,16 @@ export default function AddSingle() {
             <Layers className="text-vault-gold" />
             Add Single
           </h1>
-          <p className="text-gray-400 mt-1">Record a new graded slab or raw card</p>
+          <p className="text-gray-400 mt-1">
+            Record a new graded slab or raw card.{' '}
+            <button
+              type="button"
+              onClick={() => navigate('/singles/bulk-add')}
+              className="text-vault-gold hover:text-amber-300 underline"
+            >
+              Adding many at once? Switch to Bulk Add →
+            </button>
+          </p>
         </div>
       </div>
 

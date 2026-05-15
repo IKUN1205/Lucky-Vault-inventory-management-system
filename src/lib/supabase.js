@@ -716,6 +716,22 @@ export const createSingle = async (single) => {
   return data
 }
 
+// Bulk insert N singles in one round-trip. Used by the Bulk Add page and the
+// Scan page's Batch Intake mode. Supabase passes the array straight to the
+// underlying INSERT, so either every row lands or none do (single statement
+// atomicity). A failed UNIQUE constraint on cert_number (graded dupes) will
+// abort the entire batch — caller should surface the error so the user can
+// remove the offending row before retrying.
+export const createSinglesBatch = async (singles) => {
+  if (!Array.isArray(singles) || singles.length === 0) return []
+  const { data, error } = await supabase
+    .from('singles')
+    .insert(singles)
+    .select()
+  if (error) throw error
+  return data || []
+}
+
 export const updateSingle = async (id, updates) => {
   const { data, error } = await supabase
     .from('singles')

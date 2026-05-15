@@ -7,7 +7,7 @@ import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
 import {
   ScanLine, ArrowRight, AlertTriangle, CheckCircle2, Loader2,
-  Package, DollarSign, X
+  Package, DollarSign, X, Layers
 } from 'lucide-react'
 
 // ============================================================================
@@ -37,11 +37,14 @@ export default function SinglesScan() {
   const { user } = useAuth()
   const navigate = useNavigate()
 
-  const [mode, setMode] = useState('intake')   // 'intake' | 'sell'
+  const [mode, setMode] = useState('intake')   // 'intake' | 'sell' | 'batch_intake'
   const [cert, setCert] = useState('')
   const [processing, setProcessing] = useState(false)
   const [history, setHistory] = useState([])   // [{ ts, cert, mode, ok, msg, single? }, ...]
   const [pendingSell, setPendingSell] = useState(null)
+  // Batch Intake mode accumulates scanned cert#s. User finalises with the
+  // "Continue to Bulk Add" button → /singles/bulk-add?certs=...
+  const [batchQueue, setBatchQueue] = useState([])
   const inputRef = useRef(null)
 
   // Auto-focus on mount + re-focus after every scan so the scanner can
@@ -93,6 +96,35 @@ export default function SinglesScan() {
           })
           navigate(`/singles/add?cert=${encodeURIComponent(trimmed)}&form=graded`)
           return // skip the cert-clear + refocus, page is unmounting
+        }
+      } else if (mode === 'batch_intake') {
+        // Dedupe within the current queue. Also check DB to warn about
+        // certs that already exist in inventory.
+        if (batchQueue.includes(trimmed)) {
+          pushHistory({
+            cert: trimmed,
+            mode,
+            ok: false,
+            msg: 'Already in the batch queue (duplicate scan)'
+          })
+        } else if (existing) {
+          // Cert already in DB — skip, don't queue (would fail UNIQUE on submit anyway)
+          pushHistory({
+            cert: trimmed,
+            mode,
+            ok: false,
+            msg: `Skipped — already in inventory (${existing.status})`,
+            single: existing
+          })
+          addToast?.(`Skipped ${trimmed}: already in inventory`, 'error')
+        } else {
+          setBatchQueue(prev => [...prev, trimmed])
+          pushHistory({
+            cert: trimmed,
+            mode,
+            ok: true,
+            msg: `Queued for batch intake (${batchQueue.length + 1} total)`
+          })
         }
       } else if (mode === 'sell') {
         if (!existing) {
@@ -176,7 +208,7 @@ export default function SinglesScan() {
       </Instructions>
 
       {/* Mode toggle */}
-      <div className="grid grid-cols-2 gap-3 mb-6">
+      <div className="grid grid-cols-3 gap-3 mb-6">
         <button
           type="button"
           onClick={() => handleModeChange('intake')}
@@ -188,10 +220,27 @@ export default function SinglesScan() {
         >
           <div className="flex items-center gap-2 text-green-400 mb-1">
             <Package size={16} />
-            <span className="font-semibold">Intake mode</span>
+            <span className="font-semibold text-sm">Intake (single)</span>
           </div>
           <p className="text-gray-400 text-xs">
-            Scan a new slab. If the cert is new, opens Add Single with the cert pre-filled. If already in inventory, blocks the duplicate.
+            Scan one slab → jump to Add Single with cert pre-filled. Best for adding a single card mid-stream.
+          </p>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleModeChange('batch_intake')}
+          className={`card text-left transition-all border-2 ${
+            mode === 'batch_intake'
+              ? 'border-vault-gold/60 bg-vault-gold/10'
+              : 'border-transparent hover:border-vault-border'
+          }`}
+        >
+          <div className="flex items-center gap-2 text-vault-gold mb-1">
+            <Layers size={16} />
+            <span className="font-semibold text-sm">Batch intake</span>
+          </div>
+          <p className="text-gray-400 text-xs">
+            Scan many slabs in a row. They queue up below. Click <strong>Continue to Bulk Add</strong> to fill all card details together.
           </p>
         </button>
         <button
@@ -205,13 +254,63 @@ export default function SinglesScan() {
         >
           <div className="flex items-center gap-2 text-red-300 mb-1">
             <DollarSign size={16} />
-            <span className="font-semibold">Sell mode</span>
+            <span className="font-semibold text-sm">Sell</span>
           </div>
           <p className="text-gray-400 text-xs">
-            Scan a slab to record its sale. Opens the Sell modal with the card identity loaded — you just fill in price + channel + fees.
+            Scan a slab to record its sale. Opens the Sell modal with the card loaded — fill price + channel.
           </p>
         </button>
       </div>
+
+      {/* Batch queue (only visible in batch_intake mode and when there's something queued) */}
+      {mode === 'batch_intake' && batchQueue.length > 0 && (
+        <div className="card mb-6 border-vault-gold/40 border-2">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 text-vault-gold">
+              <Layers size={16} />
+              <h3 className="font-semibold text-sm">Batch queue ({batchQueue.length})</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setBatchQueue([])}
+                className="text-xs text-gray-400 hover:text-white flex items-center gap-1"
+              >
+                <X size={12} /> Clear queue
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  // Comma-separate cert#s into the URL — BulkAddSingles parses ?certs=
+                  const qs = encodeURIComponent(batchQueue.join(','))
+                  navigate(`/singles/bulk-add?certs=${qs}`)
+                }}
+                className="btn btn-primary text-sm py-1.5 px-3"
+              >
+                Continue to Bulk Add <ArrowRight size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {batchQueue.map((c, i) => (
+              <span
+                key={`${c}-${i}`}
+                className="badge badge-info font-mono text-xs flex items-center gap-1"
+              >
+                {c}
+                <button
+                  type="button"
+                  onClick={() => setBatchQueue(prev => prev.filter((_, idx) => idx !== i))}
+                  className="hover:text-red-300"
+                  title="Remove from queue"
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Scan input */}
       <form onSubmit={handleSubmit} className="card mb-6">
@@ -233,14 +332,12 @@ export default function SinglesScan() {
           <button
             type="submit"
             disabled={processing || !cert.trim()}
-            className={`btn flex-shrink-0 ${
-              mode === 'intake' ? 'btn-primary' : 'btn-primary'
-            }`}
+            className="btn btn-primary flex-shrink-0"
           >
             {processing
               ? <Loader2 className="animate-spin" size={18} />
               : <>
-                  {mode === 'intake' ? 'Intake' : 'Sell'}
+                  {mode === 'intake' ? 'Intake' : mode === 'batch_intake' ? 'Queue' : 'Sell'}
                   <ArrowRight size={18} />
                 </>}
           </button>

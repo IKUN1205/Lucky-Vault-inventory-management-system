@@ -32,6 +32,7 @@ import AuditHistory from './pages/AuditHistory'
 import SinglesInventory from './pages/SinglesInventory'
 import AddSingle from './pages/AddSingle'
 import SinglesScan from './pages/SinglesScan'
+import BulkAddSingles from './pages/BulkAddSingles'
 
 // Components
 import Layout from './components/Layout'
@@ -157,6 +158,9 @@ function AppRoutes() {
       } />
       <Route path="/singles/scan" element={
         <ProtectedRoute path="/singles/scan"><Layout><SinglesScan /></Layout></ProtectedRoute>
+      } />
+      <Route path="/singles/bulk-add" element={
+        <ProtectedRoute path="/singles/bulk-add"><Layout><BulkAddSingles /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
