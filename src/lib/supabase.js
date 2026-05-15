@@ -706,13 +706,83 @@ export const fetchSingles = async (filters = {}) => {
   return data || []
 }
 
+// ----- audit log helpers -----
+//
+// Each user-facing mutation on `singles` writes a row into
+// singles_audit_log so we can show an Activity Log page later. The log
+// call is fire-and-forget: a logging failure must NOT abort the main
+// operation (caller already succeeded by the time we reach this).
+//
+// `acted_by_id` is whatever user.id was passed in by the caller —
+// derived from acquirer_id (create), sold_by_id (sell), or deleted_by_id
+// (delete). Because we don't use Supabase Auth, Postgres has no idea
+// who is acting; the client tells us.
+async function logSingleEvent({ single_id, event_type, summary, payload, acted_by_id }) {
+  if (!single_id || !event_type || !summary) return
+  try {
+    await supabase.from('singles_audit_log').insert({
+      single_id,
+      event_type,
+      summary,
+      payload: payload || null,
+      acted_by_id: acted_by_id || null
+    })
+  } catch (err) {
+    console.warn('[logSingleEvent] failed (non-fatal):', err)
+  }
+}
+
+// Public fetch for the Activity Log page.
+// filters: { event_type?, date_from?, date_to?, acted_by_id?, limit? }
+export const fetchSinglesAuditLog = async (filters = {}) => {
+  let q = supabase
+    .from('singles_audit_log')
+    .select(`
+      *,
+      acted_by:users!singles_audit_log_acted_by_id_fkey(id, name),
+      single:singles!singles_audit_log_single_id_fkey(
+        id, card_name, card_number, brand, language, form,
+        grading_company, grade, cert_number, deleted,
+        set:card_sets(id, name, code)
+      )
+    `)
+  if (filters.event_type) q = q.eq('event_type', filters.event_type)
+  if (filters.acted_by_id) q = q.eq('acted_by_id', filters.acted_by_id)
+  if (filters.date_from) q = q.gte('acted_at', filters.date_from)
+  if (filters.date_to) q = q.lte('acted_at', filters.date_to)
+  q = q.order('acted_at', { ascending: false }).limit(filters.limit || 200)
+  const { data, error } = await q
+  if (error) throw error
+  return data || []
+}
+
+// Friendly summary string for a created/sold/deleted event.
+const summarizeCard = (s) => {
+  if (!s) return ''
+  const setName = s.set?.name ? ` (${s.set.name})` : ''
+  if (s.form === 'graded') {
+    return `${s.grading_company || '?'} ${s.grade || '?'} ${s.card_name} ${s.card_number || ''}${setName}`
+  }
+  return `${s.condition || 'Raw'} ${s.card_name} ${s.card_number || ''}${setName}`
+}
+
 export const createSingle = async (single) => {
   const { data, error } = await supabase
     .from('singles')
     .insert(single)
-    .select()
+    .select(`
+      *,
+      set:card_sets(id, name, code)
+    `)
     .single()
   if (error) throw error
+  logSingleEvent({
+    single_id: data.id,
+    event_type: 'created',
+    summary: `Added ${summarizeCard(data)}`,
+    payload: { card: data },
+    acted_by_id: data.acquirer_id
+  })
   return data
 }
 
@@ -727,8 +797,24 @@ export const createSinglesBatch = async (singles) => {
   const { data, error } = await supabase
     .from('singles')
     .insert(singles)
-    .select()
+    .select(`
+      *,
+      set:card_sets(id, name, code)
+    `)
   if (error) throw error
+  // One audit log row per created card. Tagged batch=true in payload so
+  // a future UI can group them.
+  if (data && data.length > 0) {
+    for (const s of data) {
+      logSingleEvent({
+        single_id: s.id,
+        event_type: 'created',
+        summary: `Added ${summarizeCard(s)} (bulk)`,
+        payload: { card: s, batch: true, batch_size: data.length },
+        acted_by_id: s.acquirer_id
+      })
+    }
+  }
   return data || []
 }
 
@@ -755,9 +841,19 @@ export const softDeleteSingle = async (id, deletedById, reason = null) => {
       deleted_reason: reason
     })
     .eq('id', id)
-    .select()
+    .select(`
+      *,
+      set:card_sets(id, name, code)
+    `)
     .single()
   if (error) throw error
+  logSingleEvent({
+    single_id: data.id,
+    event_type: 'deleted',
+    summary: `Deleted ${summarizeCard(data)}${reason ? ` — ${reason}` : ''}`,
+    payload: { reason, card: data },
+    acted_by_id: deletedById
+  })
   return data
 }
 
@@ -833,5 +929,16 @@ export const markSingleAsSold = async (id, saleData) => {
     `)
     .single()
   if (error) throw error
+  const priceStr = saleData.sale_price_usd != null
+    ? `$${Number(saleData.sale_price_usd).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+    : 'unknown'
+  const buyerStr = saleData.buyer_name ? ` to ${saleData.buyer_name}` : ''
+  logSingleEvent({
+    single_id: data.id,
+    event_type: 'sold',
+    summary: `Sold ${summarizeCard(data)} for ${priceStr} via ${saleData.sale_channel || 'unknown'}${buyerStr}`,
+    payload: { sale: saleData, card: data },
+    acted_by_id: saleData.sold_by_id
+  })
   return data
 }

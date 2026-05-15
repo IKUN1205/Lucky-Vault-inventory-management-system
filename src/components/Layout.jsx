@@ -31,7 +31,8 @@ import {
   Layers,
   PlusCircle,
   ScanLine,
-  CopyPlus
+  CopyPlus,
+  History as HistoryIcon
 } from 'lucide-react'
 
 // Sidebar grouped by workflow stage. Section headers render as small uppercase
@@ -88,6 +89,7 @@ const navSections = [
       { path: '/singles/add', label: 'Add Single', icon: PlusCircle },
       { path: '/singles/bulk-add', label: 'Bulk Add', icon: CopyPlus },
       { path: '/singles/scan', label: 'Scan Singles', icon: ScanLine },
+      { path: '/singles/log', label: 'Activity Log', icon: HistoryIcon },
     ]
   },
   {
