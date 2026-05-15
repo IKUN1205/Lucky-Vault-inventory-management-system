@@ -370,14 +370,26 @@ export default async function handler(req, res) {
   //   lower bound = previous count's time (or NONE if no previous count —
   //     in that case we paginate back as far as we can and let the harvest
   //     decide what to keep).
-  //   upper bound = NOW, not the count's time. The count may be entered
-  //     hours after the actual stream ended, and TikTok sometimes finalises
-  //     order create_time slightly after the sale — pinning the upper bound
-  //     to NOW means late-arriving orders within that gap still count.
-  // The "(一定是最新的一场 stream) 但是点货的时间可能是三四天后" workflow
-  // (per Will): no time-based lower bound when no prev count, and we
-  // paginate back as needed.
-  const windowTo = new Date()
+  //   upper bound = THE COUNT'S TIME. The count records what the streamer
+  //     physically observed in the room at submission moment; anything sold
+  //     AFTER that hasn't been measured by this count, so attributing it
+  //     here is wrong — it leaks the NEXT streamer's session into this
+  //     audit. This was a real bug: with windowTo = new Date(), a manual
+  //     re-audit run hours later would sweep in everything between the
+  //     count and now (e.g. Trey 5/14 15:22 re-audited at 16:54 wrongly
+  //     included Trey's own 15:20-15:55 stream).
+  //
+  //   The "(一定是最新的一场 stream) 但是点货的时间可能是三四天后"
+  //   workflow (per Will) still works: no time-based lower bound when no
+  //   prev count, and the harvester paginates back as needed.
+  //
+  //   Tradeoff vs the previous "windowTo = NOW" behaviour: orders that
+  //   TikTok finalises with create_time *slightly after* count submission
+  //   (rare, typically a few seconds) will no longer be attributed here.
+  //   They'll show up in the next count's window instead, which is fine —
+  //   the diff balances out across two consecutive audits and we never
+  //   double-count.
+  const windowTo = new Date(count.count_time)
   const windowFrom = prevCount ? new Date(prevCount.count_time) : null
   const fromTs = windowFrom ? Math.floor(windowFrom.getTime() / 1000) : null
   const toTs = Math.floor(windowTo.getTime() / 1000)
