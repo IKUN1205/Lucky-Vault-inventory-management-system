@@ -88,17 +88,15 @@ const navSections = [
     // sell. Add Single and Bulk Add pages still EXIST and are reachable via
     // Scan's deep-links (?cert= / ?certs= URLs), but no longer in the
     // sidebar — scanner is the daily-driver path.
-    title: 'Singles',
+    // Unified Singles + Slabs section (per user directive 2026-05-15):
+    // Inventory page has a Singles/Slabs tab at the top so both card
+    // types live on one page. Scan + Activity Log are still
+    // singles-specific for now — slab versions of those land later.
+    title: 'Cards',
     items: [
-      { path: '/singles',      label: 'Singles Inventory', icon: Layers },
-      { path: '/singles/scan', label: 'Scan Singles',      icon: ScanLine },
-      { path: '/singles/log',  label: 'Activity Log',      icon: HistoryIcon },
-    ]
-  },
-  {
-    title: 'Slabs',
-    items: [
-      { path: '/slabs', label: 'Slabs Inventory', icon: ShieldCheck },
+      { path: '/inventory',    label: 'Inventory',    icon: Layers },
+      { path: '/singles/scan', label: 'Scan Singles', icon: ScanLine },
+      { path: '/singles/log',  label: 'Activity Log', icon: HistoryIcon },
     ]
   },
   {

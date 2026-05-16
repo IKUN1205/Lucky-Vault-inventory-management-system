@@ -35,6 +35,8 @@ import SinglesScan from './pages/SinglesScan'
 import BulkAddSingles from './pages/BulkAddSingles'
 import SinglesLog from './pages/SinglesLog'
 import SlabsInventory from './pages/SlabsInventory'
+import SlabsScan from './pages/SlabsScan'
+import Inventory from './pages/Inventory'
 
 // Components
 import Layout from './components/Layout'
@@ -169,6 +171,9 @@ function AppRoutes() {
       } />
       <Route path="/slabs" element={
         <ProtectedRoute path="/slabs"><Layout><SlabsInventory /></Layout></ProtectedRoute>
+      } />
+      <Route path="/inventory" element={
+        <ProtectedRoute path="/singles"><Layout><Inventory /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
