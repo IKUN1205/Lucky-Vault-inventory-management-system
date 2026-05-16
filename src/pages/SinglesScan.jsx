@@ -249,7 +249,7 @@ export default function SinglesScan() {
             Scan Singles
           </h1>
           <p className="text-gray-400 mt-1">
-            Barcode-driven intake + sell flow for graded slabs (PSA / CGC / BGS / SGC)
+            Barcode-driven intake + sell flow — TCG ID (raw) and PSA / CGC / BGS / SGC cert# (graded)
           </p>
         </div>
       </div>

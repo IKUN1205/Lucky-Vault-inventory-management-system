@@ -94,8 +94,8 @@ const navSections = [
     // singles-specific for now — slab versions of those land later.
     title: 'Cards',
     items: [
-      { path: '/inventory',    label: 'Inventory',    icon: Layers },
-      { path: '/singles/scan', label: 'Scan Singles', icon: ScanLine },
+      { path: '/cards',        label: 'Inventory',    icon: Layers },
+      { path: '/cards/scan',   label: 'Scan',         icon: ScanLine },
       { path: '/singles/log',  label: 'Activity Log', icon: HistoryIcon },
     ]
   },

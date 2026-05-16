@@ -37,6 +37,7 @@ import SinglesLog from './pages/SinglesLog'
 import SlabsInventory from './pages/SlabsInventory'
 import SlabsScan from './pages/SlabsScan'
 import Inventory from './pages/Inventory'
+import CardsScan from './pages/CardsScan'
 
 // Components
 import Layout from './components/Layout'
@@ -172,8 +173,11 @@ function AppRoutes() {
       <Route path="/slabs" element={
         <ProtectedRoute path="/slabs"><Layout><SlabsInventory /></Layout></ProtectedRoute>
       } />
-      <Route path="/inventory" element={
+      <Route path="/cards" element={
         <ProtectedRoute path="/singles"><Layout><Inventory /></Layout></ProtectedRoute>
+      } />
+      <Route path="/cards/scan" element={
+        <ProtectedRoute path="/singles"><Layout><CardsScan /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
