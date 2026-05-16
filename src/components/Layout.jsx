@@ -96,6 +96,12 @@ const navSections = [
     ]
   },
   {
+    title: 'Slabs',
+    items: [
+      { path: '/slabs', label: 'Slabs Inventory', icon: ShieldCheck },
+    ]
+  },
+  {
     title: 'Admin',
     items: [
       { path: '/high-value', label: 'High Value', icon: Star },

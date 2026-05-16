@@ -1003,3 +1003,242 @@ export const markSingleAsSold = async (id, saleData) => {
   })
   return data
 }
+
+// ============================================
+// SLABS (graded TCG cards) — v1: inventory + lifecycle
+// ============================================
+// Separate from singles per user directive 2026-05-15. Slabs are graded
+// cards (PSA/CGC/BGS/SGC) identified by cert# only — the sheet's data
+// model (cert + grading_company + free-text item_name) is structurally
+// different from the singles SKU model.
+
+// Fire-and-forget audit log writer for slabs. Mirrors logSingleEvent.
+async function logSlabEvent({ slab_id, event_type, summary, payload, acted_by_id }) {
+  if (!slab_id || !event_type || !summary) return
+  try {
+    await supabase.from('slabs_audit_log').insert({
+      slab_id, event_type, summary,
+      payload: payload || null,
+      acted_by_id: acted_by_id || null
+    })
+  } catch (err) {
+    console.warn('[logSlabEvent] failed (non-fatal):', err)
+  }
+}
+
+// Activity Log fetcher — parallel to fetchSinglesAuditLog.
+export const fetchSlabsAuditLog = async (filters = {}) => {
+  let q = supabase
+    .from('slabs_audit_log')
+    .select(`
+      *,
+      acted_by:users!slabs_audit_log_acted_by_id_fkey(id, name),
+      slab:slabs!slabs_audit_log_slab_id_fkey(
+        id, cert_number, grading_company, item_name, status, deleted
+      )
+    `)
+  if (filters.event_type)  q = q.eq('event_type', filters.event_type)
+  if (filters.acted_by_id) q = q.eq('acted_by_id', filters.acted_by_id)
+  if (filters.date_from)   q = q.gte('acted_at', filters.date_from)
+  if (filters.date_to)     q = q.lte('acted_at', filters.date_to)
+  q = q.order('acted_at', { ascending: false }).limit(filters.limit || 200)
+  const { data, error } = await q
+  if (error) throw error
+  return data || []
+}
+
+// Inventory query — joined with users for acquirer/sold_by display.
+// Soft-deleted rows excluded by default.
+//
+// filters: { status?, grading_company?, search?, deleted? }
+export const fetchSlabs = async (filters = {}) => {
+  let q = supabase
+    .from('slabs')
+    .select(`
+      *,
+      acquirer:users!slabs_acquirer_id_fkey(id, name),
+      sold_by:users!slabs_sold_by_id_fkey(id, name)
+    `)
+
+  if (filters.deleted !== true) {
+    q = q.or('deleted.is.null,deleted.eq.false')
+  }
+  if (filters.status)          q = q.eq('status', filters.status)
+  if (filters.grading_company) q = q.eq('grading_company', filters.grading_company)
+
+  const { data, error } = await q.order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+// Cert# lookup (the barcode-scanner flow). Returns null when not found.
+export const fetchSlabByCert = async (certNumber) => {
+  const trimmed = (certNumber || '').trim()
+  if (!trimmed) return null
+  const { data, error } = await supabase
+    .from('slabs')
+    .select(`
+      *,
+      acquirer:users!slabs_acquirer_id_fkey(id, name),
+      sold_by:users!slabs_sold_by_id_fkey(id, name)
+    `)
+    .eq('cert_number', trimmed)
+    .or('deleted.is.null,deleted.eq.false')
+    .maybeSingle()
+  if (error) throw error
+  return data
+}
+
+export const createSlab = async (slab) => {
+  const { data, error } = await supabase
+    .from('slabs')
+    .insert(slab)
+    .select()
+    .single()
+  if (error) throw error
+  logSlabEvent({
+    slab_id: data.id,
+    event_type: 'created',
+    summary: `Added ${data.grading_company} slab #${data.cert_number} — ${data.item_name}`,
+    payload: { slab: data },
+    acted_by_id: data.acquirer_id
+  })
+  return data
+}
+
+// Bulk-insert N slabs in one round-trip (for the Bulk Add / batch intake path)
+export const createSlabsBatch = async (slabs) => {
+  if (!Array.isArray(slabs) || slabs.length === 0) return []
+  const { data, error } = await supabase
+    .from('slabs')
+    .insert(slabs)
+    .select()
+  if (error) throw error
+  if (data && data.length > 0) {
+    for (const s of data) {
+      logSlabEvent({
+        slab_id: s.id,
+        event_type: 'created',
+        summary: `Added ${s.grading_company} slab #${s.cert_number} — ${s.item_name} (bulk)`,
+        payload: { slab: s, batch: true, batch_size: data.length },
+        acted_by_id: s.acquirer_id
+      })
+    }
+  }
+  return data || []
+}
+
+export const updateSlab = async (id, updates) => {
+  const { data, error } = await supabase
+    .from('slabs')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+// Mark a slab as sold — mirrors markSingleAsSold. saleData expects the
+// same fields (sale_price_usd, sale_channel, sale_date, sale_fees_usd,
+// buyer_name, sold_by_id, sale_notes).
+export const markSlabAsSold = async (id, saleData) => {
+  const patch = {
+    status: 'sold',
+    sold_at: new Date().toISOString(),
+    sale_price_usd: saleData.sale_price_usd,
+    sale_channel: saleData.sale_channel || null,
+    sale_date: saleData.sale_date,
+    sale_fees_usd: saleData.sale_fees_usd ?? null,
+    buyer_name: saleData.buyer_name || null,
+    notes: saleData.sale_notes || null,        // free-form notes column
+    sold_by_id: saleData.sold_by_id || null
+  }
+  const { data, error } = await supabase
+    .from('slabs')
+    .update(patch)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  const priceStr = saleData.sale_price_usd != null
+    ? `$${Number(saleData.sale_price_usd).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+    : 'unknown'
+  const buyerStr = saleData.buyer_name ? ` to ${saleData.buyer_name}` : ''
+  logSlabEvent({
+    slab_id: data.id,
+    event_type: 'sold',
+    summary: `Sold ${data.grading_company} slab #${data.cert_number} for ${priceStr} via ${saleData.sale_channel || 'unknown'}${buyerStr}`,
+    payload: { sale: saleData, slab: data },
+    acted_by_id: saleData.sold_by_id
+  })
+  return data
+}
+
+export const markSlabsAsSoldBatch = async (entries) => {
+  if (!Array.isArray(entries) || entries.length === 0) return { ok: [], failed: [] }
+  const results = await Promise.all(entries.map(async (e) => {
+    try { return { kind: 'ok', row: await markSlabAsSold(e.id, e.saleData) } }
+    catch (err) { return { kind: 'failed', id: e.id, error: err.message || String(err) } }
+  }))
+  return {
+    ok: results.filter(r => r.kind === 'ok').map(r => r.row),
+    failed: results.filter(r => r.kind === 'failed').map(r => ({ id: r.id, error: r.error })),
+  }
+}
+
+// Soft-delete with audit metadata. Matches singles convention.
+export const softDeleteSlab = async (id, deletedById, reason = null) => {
+  const { data, error } = await supabase
+    .from('slabs')
+    .update({
+      deleted: true,
+      deleted_at: new Date().toISOString(),
+      deleted_by_id: deletedById || null,
+      deleted_reason: reason
+    })
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  logSlabEvent({
+    slab_id: data.id,
+    event_type: 'deleted',
+    summary: `Deleted ${data.grading_company} slab #${data.cert_number}${reason ? ` — ${reason}` : ''}`,
+    payload: { reason, slab: data },
+    acted_by_id: deletedById
+  })
+  return data
+}
+
+// Unified identifier lookup — checks slabs.cert_number then singles
+// (singles already checks both cert_number and tcg_id via
+// fetchSingleByIdentifier). Used by the Scan page so one scan input
+// can route a barcode to either system.
+export const fetchAnyByIdentifier = async (idString) => {
+  const trimmed = (idString || '').trim()
+  if (!trimmed) return null
+  // Try slabs first (cert# is graded-only)
+  const slab = await fetchSlabByCert(trimmed)
+  if (slab) return { kind: 'slab', row: slab }
+  // Fallback to singles (raw tcg_id OR graded cert_number — historical)
+  const single = await fetchSingleByIdentifier(trimmed)
+  if (single) return { kind: 'single', row: single }
+  return null
+}
+
+// Fire-and-forget Lark notification for slab events. Mirrors
+// notifySinglesLark; routes to LARK_WEBHOOK_INVENTORY_IO via
+// /api/lark-notify with new type values (slab_intake / slab_sold / etc.).
+export const notifySlabsLark = (payload) => {
+  try {
+    fetch('/api/lark-notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(err => console.warn('[notifySlabsLark] failed (non-fatal):', err))
+  } catch (err) {
+    console.warn('[notifySlabsLark] threw synchronously (non-fatal):', err)
+  }
+}
