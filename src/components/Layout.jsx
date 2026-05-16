@@ -96,7 +96,7 @@ const navSections = [
     items: [
       { path: '/cards',        label: 'Inventory',    icon: Layers },
       { path: '/cards/scan',   label: 'Scan',         icon: ScanLine },
-      { path: '/singles/log',  label: 'Activity Log', icon: HistoryIcon },
+      { path: '/cards/log',    label: 'Activity Log', icon: HistoryIcon },
     ]
   },
   {
