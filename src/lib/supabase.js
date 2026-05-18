@@ -309,6 +309,23 @@ export const createProduct = async (product) => {
   return data
 }
 
+// Associate a scanned barcode with an existing product. Called from the
+// BarcodeScanner's "unknown barcode" modal after the user picks the SKU
+// to associate. DB has a partial unique index on barcode, so a duplicate
+// barcode will throw — caller toasts the error.
+export const updateProductBarcode = async (productId, barcode) => {
+  const clean = (barcode || '').trim()
+  if (!clean) throw new Error('barcode is empty')
+  const { data, error } = await supabase
+    .from('products')
+    .update({ barcode: clean })
+    .eq('id', productId)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
 export const createHighValueMovement = async (movement) => {
   const { data, error } = await supabase
     .from('high_value_movements')

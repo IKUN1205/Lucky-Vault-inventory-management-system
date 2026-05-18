@@ -46,7 +46,10 @@ export default function AddProduct() {
   const [submitting, setSubmitting] = useState(false)
   const [mode, setMode] = useState('single')
 
-  // Form matches sheet: Brand, Launch Name, Product Type, Sealed/Unsealed, Language, Breakable, # of Packs
+  // Form matches sheet: Brand, Launch Name, Product Type, Sealed/Unsealed, Language, Breakable, # of Packs.
+  // `barcode` is new — optional UPC for scanner-based intake/move. Saving
+  // it here means staff can scan boxes of this SKU on Intake / Manual /
+  // Move pages and the dropdown auto-fills.
   const [form, setForm] = useState({
     brand: 'Pokemon',
     launch_name: '',
@@ -54,12 +57,13 @@ export default function AddProduct() {
     sealed_unsealed: 'Sealed',  // Sealed or Pack
     language: 'EN',
     breakable: true,
-    packs_per_box: ''
+    packs_per_box: '',
+    barcode: ''
   })
 
   // Bulk products
   const [bulkProducts, setBulkProducts] = useState([
-    { id: 1, brand: 'Pokemon', launch_name: '', product_type: 'Booster Box', sealed_unsealed: 'Sealed', language: 'EN', breakable: true, packs_per_box: '' }
+    { id: 1, brand: 'Pokemon', launch_name: '', product_type: 'Booster Box', sealed_unsealed: 'Sealed', language: 'EN', breakable: true, packs_per_box: '', barcode: '' }
   ])
 
   const handleChange = (e) => {
@@ -108,7 +112,10 @@ export default function AddProduct() {
         name: fullName,
         language: form.language,
         breakable: form.breakable,
-        packs_per_box: form.breakable && form.packs_per_box ? parseInt(form.packs_per_box) : null
+        packs_per_box: form.breakable && form.packs_per_box ? parseInt(form.packs_per_box) : null,
+        // Empty barcode → null so the partial unique index doesn't trip.
+        // Trim leading/trailing whitespace from scanner-gun input.
+        barcode: form.barcode?.trim() || null,
       })
 
       addToast(`Added: ${form.brand} | ${form.launch_name} ${form.product_type} (${form.language})`)
@@ -141,7 +148,8 @@ export default function AddProduct() {
       setForm(f => ({
         ...f,
         launch_name: '',
-        packs_per_box: ''
+        packs_per_box: '',
+        barcode: ''
       }))
     } catch (error) {
       console.error('Error adding product:', error)
@@ -167,7 +175,9 @@ export default function AddProduct() {
       sealed_unsealed: last?.sealed_unsealed || 'Sealed',
       language: last?.language || 'EN',
       breakable: last?.breakable ?? true,
-      packs_per_box: last?.packs_per_box || ''
+      packs_per_box: last?.packs_per_box || '',
+      // barcode is always row-specific — never copy from previous row.
+      barcode: ''
     }])
   }
 
@@ -229,7 +239,8 @@ export default function AddProduct() {
           name: fullName,
           language: product.language,
           breakable: product.breakable,
-          packs_per_box: product.breakable && product.packs_per_box ? parseInt(product.packs_per_box) : null
+          packs_per_box: product.breakable && product.packs_per_box ? parseInt(product.packs_per_box) : null,
+          barcode: product.barcode?.trim() || null,
         })
         successCount++
         successProducts.push({
@@ -357,6 +368,25 @@ export default function AddProduct() {
               required
             />
             <p className="text-xs text-gray-500 mt-1">The set/release name (without product type)</p>
+          </div>
+
+          {/* Row 2b: Barcode (optional) — printed UPC on the box. Lets Intake /
+              Manual / Move pages auto-find this SKU when staff scans it.
+              Empty is fine; can be added later via Add Product or via the
+              "unknown barcode" prompt on any scan page. */}
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-300 mb-2">Barcode / UPC <span className="text-gray-500 font-normal">(optional)</span></label>
+            <input
+              type="text"
+              name="barcode"
+              value={form.barcode}
+              onChange={handleChange}
+              placeholder="Scan or type the UPC printed on the box (digits)"
+              inputMode="numeric"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <p className="text-xs text-gray-500 mt-1">Used by the scanner gun on Intake / Manual / Move pages to auto-select this SKU.</p>
           </div>
 
           {/* Row 3: Product Type + Sealed/Unsealed */}
@@ -532,6 +562,22 @@ export default function AddProduct() {
                     >
                       <Trash2 size={16} />
                     </button>
+                  </div>
+                  {/* Second row inside each bulk entry: optional barcode.
+                      Kept on its own row to avoid further cramping the
+                      12-col main row. */}
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-[11px] text-gray-500 uppercase tracking-wider w-16">Barcode</span>
+                    <input
+                      type="text"
+                      value={product.barcode || ''}
+                      onChange={(e) => updateBulkProduct(product.id, 'barcode', e.target.value)}
+                      placeholder="Scan or type UPC (optional)"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="text-sm flex-1"
+                    />
                   </div>
                 </div>
               ))}

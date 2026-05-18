@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { fetchProducts, fetchLocations, updateInventory } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
+import BarcodeScanner from '../components/BarcodeScanner'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
 import { PackagePlus, Save, Plus, Trash2 } from 'lucide-react'
@@ -347,7 +348,28 @@ export default function ManualInventory() {
 
           <div className="pt-4 border-t border-vault-border">
             <h3 className="font-display text-lg font-semibold text-white mb-4">Product Selection</h3>
-            
+
+            {/* Scan a UPC to auto-pick the SKU below. Faster than the dropdown
+                for goods that already have a barcode mapping; unknown codes
+                trigger an "associate this barcode with…" modal so the next
+                scan of the same code matches automatically. */}
+            <div className="mb-4">
+              <BarcodeScanner
+                products={products}
+                onMatched={(p) => {
+                  setForm(f => ({ ...f, product_id: p.id }))
+                  addToast?.(`Selected: ${p.name}`, 'success')
+                }}
+                onBarcodeAssociated={(productId, barcode) => {
+                  setProducts(prev => prev.map(p =>
+                    p.id === productId ? { ...p, barcode } : p
+                  ))
+                }}
+                addToast={addToast}
+                hint="Scan a box's UPC. The Product dropdown below will auto-fill on match."
+              />
+            </div>
+
             <div className="grid grid-cols-3 gap-4 mb-4">
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">Brand</label>

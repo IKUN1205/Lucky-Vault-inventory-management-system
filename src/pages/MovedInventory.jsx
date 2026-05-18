@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement, fetchUsers } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
+import BarcodeScanner from '../components/BarcodeScanner'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
 import { ArrowRightLeft, ArrowRight, Save, Plus, X, Trash2 } from 'lucide-react'
@@ -459,6 +460,31 @@ export default function MovedInventory() {
                 </select>
               </div>
             </div>
+
+            {/* Scan a UPC to auto-pick the product. Match pool is restricted
+                to what's in stock at the FROM location — scanning something
+                that isn't here yields a clear "not in this room" toast
+                instead of a silent broken state. Unknown-barcode modal is
+                NOT shown here (only Manual / Add Product associate barcodes
+                to fresh SKUs). */}
+            {form.from_location_id && (
+              <div className="mb-4">
+                <BarcodeScanner
+                  products={inventory.map(inv => inv.product).filter(Boolean)}
+                  onMatched={(p) => {
+                    const hit = inventory.find(inv => inv.product_id === p.id)
+                    if (!hit) {
+                      addToast?.(`${p.name} is not in stock at this room`, 'error')
+                      return
+                    }
+                    setForm(f => ({ ...f, product_id: hit.product_id, quantity: 1 }))
+                    addToast?.(`Selected: ${p.name} (${hit.quantity} available)`, 'success')
+                  }}
+                  addToast={addToast}
+                  hint="Scan a UPC. Only products currently in stock at the FROM location will match."
+                />
+              </div>
+            )}
 
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-300 mb-2">Product (in stock)</label>

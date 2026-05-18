@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 
 import {
   fetchAcquisitions,
   fetchLocations,
+  fetchProducts,
   createReceipt,
   deleteReceipt,
   updateAcquisitionStatus,
@@ -10,6 +11,7 @@ import {
   convertToUSD
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
+import BarcodeScanner from '../components/BarcodeScanner'
 import Instructions from '../components/Instructions'
 import { Package, Check, AlertTriangle } from 'lucide-react'
 
@@ -26,9 +28,18 @@ export default function IntakeToMaster() {
   const { toasts, addToast, removeToast } = useToast()
   
   const [acquisitions, setAcquisitions] = useState([])
+  const [products, setProducts] = useState([])           // for BarcodeScanner lookup
   const [masterLocation, setMasterLocation] = useState(null)
   const [loading, setLoading] = useState(true)
   const [processingId, setProcessingId] = useState(null)
+  // When a scan matches a pending acquisition, we briefly highlight that
+  // card so the warehouse staffer's eyes know where to go. Cleared after
+  // ~3s by a setTimeout — short enough that consecutive scans don't pile
+  // up confusing trails.
+  const [highlightedAcqId, setHighlightedAcqId] = useState(null)
+  // DOM refs keyed by acquisition id — used to scroll the highlighted
+  // card into view after a scan.
+  const cardRefs = useRef({})
 
   useEffect(() => {
     loadData()
@@ -36,17 +47,19 @@ export default function IntakeToMaster() {
 
   const loadData = async () => {
     try {
-      const [acqData, locData] = await Promise.all([
+      const [acqData, locData, prodData] = await Promise.all([
         fetchAcquisitions(),
-        fetchLocations('Physical')
+        fetchLocations('Physical'),
+        fetchProducts(),
       ])
-      
+
       // Filter to show only pending items
-      const pending = acqData.filter(a => 
+      const pending = acqData.filter(a =>
         a.status === 'Purchased' || a.status === 'Partially Received'
       )
       setAcquisitions(pending)
-      
+      setProducts(prodData)
+
       // Find master inventory location
       const master = locData.find(l => l.name === 'Master Inventory')
       setMasterLocation(master)
@@ -56,6 +69,29 @@ export default function IntakeToMaster() {
     } finally {
       setLoading(false)
     }
+  }
+
+  // Called by BarcodeScanner when a scanned UPC matches a product. We then
+  // look for a pending acquisition with that product_id and highlight it.
+  // Edge cases:
+  //   - No pending acquisition → toast and don't highlight
+  //   - Multiple pending acquisitions (same SKU ordered twice) → highlight
+  //     the first one; user can scroll if they meant the other
+  const handleScanMatch = (product) => {
+    const matchingAcqs = acquisitions.filter(a => a.product_id === product.id)
+    if (matchingAcqs.length === 0) {
+      addToast(`${product.name} has no pending order to receive`, 'error')
+      return
+    }
+    const first = matchingAcqs[0]
+    setHighlightedAcqId(first.id)
+    cardRefs.current[first.id]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    if (matchingAcqs.length > 1) {
+      addToast(`${product.name} has ${matchingAcqs.length} pending orders — highlighted the first`, 'info')
+    } else {
+      addToast(`${product.name} — ready to receive`, 'success')
+    }
+    setTimeout(() => setHighlightedAcqId(prev => (prev === first.id ? null : prev)), 3000)
   }
 
   const handleReceive = async (acquisition, receivedQty) => {
@@ -192,6 +228,27 @@ export default function IntakeToMaster() {
         </div>
       </Instructions>
 
+      {/* Scan a box's UPC to jump to its pending order card. Works any
+          time there are pending acquisitions to filter through (skip the
+          empty-state). The unknown-barcode modal lets warehouse staff
+          associate a freshly-arrived box's UPC with the matching product
+          on the fly. */}
+      {acquisitions.length > 0 && (
+        <div className="mb-4">
+          <BarcodeScanner
+            products={products}
+            onMatched={handleScanMatch}
+            onBarcodeAssociated={(productId, barcode) => {
+              setProducts(prev => prev.map(p =>
+                p.id === productId ? { ...p, barcode } : p
+              ))
+            }}
+            addToast={addToast}
+            hint="Scan a box's UPC to jump to its pending order below."
+          />
+        </div>
+      )}
+
       {acquisitions.length === 0 ? (
         <div className="card text-center py-12">
           <Package className="mx-auto text-gray-600 mb-4" size={48} />
@@ -200,12 +257,19 @@ export default function IntakeToMaster() {
       ) : (
         <div className="space-y-4">
           {acquisitions.map(acq => (
-            <IntakeCard 
-              key={acq.id} 
-              acquisition={acq} 
-              onReceive={handleReceive}
-              processing={processingId === acq.id}
-            />
+            <div
+              key={acq.id}
+              ref={(el) => { cardRefs.current[acq.id] = el }}
+              className={`transition-all duration-300 rounded-xl ${
+                highlightedAcqId === acq.id ? 'ring-2 ring-vault-gold ring-offset-2 ring-offset-vault-dark' : ''
+              }`}
+            >
+              <IntakeCard
+                acquisition={acq}
+                onReceive={handleReceive}
+                processing={processingId === acq.id}
+              />
+            </div>
           ))}
         </div>
       )}
