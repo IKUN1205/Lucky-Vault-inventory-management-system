@@ -908,13 +908,15 @@ export const softDeleteSingle = async (id, deletedById, reason = null) => {
 //
 // Returns: the matching row with joined set/location/acquirer/sold_by, or
 // null if no match.
-export const fetchSingleByIdentifier = async (idString) => {
+// Returns ALL matching rows (raw singles can have the same tcg_id in
+// multiple locations after a Transfer splits a stack). Sorted by qty desc
+// then by created_at asc so the "fullest stack" / oldest row sorts first
+// — that's a reasonable default for "which copy to sell" disambiguation.
+export const fetchSinglesByIdentifier = async (idString) => {
   const trimmed = (idString || '').trim()
-  if (!trimmed) return null
-  // Supabase escapes special chars but quotes inside .or() need to be safe.
-  // Strip anything that would confuse the parser. Our IDs are alphanumeric.
+  if (!trimmed) return []
   const safe = trimmed.replace(/[^A-Za-z0-9_-]/g, '')
-  if (!safe) return null
+  if (!safe) return []
   const { data, error } = await supabase
     .from('singles')
     .select(`
@@ -926,9 +928,18 @@ export const fetchSingleByIdentifier = async (idString) => {
     `)
     .or(`cert_number.eq.${safe},tcg_id.eq.${safe}`)
     .or('deleted.is.null,deleted.eq.false')
-    .maybeSingle()
+    .order('quantity', { ascending: false })
+    .order('created_at', { ascending: true })
   if (error) throw error
-  return data
+  return data || []
+}
+
+export const fetchSingleByIdentifier = async (idString) => {
+  // Defensive: post-Transfer, the same TCG ID may exist in multiple
+  // locations. maybeSingle() would throw. Return the first match — callers
+  // that need to disambiguate should use fetchSinglesByIdentifier directly.
+  const rows = await fetchSinglesByIdentifier(idString)
+  return rows[0] || null
 }
 
 // Backward-compat alias — old call sites keep working. New code should
@@ -1019,6 +1030,246 @@ export const markSingleAsSold = async (id, saleData) => {
     acted_by_id: saleData.sold_by_id
   })
   return data
+}
+
+// ============================================
+// CARD TRANSFERS — shared helpers (singles + slabs)
+// ============================================
+// Slab + graded-single + whole-row raw-single moves are simple location_id
+// updates. Raw-single PARTIAL moves (e.g. scanner moves 1 of a 10-stack)
+// split the source row: source.qty -= n, and at the destination location
+// we either increment an existing same-SKU row's qty, or insert a new
+// clone of the source row with qty=n.
+//
+// Every move writes ONE audit-log entry against the source row (event_type
+// = 'moved'). The payload carries from/to location IDs and the qty for
+// downstream tooling (Lark, Reports).
+
+// Tiny in-memory cache so a batch of N moves doesn't trigger N location
+// fetches for the same source/dest pair.
+const _locationNameCache = new Map()
+const _locationName = async (id) => {
+  if (!id) return '(no location)'
+  if (_locationNameCache.has(id)) return _locationNameCache.get(id)
+  const { data } = await supabase
+    .from('locations')
+    .select('id, name')
+    .eq('id', id)
+    .maybeSingle()
+  const name = data?.name || `(unknown:${String(id).slice(0, 6)})`
+  _locationNameCache.set(id, name)
+  return name
+}
+
+// Compact summary string for a card row in move log entries.
+const _summarizeSingleForMove = (s) => {
+  if (!s) return ''
+  const set = s.set?.name ? ` (${s.set.name})` : ''
+  if (s.form === 'graded') {
+    return `${s.grading_company || '?'} ${s.grade || '?'} ${s.card_name || ''} ${s.card_number || ''}${set}`.trim()
+  }
+  return `${s.condition || 'Raw'} ${s.card_name || ''} ${s.card_number || ''}${set}`.trim()
+}
+
+// Move an ENTIRE single row to a new location. Used by:
+//   * Inventory page bulk-select Move (entire stack)
+//   * Graded singles (qty constraint = 1, so whole = the one card)
+//   * moveSingleUnit when qty === source.quantity (delegated)
+export const moveSingleRow = async (id, toLocationId, currentUserId) => {
+  const { data: current, error: fetchErr } = await supabase
+    .from('singles')
+    .select(`
+      *,
+      set:card_sets(id, name, code)
+    `)
+    .eq('id', id)
+    .single()
+  if (fetchErr) throw fetchErr
+  if (current.location_id === toLocationId) return current  // no-op
+
+  const fromName = await _locationName(current.location_id)
+  const toName   = await _locationName(toLocationId)
+
+  const { data, error } = await supabase
+    .from('singles')
+    .update({ location_id: toLocationId })
+    .eq('id', id)
+    .select(`
+      *,
+      set:card_sets(id, name, code)
+    `)
+    .single()
+  if (error) throw error
+
+  logSingleEvent({
+    single_id: data.id,
+    event_type: 'moved',
+    summary: `Moved ${data.quantity}× ${_summarizeSingleForMove(data)} from ${fromName} → ${toName}`,
+    payload: {
+      from_location_id: current.location_id,
+      to_location_id: toLocationId,
+      qty: data.quantity,
+      mode: 'row'
+    },
+    acted_by_id: currentUserId || null
+  })
+  return data
+}
+
+// Move N units of a raw single from source row to a destination location.
+// If a same-SKU row already exists at the destination, increment its qty;
+// otherwise insert a clone of the source row at the new location with qty=n.
+// Graded source rows delegate to moveSingleRow (qty=1 always).
+//
+// NB: not transactional across the two rows — destination is written FIRST
+// so a mid-flight failure leaves a duplicate (recoverable by manual decrement)
+// rather than losing quantity (irrecoverable).
+export const moveSingleUnit = async ({
+  fromSingleId,
+  toLocationId,
+  qty = 1,
+  currentUserId
+}) => {
+  if (!fromSingleId) throw new Error('fromSingleId required')
+  if (!toLocationId) throw new Error('toLocationId required')
+  if (!Number.isFinite(qty) || qty <= 0) throw new Error('qty must be a positive number')
+
+  const { data: source, error: srcErr } = await supabase
+    .from('singles')
+    .select(`
+      *,
+      set:card_sets(id, name, code)
+    `)
+    .eq('id', fromSingleId)
+    .single()
+  if (srcErr) throw srcErr
+
+  if (source.form === 'graded' || source.quantity === qty) {
+    // No split needed — moving the whole row is identical to updating
+    // location_id. Reuse the single-row helper for consistent log shape.
+    return { source: await moveSingleRow(fromSingleId, toLocationId, currentUserId), dest: null }
+  }
+  if (source.quantity < qty) {
+    throw new Error(`Source only has ${source.quantity} copies, can't move ${qty}`)
+  }
+  if (source.location_id === toLocationId) return { source, dest: null }  // no-op
+
+  // Look for an existing same-SKU row at the destination. Match on tcg_id +
+  // form + condition since those are what define "same SKU" for raw cards.
+  let destRow = null
+  if (source.tcg_id) {
+    let q = supabase
+      .from('singles')
+      .select('*')
+      .eq('tcg_id', source.tcg_id)
+      .eq('form', source.form)
+      .eq('location_id', toLocationId)
+      .or('deleted.is.null,deleted.eq.false')
+    if (source.condition) q = q.eq('condition', source.condition)
+    else q = q.is('condition', null)
+    const { data: maybe, error: destErr } = await q.maybeSingle()
+    if (destErr) throw destErr
+    destRow = maybe
+  }
+
+  const fromName = await _locationName(source.location_id)
+  const toName   = await _locationName(toLocationId)
+
+  // 1) Dest first (less destructive failure mode)
+  let updatedDest
+  if (destRow) {
+    const { data, error } = await supabase
+      .from('singles')
+      .update({ quantity: destRow.quantity + qty })
+      .eq('id', destRow.id)
+      .select(`
+        *,
+        set:card_sets(id, name, code)
+      `)
+      .single()
+    if (error) throw error
+    updatedDest = data
+  } else {
+    // Clone source minus PK / timestamps / joined relations.
+    const clone = { ...source }
+    delete clone.id
+    delete clone.created_at
+    delete clone.updated_at
+    delete clone.set
+    clone.location_id = toLocationId
+    clone.quantity = qty
+    const { data, error } = await supabase
+      .from('singles')
+      .insert(clone)
+      .select(`
+        *,
+        set:card_sets(id, name, code)
+      `)
+      .single()
+    if (error) throw error
+    updatedDest = data
+  }
+
+  // 2) Decrement source
+  const newSourceQty = source.quantity - qty
+  const { data: updatedSource, error: srcUpErr } = await supabase
+    .from('singles')
+    .update({ quantity: newSourceQty })
+    .eq('id', source.id)
+    .select(`
+      *,
+      set:card_sets(id, name, code)
+    `)
+    .single()
+  if (srcUpErr) throw srcUpErr
+
+  logSingleEvent({
+    single_id: source.id,
+    event_type: 'moved',
+    summary: `Moved ${qty}× ${_summarizeSingleForMove(source)} from ${fromName} → ${toName}`,
+    payload: {
+      from_location_id: source.location_id,
+      to_location_id: toLocationId,
+      qty,
+      dest_single_id: updatedDest?.id || null,
+      mode: 'unit'
+    },
+    acted_by_id: currentUserId || null
+  })
+
+  return { source: updatedSource, dest: updatedDest }
+}
+
+// Batch wrapper around moveSingleUnit — Scan-page batch transfer.
+// entries: [{ fromSingleId, toLocationId, qty }, ...]
+export const moveSingleUnitsBatch = async (entries, currentUserId) => {
+  if (!Array.isArray(entries) || entries.length === 0) return { ok: [], failed: [] }
+  const results = await Promise.all(entries.map(async (e) => {
+    try {
+      const r = await moveSingleUnit({ ...e, currentUserId })
+      return { kind: 'ok', row: r }
+    } catch (err) {
+      return { kind: 'failed', entry: e, error: err.message || String(err) }
+    }
+  }))
+  return {
+    ok: results.filter(r => r.kind === 'ok').map(r => r.row),
+    failed: results.filter(r => r.kind === 'failed').map(r => ({ entry: r.entry, error: r.error })),
+  }
+}
+
+// Batch wrapper around moveSingleRow — Inventory bulk-select Move.
+// entries: [{ id, toLocationId }, ...]
+export const moveSingleRowsBatch = async (entries, currentUserId) => {
+  if (!Array.isArray(entries) || entries.length === 0) return { ok: [], failed: [] }
+  const results = await Promise.all(entries.map(async (e) => {
+    try { return { kind: 'ok', row: await moveSingleRow(e.id, e.toLocationId, currentUserId) } }
+    catch (err) { return { kind: 'failed', id: e.id, error: err.message || String(err) } }
+  }))
+  return {
+    ok: results.filter(r => r.kind === 'ok').map(r => r.row),
+    failed: results.filter(r => r.kind === 'failed').map(r => ({ id: r.id, error: r.error })),
+  }
 }
 
 // ============================================
@@ -1226,6 +1477,55 @@ export const softDeleteSlab = async (id, deletedById, reason = null) => {
     acted_by_id: deletedById
   })
   return data
+}
+
+// Move a slab to a new location. Slabs are always per-card (no qty), so
+// this is just an UPDATE + audit log.
+export const moveSlab = async (id, toLocationId, currentUserId) => {
+  const { data: current, error: fetchErr } = await supabase
+    .from('slabs')
+    .select('id, cert_number, grading_company, item_name, location_id, deleted')
+    .eq('id', id)
+    .single()
+  if (fetchErr) throw fetchErr
+  if (current.location_id === toLocationId) return current  // no-op
+
+  const fromName = await _locationName(current.location_id)
+  const toName   = await _locationName(toLocationId)
+
+  const { data, error } = await supabase
+    .from('slabs')
+    .update({ location_id: toLocationId })
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+
+  logSlabEvent({
+    slab_id: data.id,
+    event_type: 'moved',
+    summary: `Moved ${data.grading_company} slab #${data.cert_number} from ${fromName} → ${toName}`,
+    payload: {
+      from_location_id: current.location_id,
+      to_location_id: toLocationId
+    },
+    acted_by_id: currentUserId || null
+  })
+  return data
+}
+
+// Batch wrapper — used by both Scan-page batch transfer and Inventory bulk-select.
+// entries: [{ id, toLocationId }, ...]
+export const moveSlabsBatch = async (entries, currentUserId) => {
+  if (!Array.isArray(entries) || entries.length === 0) return { ok: [], failed: [] }
+  const results = await Promise.all(entries.map(async (e) => {
+    try { return { kind: 'ok', row: await moveSlab(e.id, e.toLocationId, currentUserId) } }
+    catch (err) { return { kind: 'failed', id: e.id, error: err.message || String(err) } }
+  }))
+  return {
+    ok: results.filter(r => r.kind === 'ok').map(r => r.row),
+    failed: results.filter(r => r.kind === 'failed').map(r => ({ id: r.id, error: r.error })),
+  }
 }
 
 // Unified identifier lookup — checks slabs.cert_number then singles

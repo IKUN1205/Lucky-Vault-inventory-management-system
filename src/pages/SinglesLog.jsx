@@ -6,7 +6,7 @@ import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
 import {
   History, Filter, RefreshCw, Plus, DollarSign, Trash2,
-  Search, X
+  Search, X, ArrowRightLeft
 } from 'lucide-react'
 
 // ============================================================================
@@ -25,15 +25,17 @@ const EVENT_TYPES = [
   { value: '',          label: 'All events' },
   { value: 'created',   label: 'Created' },
   { value: 'sold',      label: 'Sold' },
+  { value: 'moved',     label: 'Moved' },
   { value: 'deleted',   label: 'Deleted' }
 ]
 
 const EVENT_META = {
-  created: { Icon: Plus,       color: 'text-green-400',  bg: 'bg-green-500/10',  label: 'Created' },
-  sold:    { Icon: DollarSign, color: 'text-vault-gold', bg: 'bg-vault-gold/10', label: 'Sold' },
-  deleted: { Icon: Trash2,     color: 'text-red-400',    bg: 'bg-red-500/10',    label: 'Deleted' },
-  restored:{ Icon: RefreshCw,  color: 'text-blue-400',   bg: 'bg-blue-500/10',   label: 'Restored' },
-  updated: { Icon: RefreshCw,  color: 'text-gray-400',   bg: 'bg-gray-500/10',   label: 'Updated' }
+  created: { Icon: Plus,           color: 'text-green-400',  bg: 'bg-green-500/10',   label: 'Created' },
+  sold:    { Icon: DollarSign,     color: 'text-vault-gold', bg: 'bg-vault-gold/10',  label: 'Sold' },
+  moved:   { Icon: ArrowRightLeft, color: 'text-blue-300',   bg: 'bg-blue-500/10',    label: 'Moved' },
+  deleted: { Icon: Trash2,         color: 'text-red-400',    bg: 'bg-red-500/10',     label: 'Deleted' },
+  restored:{ Icon: RefreshCw,      color: 'text-blue-400',   bg: 'bg-blue-500/10',    label: 'Restored' },
+  updated: { Icon: RefreshCw,      color: 'text-gray-400',   bg: 'bg-gray-500/10',    label: 'Updated' }
 }
 
 export default function SinglesLog() {
@@ -114,7 +116,7 @@ export default function SinglesLog() {
 
   // Summary card counts (filtered view)
   const summary = useMemo(() => {
-    const by = { created: 0, sold: 0, deleted: 0 }
+    const by = { created: 0, sold: 0, moved: 0, deleted: 0 }
     for (const e of filtered) {
       if (by[e.event_type] != null) by[e.event_type]++
     }
@@ -176,7 +178,7 @@ export default function SinglesLog() {
       </Instructions>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         <div className="card">
           <p className="text-gray-400 text-sm">Total events</p>
           <p className="font-display text-2xl font-bold text-white">{filtered.length}</p>
@@ -188,6 +190,10 @@ export default function SinglesLog() {
         <div className="card">
           <p className="text-gray-400 text-sm">Sold</p>
           <p className="font-display text-2xl font-bold text-vault-gold">{summary.sold}</p>
+        </div>
+        <div className="card">
+          <p className="text-gray-400 text-sm">Moved</p>
+          <p className="font-display text-2xl font-bold text-blue-300">{summary.moved}</p>
         </div>
         <div className="card">
           <p className="text-gray-400 text-sm">Deleted</p>
