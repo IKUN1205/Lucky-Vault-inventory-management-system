@@ -34,13 +34,11 @@ import {
   CopyPlus,
   History as HistoryIcon,
   ChevronLeft,
-  ChevronRight,
-  ChevronDown
+  ChevronRight
 } from 'lucide-react'
 
-// localStorage keys. Lives in this module so we never typo them elsewhere.
+// localStorage key for the icon-only-vs-expanded sidebar preference.
 const SIDEBAR_COLLAPSED_KEY = 'lv:sidebar-collapsed'
-const SECTIONS_COLLAPSED_KEY = 'lv:sidebar-sections-collapsed'
 
 // Sidebar grouped by workflow stage. Section headers render as small uppercase
 // labels above each block. Order roughly matches the operational lifecycle:
@@ -137,39 +135,6 @@ export default function Layout({ children }) {
     window.localStorage?.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0')
   }, [collapsed])
 
-  // Per-section collapsed state. Keyed by section title. Stored as a JSON
-  // object { sectionTitle: true } where presence means "user collapsed this
-  // section". Default is empty = everything expanded.
-  //
-  // This is independent of the whole-sidebar collapse: in icon-only mode the
-  // section headers are hidden anyway, so per-section toggling only matters
-  // when the sidebar is in its expanded width.
-  const [collapsedSections, setCollapsedSections] = useState(() => {
-    if (typeof window === 'undefined') return {}
-    try {
-      const raw = window.localStorage?.getItem(SECTIONS_COLLAPSED_KEY)
-      return raw ? JSON.parse(raw) : {}
-    } catch {
-      return {}
-    }
-  })
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    try {
-      window.localStorage?.setItem(SECTIONS_COLLAPSED_KEY, JSON.stringify(collapsedSections))
-    } catch {}
-  }, [collapsedSections])
-
-  const toggleSection = (title) => {
-    setCollapsedSections(prev => {
-      const next = { ...prev }
-      if (next[title]) delete next[title]
-      else next[title] = true
-      return next
-    })
-  }
-
   const location = useLocation()
   const { user, hasAccess, logout } = useAuth()
 
@@ -253,54 +218,37 @@ export default function Layout({ children }) {
 
         {/* Navigation — rendered as sections with small uppercase headers.
             When collapsed (whole sidebar), the section headers hide and
-            items show icon-only with hover tooltips. When expanded, each
-            section header is a clickable toggle — click "RECEIVE" to
-            collapse its 5 items, click again to expand. Per-section state
-            persists in localStorage. The chevron next to the title indicates
-            direction (down = expanded, right = collapsed). */}
+            items show icon-only with hover tooltips (title attribute). */}
         <nav className={`overflow-y-auto flex-1 ${collapsed ? 'p-2' : 'p-3'}`}>
-          {visibleSections.map((section, sectionIdx) => {
-            const sectionCollapsed = !collapsed && collapsedSections[section.title] === true
-            return (
-              <div key={section.title} className={sectionIdx > 0 ? 'mt-4' : ''}>
-                {!collapsed && (
-                  <button
-                    type="button"
-                    onClick={() => toggleSection(section.title)}
-                    className="w-full flex items-center justify-between px-3 mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500 hover:text-gray-300 transition-colors group"
-                    aria-expanded={!sectionCollapsed}
+          {visibleSections.map((section, sectionIdx) => (
+            <div key={section.title} className={sectionIdx > 0 ? 'mt-4' : ''}>
+              {!collapsed && (
+                <div className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                  {section.title}
+                </div>
+              )}
+              <div className="space-y-0.5">
+                {section.items.map((item) => (
+                  <Link
+                    key={item.path}
+                    to={item.path}
+                    onClick={() => setSidebarOpen(false)}
+                    title={collapsed ? item.label : undefined}
+                    className={`
+                      flex items-center gap-3 rounded-lg transition-all
+                      ${collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2'}
+                      ${isActive(item.path)
+                        ? 'bg-vault-gold/10 text-vault-gold border border-vault-gold/30'
+                        : 'text-gray-400 hover:bg-vault-surface hover:text-white'}
+                    `}
                   >
-                    <span>{section.title}</span>
-                    {sectionCollapsed
-                      ? <ChevronRight size={12} className="opacity-60 group-hover:opacity-100" />
-                      : <ChevronDown size={12} className="opacity-60 group-hover:opacity-100" />}
-                  </button>
-                )}
-                {!sectionCollapsed && (
-                  <div className="space-y-0.5">
-                    {section.items.map((item) => (
-                      <Link
-                        key={item.path}
-                        to={item.path}
-                        onClick={() => setSidebarOpen(false)}
-                        title={collapsed ? item.label : undefined}
-                        className={`
-                          flex items-center gap-3 rounded-lg transition-all
-                          ${collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2'}
-                          ${isActive(item.path)
-                            ? 'bg-vault-gold/10 text-vault-gold border border-vault-gold/30'
-                            : 'text-gray-400 hover:bg-vault-surface hover:text-white'}
-                        `}
-                      >
-                        <item.icon size={18} className="flex-shrink-0" />
-                        {!collapsed && <span className="text-sm font-medium truncate">{item.label}</span>}
-                      </Link>
-                    ))}
-                  </div>
-                )}
+                    <item.icon size={18} className="flex-shrink-0" />
+                    {!collapsed && <span className="text-sm font-medium truncate">{item.label}</span>}
+                  </Link>
+                ))}
               </div>
-            )
-          })}
+            </div>
+          ))}
         </nav>
 
         {/* User Info & Logout. In collapsed mode we stack the avatar above
