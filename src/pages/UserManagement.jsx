@@ -5,68 +5,78 @@ import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { Users, Plus, Edit2, Trash2, Save, X, UserPlus, Key, RefreshCw, Check } from 'lucide-react'
 
-// All available pages with labels. Keep in sync with the routes declared in
-// src/App.jsx and the sidebar items in src/components/Layout.jsx — every
-// route the user might want to grant access to should appear here so admins
-// can actually toggle it from Team Management.
+// All available pages with labels, grouped by sidebar section. Keep in sync
+// with the routes declared in src/App.jsx and the sidebar items in
+// src/components/Layout.jsx — every route the user might want to grant
+// access to should appear here so admins can actually toggle it from Team
+// Management.
 //
-// Ordering loosely follows the sidebar (Overview → Receive → Operations →
-// Sales → Reports → Cards → Admin) so the checkbox list reads top-to-bottom
-// the same way the sidebar does. Pages that aren't in the sidebar (legacy
-// or deep-link only) are grouped at the end with a clarifying tail in the
-// label so admins know what they're looking at.
-const ALL_PAGES = [
-  // Overview
-  { path: '/', label: 'Dashboard' },
-  { path: '/inventory', label: 'View Inventory' },
-
-  // Receive
-  { path: '/purchased-items', label: 'Purchased Items' },
-  { path: '/intake', label: 'Intake to Master' },
-  { path: '/manual-inventory', label: 'Manual Inventory' },
-  { path: '/storefront-import', label: 'Storefront Import' },
-  { path: '/add-product', label: 'Add Product' },
-
-  // Operations
-  { path: '/move-inventory', label: 'Move Inventory' },
-  { path: '/break-box', label: 'Break Box' },
-
-  // Sales
-  { path: '/stream-counts', label: 'Stream Counts' },
-  { path: '/stream-sessions', label: 'Stream Session History' },
-  { path: '/platform-sales', label: 'Platform Sales' },
-  { path: '/online-orders', label: 'Online Orders' },
-  { path: '/storefront-sale', label: 'Storefront Sales' },
-
-  // Reports
-  { path: '/reports', label: 'Reports' },
-  { path: '/turnover', label: 'Turnover' },
-  { path: '/executive-report', label: 'Executive Report' },
-  { path: '/audit-history', label: 'Audit History' },
-
-  // Cards (unified Singles + Slabs section — sidebar entries)
-  { path: '/cards', label: 'Cards Inventory' },
-  { path: '/cards/scan', label: 'Cards Scan' },
-  { path: '/cards/log', label: 'Cards Activity Log' },
-
-  // Admin
-  { path: '/high-value', label: 'High Value' },
-  { path: '/expenses', label: 'Business Expenses' },
-  { path: '/audit', label: 'Sales Audit' },
-  { path: '/product-mapping', label: 'Product Mapping' },
-  { path: '/users', label: 'Team Management' },
-
+// Section ordering matches the sidebar (Overview → Receive → Operations →
+// Sales → Reports → Cards → Admin) so the picker reads top-to-bottom the
+// same way the sidebar does. Pages that aren't in the sidebar (legacy or
+// deep-link only) live in a final "Legacy / Deep-link" section, which is
+// `collapsible: true` so it doesn't bulk up the picker by default.
+const PAGE_SECTIONS = [
+  { title: 'Overview', items: [
+    { path: '/', label: 'Dashboard' },
+    { path: '/inventory', label: 'View Inventory' },
+  ]},
+  { title: 'Receive', items: [
+    { path: '/purchased-items', label: 'Purchased Items' },
+    { path: '/intake', label: 'Intake to Master' },
+    { path: '/manual-inventory', label: 'Manual Inventory' },
+    { path: '/storefront-import', label: 'Storefront Import' },
+    { path: '/add-product', label: 'Add Product' },
+  ]},
+  { title: 'Operations', items: [
+    { path: '/move-inventory', label: 'Move Inventory' },
+    { path: '/break-box', label: 'Break Box' },
+  ]},
+  { title: 'Sales', items: [
+    { path: '/stream-counts', label: 'Stream Counts' },
+    { path: '/stream-sessions', label: 'Stream Session History' },
+    { path: '/platform-sales', label: 'Platform Sales' },
+    { path: '/online-orders', label: 'Online Orders' },
+    { path: '/storefront-sale', label: 'Storefront Sales' },
+  ]},
+  { title: 'Reports', items: [
+    { path: '/reports', label: 'Reports' },
+    { path: '/turnover', label: 'Turnover' },
+    { path: '/executive-report', label: 'Executive Report' },
+    { path: '/audit-history', label: 'Audit History' },
+  ]},
+  // Cards = unified Singles + Slabs section (sidebar entries)
+  { title: 'Cards', items: [
+    { path: '/cards', label: 'Cards Inventory' },
+    { path: '/cards/scan', label: 'Cards Scan' },
+    { path: '/cards/log', label: 'Cards Activity Log' },
+  ]},
+  { title: 'Admin', items: [
+    { path: '/high-value', label: 'High Value' },
+    { path: '/expenses', label: 'Business Expenses' },
+    { path: '/audit', label: 'Sales Audit' },
+    { path: '/product-mapping', label: 'Product Mapping' },
+    { path: '/users', label: 'Team Management' },
+  ]},
   // Legacy / deep-link only — kept so admins can grant access for users
   // who hit these URLs directly. /singles + /slabs are pre-unification
   // routes that still resolve. /grading is reachable from older flows.
-  { path: '/grading', label: 'Send to Grading (legacy)' },
-  { path: '/singles', label: 'Singles Inventory (legacy)' },
-  { path: '/singles/scan', label: 'Singles Scan (legacy)' },
-  { path: '/singles/log', label: 'Singles Activity Log (legacy)' },
-  { path: '/singles/add', label: 'Add Single (deep-link)' },
-  { path: '/singles/bulk-add', label: 'Bulk Add Singles (deep-link)' },
-  { path: '/slabs', label: 'Slabs Inventory (legacy)' },
+  // Collapsed by default because most admins shouldn't need to touch these.
+  { title: 'Legacy / Deep-link', collapsible: true, defaultCollapsed: true, items: [
+    { path: '/grading', label: 'Send to Grading (legacy)' },
+    { path: '/singles', label: 'Singles Inventory (legacy)' },
+    { path: '/singles/scan', label: 'Singles Scan (legacy)' },
+    { path: '/singles/log', label: 'Singles Activity Log (legacy)' },
+    { path: '/singles/add', label: 'Add Single (deep-link)' },
+    { path: '/singles/bulk-add', label: 'Bulk Add Singles (deep-link)' },
+    { path: '/slabs', label: 'Slabs Inventory (legacy)' },
+  ]},
 ]
+
+// Flat list of all pages — kept as a derived export so the rest of the file
+// (Select All, page-count badges, lookup by path) doesn't have to know about
+// the section structure.
+const ALL_PAGES = PAGE_SECTIONS.flatMap(s => s.items)
 
 export default function UserManagement() {
   const { toasts, addToast, removeToast } = useToast()
@@ -88,6 +98,20 @@ export default function UserManagement() {
     allowed_pages: ['/'] // Default to dashboard only
   })
   const [submitting, setSubmitting] = useState(false)
+
+  // Track which Page Access sections are collapsed in the picker. Seeded
+  // from each section's `defaultCollapsed` flag — only Legacy starts folded.
+  // Set-of-titles so toggling one section doesn't re-render the others.
+  const [collapsedSections, setCollapsedSections] = useState(
+    () => new Set(PAGE_SECTIONS.filter(s => s.defaultCollapsed).map(s => s.title))
+  )
+  const toggleSectionCollapsed = (title) => {
+    setCollapsedSections(prev => {
+      const next = new Set(prev)
+      if (next.has(title)) next.delete(title); else next.add(title)
+      return next
+    })
+  }
 
   useEffect(() => {
     loadData()
@@ -329,8 +353,109 @@ export default function UserManagement() {
     const newPages = currentPages.includes(pagePath)
       ? currentPages.filter(p => p !== pagePath)
       : [...currentPages, pagePath]
-    
+
     setNewUser({ ...newUser, allowed_pages: newPages })
+  }
+
+  // Section-level toggle: bulk-add or bulk-remove every page in one section.
+  // Dashboard ('/') is always kept selected — without it the user lands on
+  // Access Denied right after login with no escape, so it functions as a
+  // minimum-floor permission.
+  const applySectionToggle = (currentPages, sectionItems, makeSelected) => {
+    const next = new Set(currentPages || [])
+    const paths = sectionItems.map(i => i.path)
+    if (makeSelected) {
+      paths.forEach(p => next.add(p))
+    } else {
+      paths.forEach(p => next.delete(p))
+    }
+    next.add('/')  // floor
+    return Array.from(next)
+  }
+  const toggleEditingSection = (sectionItems, makeSelected) => {
+    if (!editingUser) return
+    setEditingUser({
+      ...editingUser,
+      allowed_pages: applySectionToggle(editingUser.allowed_pages, sectionItems, makeSelected),
+    })
+  }
+  const toggleNewUserSection = (sectionItems, makeSelected) => {
+    setNewUser({
+      ...newUser,
+      allowed_pages: applySectionToggle(newUser.allowed_pages, sectionItems, makeSelected),
+    })
+  }
+
+  // Shared renderer for both the Add User form and the Edit User modal.
+  // Both forms have identical visual treatment — only the selected set and
+  // the onToggle callbacks differ — so we route them through one function
+  // to avoid drift between the two pickers as we iterate on UX.
+  const renderPageAccessPicker = ({ selected, onTogglePage, onToggleSection }) => {
+    const selectedSet = new Set(selected || [])
+    return (
+      <div className="space-y-3 p-3 bg-vault-dark rounded-lg max-h-96 overflow-y-auto">
+        {PAGE_SECTIONS.map(section => {
+          const isCollapsed = collapsedSections.has(section.title)
+          const checkedCount = section.items.filter(i => selectedSet.has(i.path)).length
+          const allChecked = checkedCount === section.items.length
+          return (
+            <div key={section.title} className="space-y-1">
+              <div className="flex items-center justify-between px-1">
+                <button
+                  type="button"
+                  onClick={() => section.collapsible && toggleSectionCollapsed(section.title)}
+                  className={`flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500 ${section.collapsible ? 'hover:text-gray-300' : 'cursor-default'}`}
+                >
+                  {section.collapsible && (
+                    <span className="text-gray-600">{isCollapsed ? '▸' : '▾'}</span>
+                  )}
+                  <span>{section.title}</span>
+                  {section.collapsible && (
+                    <span className="text-gray-600 normal-case font-normal">({section.items.length})</span>
+                  )}
+                  {checkedCount > 0 && (
+                    <span className="text-vault-gold normal-case font-normal">· {checkedCount}/{section.items.length} selected</span>
+                  )}
+                </button>
+                {!isCollapsed && (
+                  <button
+                    type="button"
+                    onClick={() => onToggleSection(section.items, !allChecked)}
+                    className="text-[10px] text-blue-400 hover:text-blue-300"
+                  >
+                    {allChecked ? 'Clear section' : 'Select section'}
+                  </button>
+                )}
+              </div>
+              {!isCollapsed && (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {section.items.map(page => (
+                    <label
+                      key={page.path}
+                      className={`flex items-center gap-2 cursor-pointer p-1.5 rounded transition-all ${
+                        selectedSet.has(page.path)
+                          ? 'bg-vault-gold/10 border border-vault-gold/30'
+                          : 'hover:bg-vault-surface border border-transparent'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedSet.has(page.path)}
+                        onChange={() => onTogglePage(page.path)}
+                        className="w-4 h-4 rounded border-vault-border bg-vault-surface text-vault-gold focus:ring-vault-gold"
+                      />
+                      <span className={`text-sm ${selectedSet.has(page.path) ? 'text-white' : 'text-gray-400'}`}>
+                        {page.label}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    )
   }
 
   const activeUsers = users.filter(u => u.active)
@@ -420,19 +545,11 @@ export default function UserManagement() {
             {/* Page Access */}
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">Page Access</label>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 p-3 bg-vault-dark rounded-lg max-h-48 overflow-y-auto">
-                {ALL_PAGES.map(page => (
-                  <label key={page.path} className="flex items-center gap-2 cursor-pointer hover:bg-vault-surface p-1 rounded">
-                    <input
-                      type="checkbox"
-                      checked={newUser.allowed_pages.includes(page.path)}
-                      onChange={() => toggleNewUserPage(page.path)}
-                      className="w-4 h-4 rounded border-vault-border bg-vault-surface text-vault-gold focus:ring-vault-gold"
-                    />
-                    <span className="text-sm text-gray-300">{page.label}</span>
-                  </label>
-                ))}
-              </div>
+              {renderPageAccessPicker({
+                selected: newUser.allowed_pages,
+                onTogglePage: toggleNewUserPage,
+                onToggleSection: toggleNewUserSection,
+              })}
             </div>
 
             <div className="flex gap-2">
@@ -661,31 +778,12 @@ export default function UserManagement() {
                     </button>
                   </div>
                 </div>
-                
-                <div className="grid grid-cols-2 gap-2 p-3 bg-vault-dark rounded-lg max-h-64 overflow-y-auto">
-                  {ALL_PAGES.map(page => (
-                    <label 
-                      key={page.path} 
-                      className={`flex items-center gap-2 cursor-pointer p-2 rounded transition-all ${
-                        editingUser.allowed_pages?.includes(page.path) 
-                          ? 'bg-vault-gold/10 border border-vault-gold/30' 
-                          : 'hover:bg-vault-surface'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={editingUser.allowed_pages?.includes(page.path) || false}
-                        onChange={() => togglePageAccess(page.path)}
-                          className="w-4 h-4 rounded border-vault-border bg-vault-surface text-vault-gold focus:ring-vault-gold"
-                        />
-                        <span className={`text-sm ${
-                          editingUser.allowed_pages?.includes(page.path) ? 'text-white' : 'text-gray-400'
-                        }`}>
-                          {page.label}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
+
+                {renderPageAccessPicker({
+                  selected: editingUser.allowed_pages,
+                  onTogglePage: togglePageAccess,
+                  onToggleSection: toggleEditingSection,
+                })}
               </div>
             </div>
             
