@@ -17,20 +17,26 @@ import { Users, Plus, Edit2, Trash2, Save, X, UserPlus, Key, RefreshCw, Check } 
 // deep-link only) live in a final "Legacy / Deep-link" section, which is
 // `collapsible: true` so it doesn't bulk up the picker by default.
 const PAGE_SECTIONS = [
+  // Manual Inventory in Overview (not Receive) — it's a quick stock-adjust
+  // tool, not a vendor-receive step. Add Product in Operations (not
+  // Receive) — creating a SKU is a catalog action, not a receive action.
+  // Keep this grouping in lock-step with navSections in Layout.jsx so the
+  // permission picker reads the same way as what the user sees in the
+  // sidebar.
   { title: 'Overview', items: [
     { path: '/', label: 'Dashboard' },
     { path: '/inventory', label: 'View Inventory' },
+    { path: '/manual-inventory', label: 'Manual Inventory' },
   ]},
   { title: 'Receive', items: [
     { path: '/purchased-items', label: 'Purchased Items' },
     { path: '/intake', label: 'Intake to Master' },
-    { path: '/manual-inventory', label: 'Manual Inventory' },
     { path: '/storefront-import', label: 'Storefront Import' },
-    { path: '/add-product', label: 'Add Product' },
   ]},
   { title: 'Operations', items: [
     { path: '/move-inventory', label: 'Move Inventory' },
     { path: '/break-box', label: 'Break Box' },
+    { path: '/add-product', label: 'Add Product' },
   ]},
   { title: 'Sales', items: [
     { path: '/stream-counts', label: 'Stream Counts' },

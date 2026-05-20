@@ -45,10 +45,16 @@ const SIDEBAR_COLLAPSED_KEY = 'lv:sidebar-collapsed'
 // see what you have → receive → operate → sell → report → admin.
 const navSections = [
   {
+    // Manual Inventory lives in Overview (not Receive) — it's a quick
+    // stock-adjust tool used to reconcile a known mismatch ("the system
+    // says 10 but we count 8"), not a receive-from-vendor step. Keeping
+    // it adjacent to View Inventory makes that "check then nudge" flow
+    // a single sidebar group.
     title: 'Overview',
     items: [
       { path: '/', label: 'Dashboard', icon: Home },
       { path: '/inventory', label: 'View Inventory', icon: Eye },
+      { path: '/manual-inventory', label: 'Manual Inventory', icon: PackagePlus },
     ]
   },
   {
@@ -56,16 +62,19 @@ const navSections = [
     items: [
       { path: '/purchased-items', label: 'Purchased Items', icon: ShoppingCart },
       { path: '/intake', label: 'Intake to Master', icon: Package },
-      { path: '/manual-inventory', label: 'Manual Inventory', icon: PackagePlus },
       { path: '/storefront-import', label: 'Storefront Import', icon: Store },
-      { path: '/add-product', label: 'Add Product', icon: Plus },
     ]
   },
   {
+    // Add Product lives in Operations (not Receive) — creating a SKU is
+    // a catalog/operations action, not a vendor-receiving action. Move
+    // / Break Box also mutate the catalog state in some sense, so they
+    // sit together.
     title: 'Operations',
     items: [
       { path: '/move-inventory', label: 'Move Inventory', icon: ArrowRightLeft },
       { path: '/break-box', label: 'Break Box', icon: Box },
+      { path: '/add-product', label: 'Add Product', icon: Plus },
     ]
   },
   {
