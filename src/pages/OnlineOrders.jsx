@@ -10,6 +10,7 @@ import {
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
+import BarcodeScanner from '../components/BarcodeScanner'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
 import { ShoppingBag, Save, Plus, X, Trash2 } from 'lucide-react'
@@ -426,6 +427,32 @@ export default function OnlineOrders() {
         {/* Cart builder */}
         <div className="border-t border-vault-border pt-4">
           <h3 className="font-display text-lg font-semibold text-white mb-3">Add Products to Cart</h3>
+
+          {/* Scan a UPC to auto-pick the product. Match pool is restricted
+              to what's in stock at the SOURCE location — same UX as
+              MovedInventory. Scanning something not at the source surfaces
+              a clear "not in stock here" toast instead of silently failing.
+              Unknown barcode → BarcodeScanner pops its associate-modal so
+              the user can teach the system what SKU the code maps to,
+              same way Manual / Add Product does. */}
+          {form.source_location_id && inventory.length > 0 && (
+            <div className="mb-4">
+              <BarcodeScanner
+                products={inventory.map(inv => inv.product).filter(Boolean)}
+                onMatched={(p) => {
+                  const hit = inventory.find(inv => inv.product_id === p.id)
+                  if (!hit) {
+                    addToast(`${p.name} is not in stock at this room`, 'error')
+                    return
+                  }
+                  setForm(f => ({ ...f, product_id: hit.product_id, quantity: 1 }))
+                  addToast(`Selected: ${p.name} (${hit.quantity} available)`, 'success')
+                }}
+                addToast={addToast}
+                hint="Scan a UPC. Only products currently in stock at the SOURCE location will match."
+              />
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
             <div>

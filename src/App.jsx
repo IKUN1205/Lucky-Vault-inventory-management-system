@@ -22,6 +22,7 @@ import Reports from './pages/Reports'
 import StreamCounts from './pages/StreamCounts'
 import PlatformSales from './pages/PlatformSales'
 import ProductMapping from './pages/ProductMapping'
+import ProductBarcodes from './pages/ProductBarcodes'
 import UserManagement from './pages/UserManagement'
 import Turnover from './pages/Turnover'
 import ExecutiveReport from './pages/ExecutiveReport'
@@ -140,6 +141,9 @@ function AppRoutes() {
       } />
       <Route path="/product-mapping" element={
         <ProtectedRoute path="/product-mapping"><Layout><ProductMapping /></Layout></ProtectedRoute>
+      } />
+      <Route path="/product-barcodes" element={
+        <ProtectedRoute path="/product-barcodes"><Layout><ProductBarcodes /></Layout></ProtectedRoute>
       } />
       <Route path="/users" element={
         <ProtectedRoute path="/users"><Layout><UserManagement /></Layout></ProtectedRoute>

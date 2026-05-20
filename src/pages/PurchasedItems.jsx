@@ -5,6 +5,7 @@ import {
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
+import BarcodeScanner from '../components/BarcodeScanner'
 import { ShoppingCart, Plus, Save, X, Trash2, HelpCircle, ChevronDown, ChevronUp } from 'lucide-react'
 
 // Helper to extract Launch Name from full product name
@@ -119,9 +120,32 @@ export default function PurchasedItems() {
   }
 
   const updateLineItem = (id, field, value) => {
-    setLineItems(lineItems.map(item => 
+    setLineItems(lineItems.map(item =>
       item.id === id ? { ...item, [field]: value } : item
     ))
+  }
+
+  // Called by BarcodeScanner when a UPC matches a known SKU. Fills the
+  // first line item that doesn't yet have a product picked; if every line
+  // already has one, appends a new line pre-filled with this product. This
+  // means "scan repeatedly" works for logging multi-SKU purchases without
+  // clicking "+ Add Item" between each scan.
+  const handleScannedProduct = (product) => {
+    if (!product?.id) return
+    const emptyIdx = lineItems.findIndex(i => !i.product_id)
+    if (emptyIdx >= 0) {
+      setLineItems(prev => prev.map((item, idx) =>
+        idx === emptyIdx ? { ...item, product_id: product.id } : item
+      ))
+      addToast(`Filled Item ${emptyIdx + 1}: ${product.name}`, 'success')
+    } else {
+      const newId = Math.max(...lineItems.map(i => i.id), 0) + 1
+      setLineItems(prev => [
+        ...prev,
+        { id: newId, product_id: product.id, quantity: 1, cost: '', notes: '' },
+      ])
+      addToast(`Added new item: ${product.name}`, 'success')
+    }
   }
 
   const handleAddVendor = async () => {
@@ -495,6 +519,22 @@ export default function PurchasedItems() {
           </div>
 
           <p className="text-xs text-gray-500 mb-3">Product format: Brand | Launch Name | Product Type | Language</p>
+
+          {/* Scan a UPC to autofill the next empty line item. Pool is all
+              sealed/pack products (you may be buying anything). Unknown
+              barcode → BarcodeScanner pops its associate-modal so you
+              teach the system what SKU this code is — useful when logging
+              a first-time purchase of a brand-new product. */}
+          {products.length > 0 && (
+            <div className="mb-4">
+              <BarcodeScanner
+                products={products}
+                onMatched={handleScannedProduct}
+                addToast={addToast}
+                hint="Scan a sealed box. Matched SKU fills the next empty line below; new barcodes can be associated on the spot."
+              />
+            </div>
+          )}
 
           {/* Line Items */}
           <div className="space-y-3">

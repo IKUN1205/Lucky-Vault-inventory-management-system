@@ -110,6 +110,7 @@ const navSections = [
       { path: '/high-value', label: 'High Value', icon: Star },
       { path: '/expenses', label: 'Business Expenses', icon: Receipt },
       { path: '/audit', label: 'Sales Audit', icon: ShieldCheck },
+      { path: '/product-barcodes', label: 'Product Barcodes', icon: ScanLine },
       { path: '/users', label: 'Team Management', icon: Users },
     ]
   },

@@ -3,7 +3,7 @@ import { createProduct } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
-import { Plus, Save, Trash2 } from 'lucide-react'
+import { Plus, Save, Trash2, ScanLine } from 'lucide-react'
 
 // Product Type options matching sheet nomenclature
 const PRODUCT_TYPES = [
@@ -370,23 +370,39 @@ export default function AddProduct() {
             <p className="text-xs text-gray-500 mt-1">The set/release name (without product type)</p>
           </div>
 
-          {/* Row 2b: Barcode (optional) — printed UPC on the box. Lets Intake /
-              Manual / Move pages auto-find this SKU when staff scans it.
-              Empty is fine; can be added later via Add Product or via the
-              "unknown barcode" prompt on any scan page. */}
+          {/* Row 2b: Barcode (optional) — printed UPC on the box. Lets the
+              scanner gun auto-find this SKU on Intake / Manual / Move /
+              Online Orders / Purchase Items. Empty is fine; can be added
+              later via the dedicated Product Barcodes admin page or via
+              the "unknown barcode" prompt on any scan page.
+              Visually wrapped in the same bg-vault-darker/40 + ScanLine
+              icon styling as BarcodeScanner uses elsewhere, so staff
+              recognise "this is a scan field" at a glance even though
+              there's no lookup logic here (we're creating the SKU, not
+              looking one up). */}
           <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-300 mb-2">Barcode / UPC <span className="text-gray-500 font-normal">(optional)</span></label>
-            <input
-              type="text"
-              name="barcode"
-              value={form.barcode}
-              onChange={handleChange}
-              placeholder="Scan or type the UPC printed on the box (digits)"
-              inputMode="numeric"
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <p className="text-xs text-gray-500 mt-1">Used by the scanner gun on Intake / Manual / Move pages to auto-select this SKU.</p>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Barcode / UPC <span className="text-gray-500 font-normal">(optional)</span>
+            </label>
+            <div className="bg-vault-darker/40 border border-vault-border rounded-lg p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <ScanLine size={18} className="text-vault-gold flex-shrink-0" />
+                <input
+                  type="text"
+                  name="barcode"
+                  value={form.barcode}
+                  onChange={handleChange}
+                  placeholder="Scan or type the UPC printed on the box (digits)"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="flex-1 px-3 py-2 bg-vault-darker border border-vault-border rounded-md text-white text-sm focus:outline-none focus:border-vault-gold"
+                />
+              </div>
+              <div className="text-[11px] text-gray-500 leading-snug">
+                Used by the scanner gun on Intake / Manual / Move / Online Orders / Purchase Items to auto-select this SKU. You can also map it later in Product Barcodes.
+              </div>
+            </div>
           </div>
 
           {/* Row 3: Product Type + Sealed/Unsealed */}
