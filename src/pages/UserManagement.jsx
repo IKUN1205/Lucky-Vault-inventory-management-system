@@ -9,30 +9,63 @@ import { Users, Plus, Edit2, Trash2, Save, X, UserPlus, Key, RefreshCw, Check } 
 // src/App.jsx and the sidebar items in src/components/Layout.jsx — every
 // route the user might want to grant access to should appear here so admins
 // can actually toggle it from Team Management.
+//
+// Ordering loosely follows the sidebar (Overview → Receive → Operations →
+// Sales → Reports → Cards → Admin) so the checkbox list reads top-to-bottom
+// the same way the sidebar does. Pages that aren't in the sidebar (legacy
+// or deep-link only) are grouped at the end with a clarifying tail in the
+// label so admins know what they're looking at.
 const ALL_PAGES = [
+  // Overview
   { path: '/', label: 'Dashboard' },
   { path: '/inventory', label: 'View Inventory' },
-  { path: '/move-inventory', label: 'Move Inventory' },
-  { path: '/online-orders', label: 'Online Orders' },
-  { path: '/manual-inventory', label: 'Manual Inventory' },
-  { path: '/stream-counts', label: 'Stream Counts' },
-  { path: '/platform-sales', label: 'Platform Sales' },
-  { path: '/storefront-sale', label: 'Storefront Sales' },
-  { path: '/add-product', label: 'Add Product' },
+
+  // Receive
   { path: '/purchased-items', label: 'Purchased Items' },
   { path: '/intake', label: 'Intake to Master' },
+  { path: '/manual-inventory', label: 'Manual Inventory' },
+  { path: '/storefront-import', label: 'Storefront Import' },
+  { path: '/add-product', label: 'Add Product' },
+
+  // Operations
+  { path: '/move-inventory', label: 'Move Inventory' },
   { path: '/break-box', label: 'Break Box' },
-  { path: '/expenses', label: 'Business Expenses' },
+
+  // Sales
+  { path: '/stream-counts', label: 'Stream Counts' },
+  { path: '/stream-sessions', label: 'Stream Session History' },
+  { path: '/platform-sales', label: 'Platform Sales' },
+  { path: '/online-orders', label: 'Online Orders' },
+  { path: '/storefront-sale', label: 'Storefront Sales' },
+
+  // Reports
   { path: '/reports', label: 'Reports' },
   { path: '/turnover', label: 'Turnover' },
   { path: '/executive-report', label: 'Executive Report' },
-  { path: '/audit', label: 'Sales Audit' },
   { path: '/audit-history', label: 'Audit History' },
-  { path: '/stream-sessions', label: 'Stream Session History' },
-  { path: '/storefront-import', label: 'Storefront Import' },
+
+  // Cards (unified Singles + Slabs section — sidebar entries)
+  { path: '/cards', label: 'Cards Inventory' },
+  { path: '/cards/scan', label: 'Cards Scan' },
+  { path: '/cards/log', label: 'Cards Activity Log' },
+
+  // Admin
+  { path: '/high-value', label: 'High Value' },
+  { path: '/expenses', label: 'Business Expenses' },
+  { path: '/audit', label: 'Sales Audit' },
   { path: '/product-mapping', label: 'Product Mapping' },
   { path: '/users', label: 'Team Management' },
-  { path: '/high-value', label: 'High Value (Separate)' },
+
+  // Legacy / deep-link only — kept so admins can grant access for users
+  // who hit these URLs directly. /singles + /slabs are pre-unification
+  // routes that still resolve. /grading is reachable from older flows.
+  { path: '/grading', label: 'Send to Grading (legacy)' },
+  { path: '/singles', label: 'Singles Inventory (legacy)' },
+  { path: '/singles/scan', label: 'Singles Scan (legacy)' },
+  { path: '/singles/log', label: 'Singles Activity Log (legacy)' },
+  { path: '/singles/add', label: 'Add Single (deep-link)' },
+  { path: '/singles/bulk-add', label: 'Bulk Add Singles (deep-link)' },
+  { path: '/slabs', label: 'Slabs Inventory (legacy)' },
 ]
 
 export default function UserManagement() {
