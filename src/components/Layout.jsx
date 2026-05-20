@@ -66,15 +66,17 @@ const navSections = [
     ]
   },
   {
-    // Add Product lives in Operations (not Receive) — creating a SKU is
-    // a catalog/operations action, not a vendor-receiving action. Move
-    // / Break Box also mutate the catalog state in some sense, so they
-    // sit together.
+    // Add Product + Product Barcodes live in Operations (not Receive /
+    // Admin respectively) — both are catalog-maintenance tools: Add
+    // Product creates a SKU, Product Barcodes attaches a UPC to one.
+    // Pairing them here lets staff "add then label" in one trip without
+    // jumping sections.
     title: 'Operations',
     items: [
       { path: '/move-inventory', label: 'Move Inventory', icon: ArrowRightLeft },
       { path: '/break-box', label: 'Break Box', icon: Box },
       { path: '/add-product', label: 'Add Product', icon: Plus },
+      { path: '/product-barcodes', label: 'Product Barcodes', icon: ScanLine },
     ]
   },
   {
@@ -119,7 +121,6 @@ const navSections = [
       { path: '/high-value', label: 'High Value', icon: Star },
       { path: '/expenses', label: 'Business Expenses', icon: Receipt },
       { path: '/audit', label: 'Sales Audit', icon: ShieldCheck },
-      { path: '/product-barcodes', label: 'Product Barcodes', icon: ScanLine },
       { path: '/users', label: 'Team Management', icon: Users },
     ]
   },

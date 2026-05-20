@@ -37,6 +37,7 @@ const PAGE_SECTIONS = [
     { path: '/move-inventory', label: 'Move Inventory' },
     { path: '/break-box', label: 'Break Box' },
     { path: '/add-product', label: 'Add Product' },
+    { path: '/product-barcodes', label: 'Product Barcodes' },
   ]},
   { title: 'Sales', items: [
     { path: '/stream-counts', label: 'Stream Counts' },
@@ -62,7 +63,6 @@ const PAGE_SECTIONS = [
     { path: '/expenses', label: 'Business Expenses' },
     { path: '/audit', label: 'Sales Audit' },
     { path: '/product-mapping', label: 'Product Mapping' },
-    { path: '/product-barcodes', label: 'Product Barcodes' },
     { path: '/users', label: 'Team Management' },
   ]},
   // Legacy / deep-link only — kept so admins can grant access for users
