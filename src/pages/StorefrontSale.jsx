@@ -57,6 +57,14 @@ export default function StorefrontSale() {
 
   const [paymentMethods, setPaymentMethods] = useState([])
   const [paymentMethodId, setPaymentMethodId] = useState('')
+  // Split-payment state — when enabled, two methods + two amounts.
+  // Default amount1 = "(due − amount2)" computed on the fly so the
+  // cashier only has to type one number. Disabled automatically when
+  // the transaction direction is "we pay customer" (Buy or trade w/
+  // negative net cash) since the user-selected scope is sale + trade-w/-positive-net only.
+  const [splitPayment, setSplitPayment] = useState(false)
+  const [paymentMethodId2, setPaymentMethodId2] = useState('')
+  const [splitAmount2, setSplitAmount2] = useState('')   // string so input stays controlled
   const [saleDate, setSaleDate] = useState(today())
   const [scanValue, setScanValue] = useState('')
   const [scanning, setScanning] = useState(false)
@@ -132,6 +140,37 @@ export default function StorefrontSale() {
     transactionType === 'buy'   ? -cartGross
     : transactionType === 'trade' ? (cartGross - tradeInNum)
     :                              cartGross
+
+  // Split-payment is only meaningful when CUSTOMER pays US (sale, or trade
+  // with positive net cash). When direction is "we pay customer" (buy or
+  // trade w/ negative net) we keep the single-method dropdown — the user
+  // explicitly scoped split out of those cases.
+  const customerPaysIn =
+    transactionType === 'sale' ||
+    (transactionType === 'trade' && netCash > 0)
+  const splitEligible = customerPaysIn && cartGross > 0
+
+  // Amount due from customer (positive). For trades with positive net,
+  // that's the net cash; for sale, the full gross.
+  const amountDueFromCustomer = transactionType === 'trade' ? Math.max(0, netCash) : cartGross
+
+  const amount2Num = Number(splitAmount2) || 0
+  const amount1Num = Math.max(0, +(amountDueFromCustomer - amount2Num).toFixed(2))
+  const splitSum = amount1Num + amount2Num
+  const splitMismatch = splitPayment && splitEligible
+    ? Math.abs(splitSum - amountDueFromCustomer) > 0.01
+    : false
+  const splitMethodsClash = splitPayment && splitEligible && paymentMethodId && paymentMethodId2 && paymentMethodId === paymentMethodId2
+
+  // When the transaction direction flips away from "customer pays in",
+  // collapse the split UI so the next checkout starts clean.
+  useEffect(() => {
+    if (!splitEligible && splitPayment) {
+      setSplitPayment(false)
+      setPaymentMethodId2('')
+      setSplitAmount2('')
+    }
+  }, [splitEligible, splitPayment])
 
   // ---------- cart line builders (unchanged from v1) ----------
 
@@ -336,6 +375,15 @@ export default function StorefrontSale() {
     if (cart.length === 0) return 'Cart is empty'
     if (!paymentMethodId) return 'Pick a payment method'
     if (!saleDate) return 'Pick a date'
+    if (splitPayment && splitEligible) {
+      if (!paymentMethodId2) return 'Pick the second payment method (or turn off Split payment)'
+      if (paymentMethodId === paymentMethodId2) return 'Split payments must use two different methods'
+      if (amount2Num <= 0) return 'Second payment amount must be greater than 0'
+      if (amount1Num <= 0) return 'First payment amount must be greater than 0'
+      if (Math.abs(splitSum - amountDueFromCustomer) > 0.01) {
+        return `Payment split ($${splitSum.toFixed(2)}) doesn't match amount due ($${amountDueFromCustomer.toFixed(2)})`
+      }
+    }
     for (const line of cart) {
       const price = Number(line.price)
       if (line.price === '' || line.price == null || isNaN(price) || price < 0) {
@@ -370,10 +418,22 @@ export default function StorefrontSale() {
     const validationErr = validateCart()
     if (validationErr) { addToast(validationErr, 'error'); return }
     setSubmitting(true)
+    // Build the payments array. Single-method: [{ method, amount: due }].
+     // Split: [{ method1, amount1 }, { method2, amount2 }].
+    const submittedPayments = (() => {
+      if (splitPayment && splitEligible) {
+        return [
+          { payment_method_id: paymentMethodId,  amount: amount1Num },
+          { payment_method_id: paymentMethodId2, amount: amount2Num },
+        ]
+      }
+      return [{ payment_method_id: paymentMethodId, amount: Math.abs(netCash) }]
+    })()
     try {
       const result = await submitStorefrontTransaction({
         cart,
         paymentMethodId,
+        payments: submittedPayments,
         cashierId: user?.id || null,
         saleDate,
         transactionType,
@@ -429,7 +489,15 @@ export default function StorefrontSale() {
             }
           })
           const gross = lineItems.reduce((s, it) => s + (it.price * it.quantity), 0)
+          // For Lark, pass either the single method name OR a split[] so
+          // the message can render "Cash $30 + Store Credit $60" naturally.
           const paymentName = paymentMethods.find(p => p.id === paymentMethodId)?.name || 'Unknown'
+          const splitForLark = (splitPayment && splitEligible && paymentMethodId2)
+            ? submittedPayments.map(p => ({
+                method: paymentMethods.find(m => m.id === p.payment_method_id)?.name || 'Unknown',
+                amount: p.amount,
+              }))
+            : null
           fetch('/api/lark-notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -438,6 +506,7 @@ export default function StorefrontSale() {
               transaction_id,
               transaction_type: transactionType,
               payment_method: paymentName,
+              payment_split: splitForLark,
               date: saleDate,
               items: lineItems,
               total: gross,
@@ -451,8 +520,13 @@ export default function StorefrontSale() {
         }
         // Refresh today's summary widget so the cashier sees the update.
         loadSummary(saleDate)
-        // Reset trade-in input when the cart fully cleared
-        if (cart.length === ok.length) setTradeInValue('')
+        // Reset trade-in input + split-payment state when the cart fully cleared
+        if (cart.length === ok.length) {
+          setTradeInValue('')
+          setSplitPayment(false)
+          setPaymentMethodId2('')
+          setSplitAmount2('')
+        }
       }
 
       if (failed.length > 0) {
@@ -530,17 +604,95 @@ export default function StorefrontSale() {
             <label className="block text-sm font-medium text-gray-300 mb-2">
               <CreditCard size={14} className="inline mr-1" /> Payment Method <span className="text-red-400">*</span>
             </label>
-            <select
-              value={paymentMethodId}
-              onChange={(e) => setPaymentMethodId(e.target.value)}
-              disabled={submitting}
-              className={!paymentMethodId ? 'border-red-500/50' : ''}
-            >
-              <option value="">— pick —</option>
-              {paymentMethods.map(pm => (
-                <option key={pm.id} value={pm.id}>{pm.name}</option>
-              ))}
-            </select>
+            {!splitPayment ? (
+              <select
+                value={paymentMethodId}
+                onChange={(e) => setPaymentMethodId(e.target.value)}
+                disabled={submitting}
+                className={!paymentMethodId ? 'border-red-500/50' : ''}
+              >
+                <option value="">— pick —</option>
+                {paymentMethods.map(pm => (
+                  <option key={pm.id} value={pm.id}>{pm.name}</option>
+                ))}
+              </select>
+            ) : (
+              // Split-payment UI: two side-by-side rows. The first row's
+              // amount is auto-computed (due − second amount); cashier
+              // only types the second number. Visual cue if the methods
+              // collide or the math doesn't add up.
+              <div className="space-y-2">
+                <div className="grid grid-cols-5 gap-2 items-center">
+                  <select
+                    value={paymentMethodId}
+                    onChange={(e) => setPaymentMethodId(e.target.value)}
+                    disabled={submitting}
+                    className={`col-span-3 ${!paymentMethodId || splitMethodsClash ? 'border-red-500/50' : ''}`}
+                  >
+                    <option value="">— pick method 1 —</option>
+                    {paymentMethods.map(pm => (
+                      <option key={pm.id} value={pm.id}>{pm.name}</option>
+                    ))}
+                  </select>
+                  <div className="col-span-2 px-3 py-2 bg-vault-darker/50 border border-vault-border rounded-md text-right text-white text-sm font-mono">
+                    ${amount1Num.toFixed(2)}
+                  </div>
+                </div>
+                <div className="grid grid-cols-5 gap-2 items-center">
+                  <select
+                    value={paymentMethodId2}
+                    onChange={(e) => setPaymentMethodId2(e.target.value)}
+                    disabled={submitting}
+                    className={`col-span-3 ${!paymentMethodId2 || splitMethodsClash ? 'border-red-500/50' : ''}`}
+                  >
+                    <option value="">— pick method 2 —</option>
+                    {paymentMethods.map(pm => (
+                      <option key={pm.id} value={pm.id}>{pm.name}</option>
+                    ))}
+                  </select>
+                  <div className="col-span-2 relative">
+                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm">$</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={splitAmount2}
+                      onChange={(e) => setSplitAmount2(e.target.value)}
+                      disabled={submitting}
+                      placeholder="0.00"
+                      className="w-full pl-5 pr-2 py-2 text-right font-mono"
+                    />
+                  </div>
+                </div>
+                <div className={`text-xs ${splitMismatch || splitMethodsClash ? 'text-red-400' : 'text-gray-500'}`}>
+                  {splitMethodsClash
+                    ? 'Pick two different payment methods'
+                    : splitMismatch
+                      ? `Paid $${splitSum.toFixed(2)} / Due $${amountDueFromCustomer.toFixed(2)}`
+                      : `Paid $${splitSum.toFixed(2)} / Due $${amountDueFromCustomer.toFixed(2)} ✓`}
+                </div>
+              </div>
+            )}
+            {/* Split toggle — only available when customer pays us. Hidden
+                for Buy and Trade-where-we-pay-customer (no money coming in). */}
+            {splitEligible && (
+              <label className="flex items-center gap-2 mt-2 text-xs text-gray-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={splitPayment}
+                  onChange={(e) => {
+                    setSplitPayment(e.target.checked)
+                    if (!e.target.checked) {
+                      setPaymentMethodId2('')
+                      setSplitAmount2('')
+                    }
+                  }}
+                  disabled={submitting}
+                  className="cursor-pointer"
+                />
+                Split payment (e.g. half cash + half store credit)
+              </label>
+            )}
           </div>
         </div>
       </div>
@@ -769,7 +921,12 @@ export default function StorefrontSale() {
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={submitting || cart.length === 0 || !paymentMethodId}
+          disabled={
+            submitting
+            || cart.length === 0
+            || !paymentMethodId
+            || (splitPayment && splitEligible && (splitMismatch || splitMethodsClash || !paymentMethodId2))
+          }
           className="btn btn-primary px-6 py-3 text-base"
         >
           {submitting
@@ -1115,6 +1272,18 @@ function TransactionDetail({ txn }) {
       })
     : null
 
+  // Payment label: when we have split data with 2+ rows, render
+  // "Cash $30 + Store Credit $60". When we have 1 split row or no split
+  // data, render the legacy single method name.
+  const paymentLabel = (() => {
+    if (Array.isArray(txn.payments) && txn.payments.length >= 2) {
+      return txn.payments
+        .map(p => `${p.method_name} $${Number(p.amount).toFixed(2)}`)
+        .join(' + ')
+    }
+    return txn.payment_method
+  })()
+
   return (
     <div className="bg-vault-darker/40 border border-vault-border rounded px-3 py-2 text-sm">
       <div className="flex items-center justify-between gap-3 mb-1.5">
@@ -1123,7 +1292,7 @@ function TransactionDetail({ txn }) {
           <span className={`font-semibold ${headerMeta.color}`}>{headerMeta.label}</span>
           {timeStr && <span className="text-xs text-gray-500">{timeStr}</span>}
           <span className="text-xs text-gray-500">·</span>
-          <span className="text-xs text-gray-400 truncate">{txn.payment_method}</span>
+          <span className="text-xs text-gray-400 truncate">{paymentLabel}</span>
         </div>
         <div className="flex items-baseline gap-1.5 flex-shrink-0">
           <span className={`font-semibold ${headerMeta.netColor}`}>{headerMeta.money}</span>

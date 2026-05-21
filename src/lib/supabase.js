@@ -2310,7 +2310,8 @@ const _buyManualLine = async ({
 // transaction tells the full story).
 export const submitStorefrontTransaction = async ({
   cart,             // [{ kind, productId|slabId|singleId, scanned_code, quantity, price, ...meta }, ...]
-  paymentMethodId,
+  paymentMethodId,  // legacy single-method input (back-compat). Either this OR `payments`.
+  payments,         // NEW: [{ payment_method_id, amount }] for split payments. 1 or 2 entries.
   cashierId,
   saleDate,         // 'YYYY-MM-DD'
   transactionType = 'sale',
@@ -2319,6 +2320,33 @@ export const submitStorefrontTransaction = async ({
 }) => {
   if (!Array.isArray(cart) || cart.length === 0) {
     throw new Error('Cart is empty')
+  }
+
+  // Normalize payments. Two valid input shapes:
+  //   A) Legacy: paymentMethodId is set, payments is empty → single-method.
+  //   B) New:    payments = [{ payment_method_id, amount }, ...] with 1 or 2 rows.
+  // Internally we always work with an array of {method_id, amount} so the
+  // line writers + ledger insert + Lark builder all use one shape.
+  let normalizedPayments
+  if (Array.isArray(payments) && payments.length > 0) {
+    normalizedPayments = payments
+      .filter(p => p && p.payment_method_id)
+      .map(p => ({
+        payment_method_id: p.payment_method_id,
+        amount: Number(p.amount) || 0,
+      }))
+      .filter(p => p.amount > 0)
+    if (normalizedPayments.length === 0) {
+      throw new Error('No valid payment entries (each needs method + amount > 0)')
+    }
+    if (normalizedPayments.length > 2) {
+      throw new Error('At most 2 payment methods per transaction')
+    }
+  } else if (paymentMethodId) {
+    normalizedPayments = [{ payment_method_id: paymentMethodId, amount: null }]
+    // amount=null → "use the transaction's full net cash" (filled below after we know netCash)
+  } else {
+    normalizedPayments = []   // no payment recorded — only valid for "we pay customer" flows
   }
 
   // Compute gross + net cash up-front so each line write gets the same value.
@@ -2347,6 +2375,44 @@ export const submitStorefrontTransaction = async ({
     netCash,
   }
 
+  // Now we know netCash → fill in the legacy single-method amount (it
+  // covers the full transaction). For split payments validate the sum
+  // matches the amount the customer is paying.
+  //
+  // "Amount paid by customer" = absolute(netCash) when money flows IN
+  // (sale, or trade w/ positive net). For "we pay customer" flows the
+  // split UI is disabled upstream, so we don't have to validate sums.
+  const customerPaysIn =
+    transactionType === 'sale' ||
+    (transactionType === 'trade' && netCash > 0)
+  if (normalizedPayments.length === 1 && normalizedPayments[0].amount == null) {
+    // Legacy single-method path — amount is the absolute value of netCash.
+    normalizedPayments[0].amount = Math.abs(netCash)
+  }
+  if (normalizedPayments.length === 2) {
+    if (!customerPaysIn) {
+      throw new Error('Split payment only supported for sale or trade-with-positive-net')
+    }
+    const sum = normalizedPayments.reduce((s, p) => s + p.amount, 0)
+    // Tolerate $0.01 rounding noise from floating-point math.
+    if (Math.abs(sum - Math.abs(netCash)) > 0.01) {
+      throw new Error(`Payment split ($${sum.toFixed(2)}) doesn't match amount due ($${Math.abs(netCash).toFixed(2)})`)
+    }
+    if (normalizedPayments[0].payment_method_id === normalizedPayments[1].payment_method_id) {
+      throw new Error('Two payment entries must use different methods')
+    }
+  }
+
+  // Pick the "primary" payment method to stamp on the legacy
+  // payment_method_id columns in storefront_sales / singles / slabs.
+  // For single-method this is just that method. For split it's the
+  // method with the larger amount (so existing reports that only read
+  // the single-method column attribute the txn to its dominant method).
+  // The authoritative split lives in storefront_payments.
+  const primaryPaymentMethodId = normalizedPayments.length > 0
+    ? [...normalizedPayments].sort((a, b) => b.amount - a.amount)[0].payment_method_id
+    : null
+
   // Resolve key location IDs once
   const { data: locs, error: locsErr } = await supabase
     .from('locations')
@@ -2371,6 +2437,12 @@ export const submitStorefrontTransaction = async ({
   // direction and, for slab/single, skip touching the cards inventory).
   const isBuy = transactionType === 'buy'
 
+  // Existing line writers take a single `paymentMethodId`. We pass the
+  // "primary" (largest-amount) method so legacy reports that read the
+  // per-row payment_method_id still see a sensible attribution. The full
+  // split is recorded after the loop in storefront_payments.
+  const rowPaymentMethodId = primaryPaymentMethodId
+
   for (const line of cart) {
     try {
       if (line.kind === 'sealed') {
@@ -2379,7 +2451,7 @@ export const submitStorefrontTransaction = async ({
               product: line.product,
               quantity: Number(line.quantity) || 1,
               unitPrice: line.price,
-              paymentMethodId, cashierId, transactionId,
+              paymentMethodId: rowPaymentMethodId, cashierId, transactionId,
               locationIds: { frontStore: frontStoreId, master: masterId },
               saleDate,
               txMeta,
@@ -2388,7 +2460,7 @@ export const submitStorefrontTransaction = async ({
               product: line.product,
               quantity: Number(line.quantity) || 1,
               salePrice: line.price,
-              paymentMethodId, cashierId, transactionId,
+              paymentMethodId: rowPaymentMethodId, cashierId, transactionId,
               sourceCandidates: line.inventory || [],
               locationIds: { frontStore: frontStoreId, master: masterId },
               saleDate,
@@ -2400,7 +2472,7 @@ export const submitStorefrontTransaction = async ({
         const result = await _sellSlabLine({
           slab: line.slab,
           salePrice: line.price,
-          paymentMethodId, cashierId, transactionId,
+          paymentMethodId: rowPaymentMethodId, cashierId, transactionId,
           saleDate,
           txMeta,
         })
@@ -2411,7 +2483,7 @@ export const submitStorefrontTransaction = async ({
           single: line.single,
           quantity: Number(line.quantity) || 1,
           salePrice: line.price,
-          paymentMethodId, cashierId, transactionId,
+          paymentMethodId: rowPaymentMethodId, cashierId, transactionId,
           saleDate,
           txMeta,
         })
@@ -2429,7 +2501,7 @@ export const submitStorefrontTransaction = async ({
           description: line.description || '',
           quantity: Number(line.quantity) || 1,
           unitPrice: line.price,
-          paymentMethodId, cashierId, transactionId,
+          paymentMethodId: rowPaymentMethodId, cashierId, transactionId,
           locationIds: { frontStore: frontStoreId },
           saleDate,
           txMeta,
@@ -2444,12 +2516,36 @@ export const submitStorefrontTransaction = async ({
     }
   }
 
+  // Write the payment-split ledger AFTER at least one line succeeded.
+  // We don't want orphan storefront_payments rows pointing at a txn
+  // where every line failed. Failures here are non-fatal — the txn
+  // itself is already on disk via the line writes; we just lose split
+  // attribution. Log loudly so the issue gets noticed.
+  if (ok.length > 0 && normalizedPayments.length > 0) {
+    try {
+      const ledgerRows = normalizedPayments.map(p => ({
+        transaction_id: transactionId,
+        payment_method_id: p.payment_method_id,
+        amount_usd: p.amount,
+      }))
+      const { error: payErr } = await supabase
+        .from('storefront_payments')
+        .insert(ledgerRows)
+      if (payErr) {
+        console.error('[submitStorefrontTransaction] storefront_payments insert failed:', payErr)
+      }
+    } catch (err) {
+      console.error('[submitStorefrontTransaction] storefront_payments insert threw:', err)
+    }
+  }
+
   return {
     transaction_id: transactionId,
     transaction_type: txMeta.transactionType,
     gross_value: grossValue,
     trade_in_value: txMeta.tradeInValue,
     net_cash: txMeta.netCash,
+    payments: normalizedPayments,
     ok, failed,
   }
 }
@@ -2471,7 +2567,7 @@ export const fetchStorefrontDailySummary = async (date) => {
   // Pull header-relevant fields from each table for this date.
   // singles / slabs are filtered by sale_date + transaction_id IS NOT NULL
   // so we don't pick up Cards-Scan-Sell rows (those have null transaction_id).
-  const [salesRes, singlesRes, slabsRes, pmRes] = await Promise.all([
+  const [salesRes, singlesRes, slabsRes, pmRes, paymentsRes] = await Promise.all([
     supabase
       .from('storefront_sales')
       .select(`
@@ -2507,11 +2603,25 @@ export const fetchStorefrontDailySummary = async (date) => {
     supabase
       .from('payment_methods')
       .select('id, name'),
+    // storefront_payments holds the per-transaction split. Bounded by
+    // created_at on the same day to keep the fetch small. We don't
+    // throw if this fails (table may not exist yet during rollout) —
+    // we fall back to legacy single-method attribution.
+    supabase
+      .from('storefront_payments')
+      .select('transaction_id, payment_method_id, amount_usd')
+      .gte('created_at', `${dayStr}T00:00:00`)
+      .lt('created_at', `${dayStr}T23:59:59.999`),
   ])
   if (salesRes.error) throw salesRes.error
   if (singlesRes.error) throw singlesRes.error
   if (slabsRes.error) throw slabsRes.error
   if (pmRes.error) throw pmRes.error
+  // paymentsRes intentionally non-throwing — see the .from('storefront_payments')
+  // call above. Log it if it errored, then move on with no split data.
+  if (paymentsRes.error) {
+    console.warn('[fetchStorefrontDailySummary] storefront_payments fetch failed:', paymentsRes.error)
+  }
 
   // Dedupe by transaction_id. We track first-seen header values, AND
   // accumulate gross_value across all rows of the same transaction (each
@@ -2610,12 +2720,28 @@ export const fetchStorefrontDailySummary = async (date) => {
   }
 
   const pmById = new Map((pmRes.data || []).map(p => [p.id, p.name]))
-  // Attach payment-method name to each transaction so the details panel
-  // doesn't have to do its own lookup, and sort most-recent first.
+
+  // Group split-payment rows by transaction so we can attach the
+  // per-transaction breakdown without an N+1 lookup later.
+  const splitByTxn = new Map()
+  for (const p of paymentsRes?.data || []) {
+    if (!p.transaction_id) continue
+    if (!splitByTxn.has(p.transaction_id)) splitByTxn.set(p.transaction_id, [])
+    splitByTxn.get(p.transaction_id).push({
+      method_id: p.payment_method_id,
+      method_name: pmById.get(p.payment_method_id) || 'Unknown',
+      amount: Number(p.amount_usd) || 0,
+    })
+  }
+
+  // Attach payment-method name + split breakdown to each transaction so
+  // the details panel doesn't have to do its own lookup, and sort
+  // most-recent first.
   const transactions = Array.from(txMap.values())
     .map(t => ({
       ...t,
       payment_method: pmById.get(t.payment_method_id) || 'Unknown',
+      payments: splitByTxn.get(t.transaction_id) || null,   // null = no split data (legacy/missing)
     }))
     .sort((a, b) => {
       // Sort by timestamp descending; nulls last.
@@ -2642,10 +2768,29 @@ export const fetchStorefrontDailySummary = async (date) => {
     } else {
       saleCount++; saleNetCash += cash
     }
-    const pmName = pmById.get(t.payment_method_id) || 'Unknown'
-    if (!byPayment[pmName]) byPayment[pmName] = { count: 0, total_net_cash: 0 }
-    byPayment[pmName].count++
-    byPayment[pmName].total_net_cash += cash
+
+    // Per-payment-method attribution. When we have ledger rows, distribute
+    // by amount with the sign of net_cash so direction is preserved. When
+    // we don't, fall back to the legacy single-method attribution where
+    // the whole net_cash hits one method.
+    if (t.payments && t.payments.length > 0) {
+      const sign = cash >= 0 ? 1 : -1
+      for (const p of t.payments) {
+        const name = p.method_name
+        if (!byPayment[name]) byPayment[name] = { count: 0, total_net_cash: 0 }
+        byPayment[name].total_net_cash += sign * p.amount
+      }
+      // For "count" we credit the dominant method only — counting both
+      // would inflate every split transaction into "2 transactions".
+      const dom = [...t.payments].sort((a, b) => b.amount - a.amount)[0]
+      if (!byPayment[dom.method_name]) byPayment[dom.method_name] = { count: 0, total_net_cash: 0 }
+      byPayment[dom.method_name].count++
+    } else {
+      const pmName = pmById.get(t.payment_method_id) || 'Unknown'
+      if (!byPayment[pmName]) byPayment[pmName] = { count: 0, total_net_cash: 0 }
+      byPayment[pmName].count++
+      byPayment[pmName].total_net_cash += cash
+    }
   }
 
   return {

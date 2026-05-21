@@ -772,6 +772,7 @@ function buildMessage(body) {
     // "Items: X units · value $Y" footer when the bullets already say it.
     const {
       payment_method,
+      payment_split,               // optional [{ method, amount }] — overrides payment_method when set
       items = [],
       total,
       transaction_type = 'sale',   // 'sale' | 'trade' | 'buy'
@@ -786,10 +787,22 @@ function buildMessage(body) {
       slab_manual: '💎', single_manual: '🎴',
     }
 
+    // Format payment method(s) for the header. Single = "Cash". Split =
+    // "Cash $30 + Store Credit $60" so the reader sees both amounts.
+    const formatPaymentLabel = () => {
+      if (Array.isArray(payment_split) && payment_split.length > 0) {
+        return payment_split
+          .map(p => `${p.method || 'Unknown'} $${(Number(p.amount) || 0).toFixed(2)}`)
+          .join(' + ')
+      }
+      return payment_method || ''
+    }
+    const paymentLabel = formatPaymentLabel()
+
     // Headline number depends on the transaction type so the reader
     // doesn't have to compute it. Sale → cart total (cash in). Trade →
     // signed net (could be either direction). Buy → cash out.
-    const pm = payment_method ? ` · ${payment_method}` : ''
+    const pm = paymentLabel ? ` · ${paymentLabel}` : ''
     let headline
     if (transaction_type === 'trade') {
       const nc = Number(net_cash) || 0
