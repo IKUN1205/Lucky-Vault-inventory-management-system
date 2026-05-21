@@ -1904,6 +1904,13 @@ export const fetchJapanToUSShipments = async ({ limit = 50, includeAll = false }
 //     'sold', sale fields filled). The clone keeps the same set_id /
 //     cost basis / etc. so per-card analytics still work.
 
+// Location names this checkout cares about. Resolved once per submit via a
+// .in() query on `locations` so a rename in the DB stops us at the door
+// instead of silently misrouting inventory. (These were accidentally
+// dropped during a merge with the Japan-system branch — restored here.)
+const FRONT_STORE_NAME = 'Front Store'
+const MASTER_NAME = 'Master Inventory'
+
 // ----- code lookup -----
 
 // Identify what kind of inventory a scanned code matches. UPC first (most
