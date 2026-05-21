@@ -11,7 +11,7 @@ import Instructions from '../components/Instructions'
 import {
   ScanLine, X, Trash2, Loader2, Package, Diamond, Layers,
   AlertTriangle, CreditCard, Save, ShoppingCart, TrendingUp, RefreshCw,
-  ChevronDown, ChevronUp, ArrowLeftRight, Handshake,
+  ChevronDown, ChevronUp, ArrowLeftRight, Coins,
 } from 'lucide-react'
 
 // ============================================================================
@@ -1086,7 +1086,7 @@ function TransactionDetail({ txn }) {
     if (txn.type === 'buy') {
       const nc = Number(txn.net_cash || 0)
       return {
-        Icon: Handshake,
+        Icon: Coins,
         label: 'Buy',
         color: 'text-orange-300',
         money: `${fmtUsd(nc)}`,
