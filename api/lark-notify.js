@@ -28,6 +28,9 @@
 //                                            (target for `purchased` + `receive`)
 //   LARK_WEBHOOK_BACKEND_CORE              → Backend Core group
 //                                            (additional target for `receive`)
+//   LARK_WEBHOOK_STOREFRONT                → Storefront Chats group
+//                                            (target for `storefront_transaction`
+//                                             — sale / trade / buy)
 // Either env var falls back to LARK_WEBHOOK_URL if unset, so messages are
 // never silently dropped. Duplicate targets are deduped before dispatch.
 
@@ -110,6 +113,16 @@ export default async function handler(req, res) {
   if (type === 'single_sold')     return handleSinglesEvent(body, res, buildSingleSold)
   if (type === 'bulk_sold')       return handleSinglesEvent(body, res, buildBulkSold)
   if (type === 'single_deleted')  return handleSinglesEvent(body, res, buildSingleDeleted)
+
+  // ----- Storefront transactions ---------------------------------------
+  // Sale / Trade / Buy notifications go to the Storefront Chats group via
+  // LARK_WEBHOOK_STOREFRONT. Falls back to LARK_WEBHOOK_URL if the storefront
+  // webhook isn't configured yet (so messages aren't silently dropped during
+  // rollout). The fallback is just a safety net — once the env var is set,
+  // every storefront txn lands directly in the storefront group.
+  if (type === 'storefront_transaction') {
+    return handleStorefrontTransaction(body, res)
+  }
 
   // Per-stream reconciliation should land in the room's own group, not the
   // main "all activity" channel. Fall back to main URL if no room webhook
@@ -272,6 +285,46 @@ async function handleStreamCountUndone(body, res) {
 // ---- purchased: single-target dispatch (Acquisitions Squad) ----
 //
 // "🛍️ New Purchase Logged" — fires when a user submits Purchased Items.
+// ---- storefront_transaction: route to Storefront Chats group ----
+//
+// Sale / Trade / Buy all land here. Prefers LARK_WEBHOOK_STOREFRONT and
+// falls back to LARK_WEBHOOK_URL if not configured. The body shape is
+// identical to what the previous default-path handler expected — just the
+// destination is different.
+async function handleStorefrontTransaction(body, res) {
+  let text
+  try { text = buildMessage(body) }
+  catch (err) {
+    console.error('[lark-notify] storefront_transaction: bad payload:', err)
+    return res.status(400).json({ error: err.message || 'Invalid payload' })
+  }
+  const storefrontUrl = process.env.LARK_WEBHOOK_STOREFRONT
+  const url = storefrontUrl || process.env.LARK_WEBHOOK_URL
+  if (!url) {
+    console.error('[lark-notify] storefront_transaction: no webhook configured')
+    return res.status(500).json({ error: 'No webhook configured (LARK_WEBHOOK_STOREFRONT / LARK_WEBHOOK_URL)' })
+  }
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ msg_type: 'text', content: { text } }),
+    })
+    const txt = await r.text()
+    if (!r.ok) {
+      console.error('[lark-notify] storefront_transaction: Lark non-OK:', r.status, txt)
+      return res.status(502).json({ error: 'Lark webhook failed', status: r.status, details: txt })
+    }
+    return res.status(200).json({
+      ok: true, lark: txt,
+      target: storefrontUrl ? 'storefront' : 'main_fallback',
+    })
+  } catch (err) {
+    console.error('[lark-notify] storefront_transaction: send failed:', err)
+    return res.status(500).json({ error: 'Failed to call Lark webhook', message: String(err?.message || err) })
+  }
+}
+
 // Routed to LARK_WEBHOOK_ACQUISITIONS; falls back to LARK_WEBHOOK_URL if the
 // squad webhook isn't configured so messages aren't silently dropped during
 // rollout.

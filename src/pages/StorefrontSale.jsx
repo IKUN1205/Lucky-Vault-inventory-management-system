@@ -283,13 +283,14 @@ export default function StorefrontSale() {
     }
   }
 
-  // Open the manual-line modal (Buy mode only). The modal handles the
-  // form; on save it calls back with { kind, description, quantity, price }
-  // which we append as a slab_manual / single_manual cart line.
+  // Open the manual-line modal (Buy mode only). The modal handles the form;
+  // saveManualLine validates + appends a slab_manual / single_manual cart
+  // line. The `stayOpen` option lets the cashier rapid-fire several items
+  // in one customer visit without closing/reopening the modal each time.
   const openManualLine = (subKind /* 'slab' | 'single' */) => {
     setManualLineDraft({ subKind, description: '', quantity: 1, price: '' })
   }
-  const saveManualLine = () => {
+  const saveManualLine = ({ stayOpen = false } = {}) => {
     const draft = manualLineDraft
     if (!draft) return
     const desc = (draft.description || '').trim()
@@ -303,8 +304,14 @@ export default function StorefrontSale() {
       ...prev,
       { kind, key, description: desc, quantity: draft.subKind === 'slab' ? 1 : qty, price: String(price) },
     ])
-    setManualLineDraft(null)
     addToast(`Added: ${draft.subKind} — ${desc}`, 'success')
+    if (stayOpen) {
+      // Reset to a fresh blank entry of the same kind so the cashier can
+      // keep typing the next item without losing focus / context.
+      setManualLineDraft({ subKind: draft.subKind, description: '', quantity: 1, price: '' })
+    } else {
+      setManualLineDraft(null)
+    }
   }
 
   // ---------- cart editing ----------
@@ -776,7 +783,7 @@ export default function StorefrontSale() {
         <ManualLineModal
           draft={manualLineDraft}
           onChange={(patch) => setManualLineDraft(d => ({ ...d, ...patch }))}
-          onSave={saveManualLine}
+          onSave={(opts) => saveManualLine(opts)}
           onCancel={() => setManualLineDraft(null)}
         />
       )}
@@ -792,13 +799,16 @@ export default function StorefrontSale() {
 function ManualLineModal({ draft, onChange, onSave, onCancel }) {
   if (!draft) return null
   const isSlab = draft.subKind === 'slab'
+  // Enter (form submit) defaults to "Add & next" — bulk-friendly: type
+  // description → tab → price → Enter → form clears → type next item.
+  // Cashier clicks "Add to cart" explicitly when they're done.
   return (
     <div
       className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
       onClick={onCancel}
     >
       <form
-        onSubmit={(e) => { e.preventDefault(); onSave() }}
+        onSubmit={(e) => { e.preventDefault(); onSave({ stayOpen: true }) }}
         className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-md w-full p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -857,7 +867,7 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 mt-4">
+        <div className="flex justify-between items-center gap-2 mt-4">
           <button
             type="button"
             onClick={onCancel}
@@ -865,12 +875,23 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
           >
             Cancel
           </button>
-          <button
-            type="submit"
-            className="px-3 py-2 text-sm bg-vault-gold/20 border border-vault-gold/60 text-vault-gold hover:bg-vault-gold/30 rounded-lg"
-          >
-            Add to cart
-          </button>
+          <div className="flex gap-2">
+            {/* "Add & next" = form submit = Enter key. Bulk-friendly default. */}
+            <button
+              type="submit"
+              className="px-3 py-2 text-sm border border-vault-border text-gray-200 hover:bg-vault-darker rounded-lg"
+              title="Or press Enter"
+            >
+              Add &amp; next
+            </button>
+            <button
+              type="button"
+              onClick={() => onSave({ stayOpen: false })}
+              className="px-3 py-2 text-sm bg-vault-gold/20 border border-vault-gold/60 text-vault-gold hover:bg-vault-gold/30 rounded-lg"
+            >
+              Add &amp; close
+            </button>
+          </div>
         </div>
       </form>
     </div>
