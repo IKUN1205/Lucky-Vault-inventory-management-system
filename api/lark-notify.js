@@ -765,14 +765,18 @@ function buildMessage(body) {
   }
 
   if (type === 'storefront_transaction') {
-    // One Lark message per cart submit (NOT per line). Listed by category so
-    // the team can spot at a glance "boxes vs slabs vs singles sold today".
+    // One Lark message per cart submit (NOT per line). Kept tight —
+    // header with the headline money + payment method, then one bullet
+    // per item, then the timestamp. No internal transaction UUID (humans
+    // don't read it; debug via the page if needed) and no redundant
+    // "Items: X units · value $Y" footer when the bullets already say it.
     const {
-      transaction_id, payment_method, date,
-      items = [], total, total_units,
-      transaction_type = 'sale',   // 'sale' | 'trade'
-      trade_in_value,              // only for trade — what customer brought (USD)
-      net_cash,                    // signed; for sale = total, for trade = total - trade_in_value
+      payment_method,
+      items = [],
+      total,
+      transaction_type = 'sale',   // 'sale' | 'trade' | 'buy'
+      trade_in_value,              // only for trade — value of items customer brought (USD)
+      net_cash,                    // signed money flow
     } = body
     if (!Array.isArray(items) || items.length === 0) {
       throw new Error('storefront_transaction: missing items')
@@ -781,68 +785,57 @@ function buildMessage(body) {
       sealed: '📦', slab: '💎', single: '🎴',
       slab_manual: '💎', single_manual: '🎴',
     }
-    const KIND_LABEL = {
-      sealed: 'Sealed', slab: 'Slab', single: 'Single',
-      slab_manual: 'Slab (manual buy)', single_manual: 'Single (manual buy)',
-    }
 
-    // Title varies by type so the team can spot "we bought" vs "we sold"
-    // vs "we traded" at a glance in the Lark feed.
-    const headerEmoji =
-      transaction_type === 'trade' ? '🔄'
-      : transaction_type === 'buy' ? '🤝'
-      : '🛍️'
-    const headerText =
-      transaction_type === 'trade' ? 'Storefront Trade'
-      : transaction_type === 'buy' ? 'Storefront Buy'
-      : 'Storefront Sale'
-
-    const lines = []
-    lines.push(`${headerEmoji} ${headerText}`)
-    if (payment_method) lines.push(`Payment: ${payment_method}`)
-    if (date) lines.push(`Date: ${date}`)
-    lines.push('')
-
-    // Group by kind, render in fixed order so the message reads the same
-    // across transactions regardless of scan order. Manual buy-only kinds
-    // get their own groups so buyers vs scanned items are visually
-    // distinguishable in the Lark feed.
-    const orderedKinds = ['sealed', 'slab', 'single', 'slab_manual', 'single_manual']
-    const byKind = Object.fromEntries(orderedKinds.map(k => [k, []]))
-    for (const it of items) {
-      const k = byKind[it.kind] !== undefined ? it.kind : 'sealed'
-      byKind[k].push(it)
-    }
-    for (const k of orderedKinds) {
-      const group = byKind[k]
-      if (group.length === 0) continue
-      lines.push(`${KIND_ICON[k]} ${KIND_LABEL[k]} (${group.length})`)
-      for (const it of group) {
-        const sub = (Number(it.price) || 0) * (Number(it.quantity) || 1)
-        const qtyStr = (Number(it.quantity) || 1) > 1 ? ` × ${it.quantity}` : ''
-        const name = it.name || it.description || 'Unknown'
-        lines.push(`  • ${name}${qtyStr}  $${sub.toFixed(2)}`)
-      }
-      lines.push('')
-    }
-
-    lines.push(`Items: ${total_units ?? items.length} unit${total_units === 1 ? '' : 's'} · value $${(Number(total) || 0).toFixed(2)}`)
-
-    // Final money line varies by type so it's unambiguous in the feed.
+    // Headline number depends on the transaction type so the reader
+    // doesn't have to compute it. Sale → cart total (cash in). Trade →
+    // signed net (could be either direction). Buy → cash out.
+    const pm = payment_method ? ` · ${payment_method}` : ''
+    let headline
     if (transaction_type === 'trade') {
-      const ti = Number(trade_in_value) || 0
       const nc = Number(net_cash) || 0
-      lines.push(`Trade-in: $${ti.toFixed(2)} (value of items customer brought)`)
-      if (nc > 0)      lines.push(`💵 Net: customer paid us $${nc.toFixed(2)}`)
-      else if (nc < 0) lines.push(`💸 Net: we paid customer $${Math.abs(nc).toFixed(2)}`)
-      else             lines.push(`⚖️ Net: even trade`)
+      const sign = nc > 0 ? '+' : nc < 0 ? '-' : ''
+      const abs = Math.abs(nc).toFixed(2)
+      const direction =
+        nc > 0 ? `Net +$${abs} (customer paid us)`
+        : nc < 0 ? `Net -$${abs} (we paid customer)`
+        : `Even trade`
+      headline = `🔄 Trade · ${direction}${pm}`
     } else if (transaction_type === 'buy') {
       const nc = Number(net_cash) || 0
-      lines.push(`💸 We paid customer $${Math.abs(nc).toFixed(2)}`)
+      headline = `🤝 Buy · We paid $${Math.abs(nc).toFixed(2)}${pm}`
+    } else {
+      const t = Number(total) || 0
+      headline = `🛍️ Sale · $${t.toFixed(2)}${pm}`
     }
 
-    if (transaction_id) lines.push(`Txn: ${String(transaction_id).slice(0, 8)}…`)
-    lines.push(`Time: ${nowUtcStamp()}`)
+    const lines = [headline]
+
+    // One bullet per item — concise: "📦 Pokemon | Gem Vol.5 Booster Box ×160 — $5040.00"
+    // Group order stays stable across transactions regardless of scan order so
+    // the feed reads consistently.
+    const orderedKinds = ['sealed', 'slab', 'single', 'slab_manual', 'single_manual']
+    const sortedItems = [...items].sort((a, b) => {
+      const ai = orderedKinds.indexOf(a.kind)
+      const bi = orderedKinds.indexOf(b.kind)
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
+    })
+    for (const it of sortedItems) {
+      const icon = KIND_ICON[it.kind] || '•'
+      const qty = Number(it.quantity) || 1
+      const sub = (Number(it.price) || 0) * qty
+      const qtyStr = qty > 1 ? ` ×${qty}` : ''
+      const name = it.name || it.description || 'Unknown'
+      lines.push(`${icon} ${name}${qtyStr} — $${sub.toFixed(2)}`)
+    }
+
+    // Trade only: add a one-line context note for what the customer brought.
+    // For sales the headline already says everything; for buys ditto.
+    if (transaction_type === 'trade') {
+      const ti = Number(trade_in_value) || 0
+      lines.push(`Customer brought $${ti.toFixed(2)} in trade-in`)
+    }
+
+    lines.push(nowUtcStamp())
     return lines.join('\n')
   }
 

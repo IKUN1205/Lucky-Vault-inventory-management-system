@@ -2474,21 +2474,36 @@ export const fetchStorefrontDailySummary = async (date) => {
   const [salesRes, singlesRes, slabsRes, pmRes] = await Promise.all([
     supabase
       .from('storefront_sales')
-      .select('transaction_id, transaction_type, net_cash_usd, payment_method_id, sale_price, quantity, trade_in_value_usd')
+      .select(`
+        id, created_at, transaction_id, transaction_type, net_cash_usd,
+        payment_method_id, sale_price, quantity, trade_in_value_usd, notes,
+        product:products(name, brand, category)
+      `)
       .eq('date', dayStr)
-      .eq('deleted', false),
+      .eq('deleted', false)
+      .order('created_at', { ascending: false }),
     supabase
       .from('singles')
-      .select('transaction_id, transaction_type, net_cash_usd, payment_method_id, sale_price_usd, quantity, trade_in_value_usd, status')
+      .select(`
+        id, updated_at, transaction_id, transaction_type, net_cash_usd,
+        payment_method_id, sale_price_usd, quantity, trade_in_value_usd,
+        status, card_name, card_number, condition
+      `)
       .eq('sale_date', dayStr)
       .not('transaction_id', 'is', null)
-      .eq('status', 'sold'),
+      .eq('status', 'sold')
+      .order('updated_at', { ascending: false }),
     supabase
       .from('slabs')
-      .select('transaction_id, transaction_type, net_cash_usd, payment_method_id, sale_price_usd, trade_in_value_usd, status')
+      .select(`
+        id, updated_at, transaction_id, transaction_type, net_cash_usd,
+        payment_method_id, sale_price_usd, trade_in_value_usd, status,
+        item_name, cert_number, grading_company, grade
+      `)
       .eq('sale_date', dayStr)
       .not('transaction_id', 'is', null)
-      .eq('status', 'sold'),
+      .eq('status', 'sold')
+      .order('updated_at', { ascending: false }),
     supabase
       .from('payment_methods')
       .select('id, name'),
@@ -2500,13 +2515,21 @@ export const fetchStorefrontDailySummary = async (date) => {
 
   // Dedupe by transaction_id. We track first-seen header values, AND
   // accumulate gross_value across all rows of the same transaction (each
-  // table contributes line subtotals).
+  // table contributes line subtotals). Each row also appends to `items[]`
+  // on the transaction so the collapsible Details view can show
+  // exactly what was sold/traded/bought without a second fetch.
   const txMap = new Map()
-  const addRow = (r, lineGross) => {
+  const addRow = (r, lineGross, itemDetail, timestamp) => {
     if (!r.transaction_id) return
     const existing = txMap.get(r.transaction_id)
     if (existing) {
       existing.gross_value += lineGross
+      if (itemDetail) existing.items.push(itemDetail)
+      // Keep the EARLIEST timestamp as the transaction time — feels more
+      // intuitive than "last row written" when a cart had multiple lines.
+      if (timestamp && (!existing.timestamp || timestamp < existing.timestamp)) {
+        existing.timestamp = timestamp
+      }
     } else {
       txMap.set(r.transaction_id, {
         transaction_id: r.transaction_id,
@@ -2515,22 +2538,90 @@ export const fetchStorefrontDailySummary = async (date) => {
         trade_in_value: r.trade_in_value_usd != null ? Number(r.trade_in_value_usd) : null,
         payment_method_id: r.payment_method_id,
         gross_value: lineGross,
+        timestamp: timestamp || null,
+        items: itemDetail ? [itemDetail] : [],
       })
     }
   }
+
+  // ---- storefront_sales rows: sealed products + manual buy lines ----
   for (const r of salesRes.data || []) {
-    addRow(r, (Number(r.sale_price) || 0))   // storefront_sales.sale_price is the LINE total (price × qty stored upstream)
+    const lineGross = Number(r.sale_price) || 0   // already a LINE total
+    const qty = Number(r.quantity) || 1
+    let kind = 'sealed', name = 'Unknown'
+    if (r.product?.name) {
+      const brand = r.product.brand ? `${r.product.brand} | ` : ''
+      name = `${brand}${r.product.name}`
+      kind = 'sealed'
+    } else if (r.notes) {
+      // Manual buy line — notes starts with "BUY: slab — ..." or "BUY: single — ..."
+      const n = String(r.notes)
+      if (/^BUY:\s*slab/i.test(n)) {
+        kind = 'slab_manual'
+        name = n.replace(/^BUY:\s*slab\s*[—-]\s*/i, '') || '(manual slab buy)'
+      } else if (/^BUY:\s*single/i.test(n)) {
+        kind = 'single_manual'
+        name = n.replace(/^BUY:\s*single\s*[—-]\s*/i, '') || '(manual single buy)'
+      } else {
+        name = n
+      }
+    }
+    // Per-unit price for display in the bullet (gross/qty)
+    const perUnit = qty > 0 ? lineGross / qty : lineGross
+    addRow(r, lineGross, {
+      kind,
+      name,
+      quantity: qty,
+      price: perUnit,
+      subtotal: lineGross,
+    }, r.created_at || null)
   }
+
+  // ---- singles rows: card_name + card_number + condition ----
   for (const r of singlesRes.data || []) {
     const qty = Number(r.quantity) || 1
-    addRow(r, (Number(r.sale_price_usd) || 0) * qty)
+    const perUnit = Number(r.sale_price_usd) || 0
+    const lineGross = perUnit * qty
+    const num = r.card_number ? ` #${r.card_number}` : ''
+    const cond = r.condition ? ` (${r.condition})` : ''
+    addRow(r, lineGross, {
+      kind: 'single',
+      name: `${r.card_name || 'Unknown card'}${num}${cond}`,
+      quantity: qty,
+      price: perUnit,
+      subtotal: lineGross,
+    }, r.updated_at || null)
   }
+
+  // ---- slabs rows: item_name + cert# + grade ----
   for (const r of slabsRes.data || []) {
-    addRow(r, Number(r.sale_price_usd) || 0)
+    const lineGross = Number(r.sale_price_usd) || 0
+    const grade = (r.grading_company || r.grade) ? ` ${[r.grading_company, r.grade].filter(Boolean).join(' ')}` : ''
+    const cert = r.cert_number ? ` #${r.cert_number}` : ''
+    addRow(r, lineGross, {
+      kind: 'slab',
+      name: `${r.item_name || 'Unknown slab'}${grade}${cert}`,
+      quantity: 1,
+      price: lineGross,
+      subtotal: lineGross,
+    }, r.updated_at || null)
   }
 
   const pmById = new Map((pmRes.data || []).map(p => [p.id, p.name]))
+  // Attach payment-method name to each transaction so the details panel
+  // doesn't have to do its own lookup, and sort most-recent first.
   const transactions = Array.from(txMap.values())
+    .map(t => ({
+      ...t,
+      payment_method: pmById.get(t.payment_method_id) || 'Unknown',
+    }))
+    .sort((a, b) => {
+      // Sort by timestamp descending; nulls last.
+      if (!a.timestamp && !b.timestamp) return 0
+      if (!a.timestamp) return 1
+      if (!b.timestamp) return -1
+      return b.timestamp.localeCompare(a.timestamp)
+    })
 
   // Aggregate by transaction type. Buys contribute NEGATIVE cash (we paid
   // the customer) which pulls down the daily net. The per-payment-method

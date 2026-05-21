@@ -11,6 +11,7 @@ import Instructions from '../components/Instructions'
 import {
   ScanLine, X, Trash2, Loader2, Package, Diamond, Layers,
   AlertTriangle, CreditCard, Save, ShoppingCart, TrendingUp, RefreshCw,
+  ChevronDown, ChevronUp, ArrowLeftRight, Handshake,
 } from 'lucide-react'
 
 // ============================================================================
@@ -911,6 +912,11 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
 // rare case where another tab on another machine wrote rows.
 // ============================================================================
 function DailySummaryCard({ summary, loading, onRefresh }) {
+  // Toggle for the collapsible per-transaction breakdown. Default
+  // collapsed so the card stays compact; one click expands to show
+  // every sale/trade/buy with its items.
+  const [showDetails, setShowDetails] = useState(false)
+
   if (loading && !summary) {
     return (
       <div className="card mb-4 flex items-center justify-center py-6 text-gray-500 text-sm">
@@ -920,7 +926,7 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
   }
   if (!summary) return null
 
-  const { totals = {}, by_payment = {}, date } = summary
+  const { totals = {}, by_payment = {}, date, transactions = [] } = summary
   const paymentEntries = Object.entries(by_payment)
     .sort((a, b) => (b[1].total_net_cash || 0) - (a[1].total_net_cash || 0))
 
@@ -957,7 +963,7 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
             <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Sales</div>
             <div className="flex items-baseline gap-2 flex-wrap">
               <span className="text-2xl font-bold text-vault-gold">{fmtUsd(totals.sale_net_cash)}</span>
-              <span className="text-xs text-gray-400">/ {totals.sale_count} txn</span>
+              <span className="text-xs text-gray-400">/ {totals.sale_count} sale{totals.sale_count === 1 ? '' : 's'}</span>
             </div>
           </div>
 
@@ -972,7 +978,7 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
               }`}>
                 {fmtUsd(totals.trade_net_cash)}
               </span>
-              <span className="text-xs text-gray-400">/ {totals.trade_count} txn</span>
+              <span className="text-xs text-gray-400">/ {totals.trade_count} trade{totals.trade_count === 1 ? '' : 's'}</span>
             </div>
           </div>
 
@@ -986,7 +992,7 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
               }`}>
                 {fmtUsd(totals.buy_net_cash)}
               </span>
-              <span className="text-xs text-gray-400">/ {totals.buy_count} txn</span>
+              <span className="text-xs text-gray-400">/ {totals.buy_count} buy{totals.buy_count === 1 ? '' : 's'}</span>
             </div>
           </div>
 
@@ -1023,6 +1029,127 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Collapsible per-transaction details — only render the toggle when
+          there's actually something to show. Click expands the panel with
+          every sale/trade/buy + its items, time, and payment method. */}
+      {transactions.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-vault-border/50">
+          <button
+            type="button"
+            onClick={() => setShowDetails(v => !v)}
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white"
+          >
+            {showDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            {showDetails ? 'Hide details' : 'Show details'}
+            <span className="text-gray-600">({transactions.length} transaction{transactions.length === 1 ? '' : 's'})</span>
+          </button>
+
+          {showDetails && (
+            <div className="mt-3 space-y-2">
+              {transactions.map((t) => (
+                <TransactionDetail key={t.transaction_id} txn={t} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// One row in the expanded daily-summary details: header with type +
+// payment method + time + signed net cash, then the item bullets.
+function TransactionDetail({ txn }) {
+  const KIND_ICON_TXT = {
+    sealed: '📦', slab: '💎', single: '🎴',
+    slab_manual: '💎', single_manual: '🎴',
+  }
+  const headerMeta = (() => {
+    if (txn.type === 'trade') {
+      const nc = Number(txn.net_cash || 0)
+      const direction =
+        nc > 0 ? `customer paid $${nc.toFixed(2)}`
+        : nc < 0 ? `we paid $${Math.abs(nc).toFixed(2)}`
+        : 'even'
+      return {
+        Icon: ArrowLeftRight,
+        label: 'Trade',
+        color: 'text-blue-300',
+        money: `${fmtUsd(nc)}`,
+        sub: direction,
+        netColor: nc > 0 ? 'text-emerald-300' : nc < 0 ? 'text-red-300' : 'text-gray-300',
+      }
+    }
+    if (txn.type === 'buy') {
+      const nc = Number(txn.net_cash || 0)
+      return {
+        Icon: Handshake,
+        label: 'Buy',
+        color: 'text-orange-300',
+        money: `${fmtUsd(nc)}`,
+        sub: `we paid $${Math.abs(nc).toFixed(2)}`,
+        netColor: 'text-red-300',
+      }
+    }
+    const nc = Number(txn.net_cash || 0)
+    return {
+      Icon: ShoppingCart,
+      label: 'Sale',
+      color: 'text-vault-gold',
+      money: `${fmtUsd(nc)}`,
+      sub: null,
+      netColor: 'text-emerald-300',
+    }
+  })()
+
+  const { Icon } = headerMeta
+  const timeStr = txn.timestamp
+    ? new Date(txn.timestamp).toLocaleTimeString('en-US', {
+        timeZone: 'America/Los_Angeles',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
+    : null
+
+  return (
+    <div className="bg-vault-darker/40 border border-vault-border rounded px-3 py-2 text-sm">
+      <div className="flex items-center justify-between gap-3 mb-1.5">
+        <div className="flex items-center gap-2 min-w-0">
+          <Icon size={14} className={`${headerMeta.color} flex-shrink-0`} />
+          <span className={`font-semibold ${headerMeta.color}`}>{headerMeta.label}</span>
+          {timeStr && <span className="text-xs text-gray-500">{timeStr}</span>}
+          <span className="text-xs text-gray-500">·</span>
+          <span className="text-xs text-gray-400 truncate">{txn.payment_method}</span>
+        </div>
+        <div className="flex items-baseline gap-1.5 flex-shrink-0">
+          <span className={`font-semibold ${headerMeta.netColor}`}>{headerMeta.money}</span>
+          {headerMeta.sub && <span className="text-[10px] text-gray-500">({headerMeta.sub})</span>}
+        </div>
+      </div>
+      {txn.items && txn.items.length > 0 && (
+        <ul className="space-y-0.5 pl-1">
+          {txn.items.map((it, i) => {
+            const qty = Number(it.quantity) || 1
+            const sub = Number(it.subtotal) || 0
+            return (
+              <li key={i} className="text-xs text-gray-300 flex items-center gap-1.5">
+                <span className="flex-shrink-0">{KIND_ICON_TXT[it.kind] || '•'}</span>
+                <span className="truncate flex-1 min-w-0">
+                  {it.name}{qty > 1 ? ` ×${qty}` : ''}
+                </span>
+                <span className="text-gray-500 flex-shrink-0">${sub.toFixed(2)}</span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      {txn.type === 'trade' && Number(txn.trade_in_value || 0) > 0 && (
+        <div className="text-[11px] text-gray-500 mt-1 pl-1">
+          Customer brought ${Number(txn.trade_in_value).toFixed(2)} in trade-in
         </div>
       )}
     </div>
