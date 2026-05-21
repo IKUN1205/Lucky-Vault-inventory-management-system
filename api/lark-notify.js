@@ -711,6 +711,51 @@ function buildMessage(body) {
     return lines.join('\n')
   }
 
+  if (type === 'storefront_transaction') {
+    // One Lark message per cart submit (NOT per line). Listed by category so
+    // the team can spot at a glance "boxes vs slabs vs singles sold today".
+    const {
+      transaction_id, cashier, payment_method, date,
+      items = [], total, total_units,
+    } = body
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error('storefront_transaction: missing items')
+    }
+    const KIND_ICON = { sealed: '📦', slab: '💎', single: '🎴' }
+    const KIND_LABEL = { sealed: 'Sealed', slab: 'Slab', single: 'Single' }
+
+    const lines = []
+    lines.push('🛍️ Storefront Sale')
+    if (cashier) lines.push(`Cashier: ${cashier}`)
+    if (payment_method) lines.push(`Payment: ${payment_method}`)
+    if (date) lines.push(`Date: ${date}`)
+    lines.push('')
+
+    // Group by kind, render in fixed order so the message reads the same
+    // across transactions regardless of scan order.
+    const byKind = { sealed: [], slab: [], single: [] }
+    for (const it of items) {
+      const k = byKind[it.kind] ? it.kind : 'sealed'
+      byKind[k].push(it)
+    }
+    for (const k of ['sealed', 'slab', 'single']) {
+      const group = byKind[k]
+      if (group.length === 0) continue
+      lines.push(`${KIND_ICON[k]} ${KIND_LABEL[k]} (${group.length})`)
+      for (const it of group) {
+        const sub = (Number(it.price) || 0) * (Number(it.quantity) || 1)
+        const qtyStr = (Number(it.quantity) || 1) > 1 ? ` × ${it.quantity}` : ''
+        lines.push(`  • ${it.name || 'Unknown'}${qtyStr}  $${sub.toFixed(2)}`)
+      }
+      lines.push('')
+    }
+
+    lines.push(`Total: ${total_units ?? items.length} unit${total_units === 1 ? '' : 's'} · $${(Number(total) || 0).toFixed(2)}`)
+    if (transaction_id) lines.push(`Txn: ${String(transaction_id).slice(0, 8)}…`)
+    lines.push(`Time: ${nowUtcStamp()}`)
+    return lines.join('\n')
+  }
+
   throw new Error(`Unknown notification type: ${type}`)
 }
 

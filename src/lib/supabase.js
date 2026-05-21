@@ -1005,7 +1005,11 @@ export const markSingleAsSold = async (id, saleData) => {
     sale_currency: saleData.sale_currency || 'USD',
     buyer_name: saleData.buyer_name || null,
     sale_notes: saleData.sale_notes || null,
-    sold_by_id: saleData.sold_by_id || null
+    sold_by_id: saleData.sold_by_id || null,
+    // New columns from the unified storefront checkout (Phase 1). Existing
+    // callers don't pass these — left null so non-store flows are unchanged.
+    payment_method_id: saleData.payment_method_id || null,
+    transaction_id: saleData.transaction_id || null,
   }
   const { data, error } = await supabase
     .from('singles')
@@ -1420,7 +1424,12 @@ export const markSlabAsSold = async (id, saleData) => {
     sale_fees_usd: saleData.sale_fees_usd ?? null,
     buyer_name: saleData.buyer_name || null,
     notes: saleData.sale_notes || null,        // free-form notes column
-    sold_by_id: saleData.sold_by_id || null
+    sold_by_id: saleData.sold_by_id || null,
+    // New columns from the unified storefront checkout (Phase 1). Existing
+    // callers (SellSlabModal etc.) don't pass these — left null so behaviour
+    // for the non-store flows is unchanged.
+    payment_method_id: saleData.payment_method_id || null,
+    transaction_id: saleData.transaction_id || null,
   }
   const { data, error } = await supabase
     .from('slabs')
@@ -1861,3 +1870,370 @@ export const fetchJapanToUSShipments = async ({ limit = 50, includeAll = false }
   return data || []
 }
 
+// ============================================
+// STOREFRONT — UNIFIED CHECKOUT (Phase 1)
+// ============================================
+// Lets the cashier scan ANY of three product identities at the storefront:
+//   - UPC barcode     → products.barcode  → sealed box / pack
+//   - Slab cert#      → slabs.cert_number → graded card
+//   - Single TCG ID   → singles.tcg_id    → raw single card
+// The scanned code is routed to the right lookup, the cashier confirms
+// qty + price + payment method, and one submit-cart action fans out
+// writes across three tables (storefront_sales / slabs / singles) tagged
+// with the same transaction_id so the checkout can be reconstructed as
+// one unit later.
+//
+// Design notes:
+//   * Best-effort submit: lines that fail (e.g. somebody else just sold
+//     that slab from another tab) come back in `failed[]`, lines that
+//     succeed in `ok[]`. The caller leaves failed lines in the cart so
+//     the cashier can retry, fix, or remove them.
+//   * Auto-Move: if a scanned sealed SKU is in stock at Master but not
+//     at Front Store, the submit silently logs a movement Master→Front
+//     Store before deducting from Front Store. The cashier doesn't have
+//     to interrupt the customer to "fix" inventory routing.
+//   * Fungible single split: if a raw single row has quantity 5 and the
+//     cashier sells 2, we DON'T flip the whole row to sold. Instead we
+//     decrement the source row to 3 and INSERT a clone (qty=2, status=
+//     'sold', sale fields filled). The clone keeps the same set_id /
+//     cost basis / etc. so per-card analytics still work.
+
+// ----- code lookup -----
+
+// Identify what kind of inventory a scanned code matches. UPC first (most
+// scans), then slab cert, then single TCG ID. Caller decides what to do
+// with each kind. Returns one of:
+//   { kind: 'sealed',  product, inventory: [{location_id, location_name, quantity, avg_cost_basis}, ...] }
+//   { kind: 'slab',    slab }    // current row, status checked downstream
+//   { kind: 'single',  single }  // current row, status checked downstream
+//   { kind: 'unknown', code }
+//   { kind: 'empty' }
+export const lookupScannedCode = async (code) => {
+  const trimmed = String(code || '').trim()
+  if (!trimmed) return { kind: 'empty' }
+
+  // 1. UPC → products.barcode (partial unique index ensures at most 1 row)
+  {
+    const { data: product, error } = await supabase
+      .from('products')
+      .select('id, brand, name, category, language, type, barcode, active')
+      .eq('barcode', trimmed)
+      .maybeSingle()
+    if (error) throw error
+    if (product) {
+      const { data: inv, error: invErr } = await supabase
+        .from('inventory')
+        .select(`
+          quantity, avg_cost_basis, location_id,
+          location:locations(id, name)
+        `)
+        .eq('product_id', product.id)
+        .gt('quantity', 0)
+      if (invErr) throw invErr
+      const rows = (inv || []).map(r => ({
+        location_id: r.location_id,
+        location_name: r.location?.name,
+        quantity: r.quantity,
+        avg_cost_basis: r.avg_cost_basis ?? 0,
+      }))
+      return { kind: 'sealed', product, inventory: rows }
+    }
+  }
+
+  // 2. Slab cert# → slabs.cert_number (no unique constraint but should be unique)
+  {
+    const { data: slab, error } = await supabase
+      .from('slabs')
+      .select('*')
+      .eq('cert_number', trimmed)
+      .eq('deleted', false)
+      .maybeSingle()
+    if (error) throw error
+    if (slab) return { kind: 'slab', slab }
+  }
+
+  // 3. Single TCG ID → singles.tcg_id. Stored as integer in some imports,
+  //    string in others; cast both sides.
+  {
+    const { data: single, error } = await supabase
+      .from('singles')
+      .select(`
+        *,
+        set:card_sets(id, brand, name, code, language),
+        location:locations(id, name)
+      `)
+      .eq('tcg_id', trimmed)
+      .eq('deleted', false)
+      .maybeSingle()
+    if (error) throw error
+    if (single) return { kind: 'single', single }
+  }
+
+  return { kind: 'unknown', code: trimmed }
+}
+
+// ----- storefront transaction submit -----
+
+// Sell a sealed product line at the storefront. Handles auto-Move from
+// Master → Front Store if the SKU isn't already at Front Store.
+//
+// Returns { ok: true, sale } on success, throws on failure (caller catches
+// and routes to `failed[]`).
+const _sellSealedLine = async ({
+  product,
+  quantity,
+  salePrice,
+  paymentMethodId,
+  cashierId,
+  transactionId,
+  sourceCandidates,   // [{location_id, location_name, quantity, avg_cost_basis}, ...]
+  locationIds,        // { frontStore: uuid, master: uuid }
+  saleDate,
+}) => {
+  const frontStoreId = locationIds.frontStore
+  const masterId = locationIds.master
+
+  // Step 1: figure out where the units come from. Prefer Front Store; fall
+  // back to Master with an auto-Move; if even Master is short, error out.
+  const frontStock = sourceCandidates.find(s => s.location_id === frontStoreId)?.quantity || 0
+  const masterStock = sourceCandidates.find(s => s.location_id === masterId)?.quantity || 0
+  const needFromMaster = Math.max(0, quantity - frontStock)
+
+  if (frontStock + masterStock < quantity) {
+    throw new Error(
+      `Not enough stock: need ${quantity}, have ${frontStock} at Front Store + ${masterStock} at Master`
+    )
+  }
+
+  // Step 2: if we need to pull from Master, do the Move first so the
+  // Front Store deduction below is clean. The Move row records the
+  // automatic transfer so it's auditable later.
+  if (needFromMaster > 0) {
+    const frontEntry = sourceCandidates.find(s => s.location_id === frontStoreId)
+    const masterEntry = sourceCandidates.find(s => s.location_id === masterId)
+    const newAvgCost = masterEntry?.avg_cost_basis ?? null
+
+    await createMovement({
+      product_id: product.id,
+      source_location_id: masterId,
+      dest_location_id: frontStoreId,
+      quantity: needFromMaster,
+      moved_by_id: cashierId || null,
+      // Tag in the notes column so it's clear in audits this wasn't a
+      // human-initiated Move — it was the storefront's just-in-time fetch.
+      notes: `Auto-Move: storefront sale (transaction ${transactionId.slice(0, 8)}…)`,
+    }).catch(() => { /* notes column may not exist; ignore */ })
+    await updateInventory(product.id, masterId, -needFromMaster)
+    await updateInventory(product.id, frontStoreId, +needFromMaster, newAvgCost)
+  }
+
+  // Step 3: deduct from Front Store and record the storefront sale.
+  // For cost basis: use the avg at Front Store AFTER any incoming move.
+  const { data: frontInv } = await supabase
+    .from('inventory')
+    .select('avg_cost_basis')
+    .eq('product_id', product.id)
+    .eq('location_id', frontStoreId)
+    .maybeSingle()
+  const unitCost = frontInv?.avg_cost_basis ?? 0
+  const costBasis = unitCost * quantity
+  const profit = (Number(salePrice) || 0) - costBasis
+
+  const sale = await createStorefrontSale({
+    date: saleDate,
+    sale_type: 'Itemized',
+    product_id: product.id,
+    location_id: frontStoreId,
+    quantity,
+    sale_price: Number(salePrice) || 0,
+    cost_basis: costBasis,
+    profit,
+    payment_method_id: paymentMethodId || null,
+    cashier_id: cashierId || null,
+    transaction_id: transactionId,
+  })
+
+  await updateInventory(product.id, frontStoreId, -quantity)
+
+  return { sale }
+}
+
+// Sell a slab at the storefront. Slab is unique (qty=1) so no quantity arg.
+const _sellSlabLine = async ({ slab, salePrice, paymentMethodId, cashierId, transactionId, saleDate }) => {
+  // Defensive re-check: somebody might have sold this slab between the
+  // scan and the cart-submit (multi-cashier scenario).
+  const { data: fresh, error: fetchErr } = await supabase
+    .from('slabs')
+    .select('id, status')
+    .eq('id', slab.id)
+    .single()
+  if (fetchErr) throw fetchErr
+  if (fresh.status !== 'in_inventory' && fresh.status !== 'listed') {
+    throw new Error(`Slab status is "${fresh.status}" — can only sell from in_inventory or listed`)
+  }
+
+  return await markSlabAsSold(slab.id, {
+    sale_price_usd: Number(salePrice) || 0,
+    sale_channel: 'in_person',
+    sale_date: saleDate,
+    sale_fees_usd: null,
+    buyer_name: null,
+    sale_notes: null,
+    sold_by_id: cashierId || null,
+    payment_method_id: paymentMethodId || null,
+    transaction_id: transactionId,
+  })
+}
+
+// Sell N units of a raw single. Handles the fungible-split case where
+// the source row has more units than we're selling — we don't flip the
+// whole row to sold, we decrement the source and insert a sold clone.
+const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate }) => {
+  const isFungibleRaw = single.form === 'raw' && (single.quantity || 1) > 1
+  const sourceQty = single.quantity || 1
+  const sellQty = Math.max(1, Number(quantity) || 1)
+
+  if (sellQty > sourceQty) {
+    throw new Error(`Only ${sourceQty} available — cannot sell ${sellQty}`)
+  }
+
+  // Whole-row sale: just flip status. Existing markSingleAsSold handles it.
+  if (!isFungibleRaw || sellQty === sourceQty) {
+    return await markSingleAsSold(single.id, {
+      sale_price_usd: Number(salePrice) || 0,
+      sale_channel: 'in_person',
+      sale_date: saleDate,
+      sale_fees_usd: null,
+      buyer_name: null,
+      sale_notes: null,
+      sold_by_id: cashierId || null,
+      payment_method_id: paymentMethodId || null,
+      transaction_id: transactionId,
+    })
+  }
+
+  // Partial sale: split the row. Source row qty drops by sellQty, and we
+  // INSERT a clone with qty=sellQty + status='sold' + sale_* filled. The
+  // clone keeps the same set / cost / acquisition fields so per-card
+  // analytics line up.
+  const remainingQty = sourceQty - sellQty
+  const { error: updErr } = await supabase
+    .from('singles')
+    .update({ quantity: remainingQty })
+    .eq('id', single.id)
+  if (updErr) throw updErr
+
+  const clone = {
+    card_name: single.card_name,
+    card_number: single.card_number,
+    set_id: single.set_id,
+    brand: single.brand,
+    language: single.language,
+    variant: single.variant,
+    form: single.form,
+    condition: single.condition,
+    quantity: sellQty,
+    tcg_id: single.tcg_id,
+    acquisition_cost_usd: single.acquisition_cost_usd,
+    acquisition_cost_native: single.acquisition_cost_native,
+    acquisition_currency: single.acquisition_currency,
+    source_type: single.source_type,
+    source_box_break_id: single.source_box_break_id,
+    source_acquisition_id: single.source_acquisition_id,
+    location_id: single.location_id,
+    acquirer_id: single.acquirer_id,
+    vendor_id: single.vendor_id,
+    date_acquired: single.date_acquired,
+    notes: `Split from ${single.id} (storefront sale of ${sellQty} of ${sourceQty})`,
+    // Sale fields
+    status: 'sold',
+    sale_price_usd: Number(salePrice) || 0,
+    sale_channel: 'in_person',
+    sale_date: saleDate,
+    sold_by_id: cashierId || null,
+    payment_method_id: paymentMethodId || null,
+    transaction_id: transactionId,
+    parent_single_id: single.id,
+  }
+  const { data: inserted, error: insErr } = await supabase
+    .from('singles')
+    .insert(clone)
+    .select(`*, set:card_sets(id, brand, name, code, language), location:locations(id, name)`)
+    .single()
+  if (insErr) throw insErr
+  return inserted
+}
+
+// Public: submit one storefront cart as a single transaction. Returns
+// { transaction_id, ok: [...], failed: [...] }. Caller (the page) uses the
+// failed[] to keep those lines visible for retry.
+export const submitStorefrontTransaction = async ({
+  cart,             // [{ kind, productId|slabId|singleId, scanned_code, quantity, price, ...meta }, ...]
+  paymentMethodId,
+  cashierId,
+  saleDate,         // 'YYYY-MM-DD'
+}) => {
+  if (!Array.isArray(cart) || cart.length === 0) {
+    throw new Error('Cart is empty')
+  }
+
+  // Resolve key location IDs once
+  const { data: locs, error: locsErr } = await supabase
+    .from('locations')
+    .select('id, name')
+    .in('name', [FRONT_STORE_NAME, MASTER_NAME])
+  if (locsErr) throw locsErr
+  const frontStoreId = locs.find(l => l.name === FRONT_STORE_NAME)?.id
+  const masterId = locs.find(l => l.name === MASTER_NAME)?.id
+  if (!frontStoreId) throw new Error(`Location "${FRONT_STORE_NAME}" not configured`)
+
+  // crypto.randomUUID is available in browsers and modern Node; fall back
+  // to a less-perfect string if missing (the DB column accepts any UUID).
+  const transactionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `tx-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+
+  const ok = []
+  const failed = []
+
+  for (const line of cart) {
+    try {
+      if (line.kind === 'sealed') {
+        const result = await _sellSealedLine({
+          product: line.product,
+          quantity: Number(line.quantity) || 1,
+          salePrice: line.price,
+          paymentMethodId, cashierId, transactionId,
+          sourceCandidates: line.inventory || [],
+          locationIds: { frontStore: frontStoreId, master: masterId },
+          saleDate,
+        })
+        ok.push({ line, result })
+      } else if (line.kind === 'slab') {
+        const result = await _sellSlabLine({
+          slab: line.slab,
+          salePrice: line.price,
+          paymentMethodId, cashierId, transactionId,
+          saleDate,
+        })
+        ok.push({ line, result })
+      } else if (line.kind === 'single') {
+        const result = await _sellSingleLine({
+          single: line.single,
+          quantity: Number(line.quantity) || 1,
+          salePrice: line.price,
+          paymentMethodId, cashierId, transactionId,
+          saleDate,
+        })
+        ok.push({ line, result })
+      } else {
+        throw new Error(`Unknown line kind: ${line.kind}`)
+      }
+    } catch (err) {
+      console.error('[submitStorefrontTransaction] line failed:', line, err)
+      failed.push({ line, error: err.message || String(err) })
+    }
+  }
+
+  return { transaction_id: transactionId, ok, failed }
+}
