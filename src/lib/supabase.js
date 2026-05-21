@@ -1006,10 +1006,13 @@ export const markSingleAsSold = async (id, saleData) => {
     buyer_name: saleData.buyer_name || null,
     sale_notes: saleData.sale_notes || null,
     sold_by_id: saleData.sold_by_id || null,
-    // New columns from the unified storefront checkout (Phase 1). Existing
+    // New columns from the unified storefront checkout (Phase 1+2). Existing
     // callers don't pass these — left null so non-store flows are unchanged.
     payment_method_id: saleData.payment_method_id || null,
     transaction_id: saleData.transaction_id || null,
+    transaction_type: saleData.transaction_type || null,
+    trade_in_value_usd: saleData.trade_in_value_usd ?? null,
+    net_cash_usd: saleData.net_cash_usd ?? null,
   }
   const { data, error } = await supabase
     .from('singles')
@@ -1430,6 +1433,9 @@ export const markSlabAsSold = async (id, saleData) => {
     // for the non-store flows is unchanged.
     payment_method_id: saleData.payment_method_id || null,
     transaction_id: saleData.transaction_id || null,
+    transaction_type: saleData.transaction_type || null,
+    trade_in_value_usd: saleData.trade_in_value_usd ?? null,
+    net_cash_usd: saleData.net_cash_usd ?? null,
   }
   const { data, error } = await supabase
     .from('slabs')
@@ -1989,6 +1995,7 @@ const _sellSealedLine = async ({
   sourceCandidates,   // [{location_id, location_name, quantity, avg_cost_basis}, ...]
   locationIds,        // { frontStore: uuid, master: uuid }
   saleDate,
+  txMeta = {},        // { transactionType, tradeInValue, tradeInNotes, netCash }
 }) => {
   const frontStoreId = locationIds.frontStore
   const masterId = locationIds.master
@@ -2051,6 +2058,10 @@ const _sellSealedLine = async ({
     payment_method_id: paymentMethodId || null,
     cashier_id: cashierId || null,
     transaction_id: transactionId,
+    transaction_type: txMeta.transactionType || 'sale',
+    trade_in_value_usd: txMeta.tradeInValue ?? null,
+    net_cash_usd: txMeta.netCash ?? null,
+    trade_in_notes: txMeta.tradeInNotes || null,
   })
 
   await updateInventory(product.id, frontStoreId, -quantity)
@@ -2059,7 +2070,7 @@ const _sellSealedLine = async ({
 }
 
 // Sell a slab at the storefront. Slab is unique (qty=1) so no quantity arg.
-const _sellSlabLine = async ({ slab, salePrice, paymentMethodId, cashierId, transactionId, saleDate }) => {
+const _sellSlabLine = async ({ slab, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {} }) => {
   // Defensive re-check: somebody might have sold this slab between the
   // scan and the cart-submit (multi-cashier scenario).
   const { data: fresh, error: fetchErr } = await supabase
@@ -2082,13 +2093,16 @@ const _sellSlabLine = async ({ slab, salePrice, paymentMethodId, cashierId, tran
     sold_by_id: cashierId || null,
     payment_method_id: paymentMethodId || null,
     transaction_id: transactionId,
+    transaction_type: txMeta.transactionType || 'sale',
+    trade_in_value_usd: txMeta.tradeInValue ?? null,
+    net_cash_usd: txMeta.netCash ?? null,
   })
 }
 
 // Sell N units of a raw single. Handles the fungible-split case where
 // the source row has more units than we're selling — we don't flip the
 // whole row to sold, we decrement the source and insert a sold clone.
-const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate }) => {
+const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {} }) => {
   const isFungibleRaw = single.form === 'raw' && (single.quantity || 1) > 1
   const sourceQty = single.quantity || 1
   const sellQty = Math.max(1, Number(quantity) || 1)
@@ -2109,6 +2123,9 @@ const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, c
       sold_by_id: cashierId || null,
       payment_method_id: paymentMethodId || null,
       transaction_id: transactionId,
+      transaction_type: txMeta.transactionType || 'sale',
+      trade_in_value_usd: txMeta.tradeInValue ?? null,
+      net_cash_usd: txMeta.netCash ?? null,
     })
   }
 
@@ -2153,6 +2170,9 @@ const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, c
     sold_by_id: cashierId || null,
     payment_method_id: paymentMethodId || null,
     transaction_id: transactionId,
+    transaction_type: txMeta.transactionType || 'sale',
+    trade_in_value_usd: txMeta.tradeInValue ?? null,
+    net_cash_usd: txMeta.netCash ?? null,
     parent_single_id: single.id,
   }
   const { data: inserted, error: insErr } = await supabase
@@ -2167,14 +2187,48 @@ const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, c
 // Public: submit one storefront cart as a single transaction. Returns
 // { transaction_id, ok: [...], failed: [...] }. Caller (the page) uses the
 // failed[] to keep those lines visible for retry.
+//
+// Args new in v2 (Trade support):
+//   - transactionType: 'sale' | 'trade'  (default 'sale')
+//   - tradeInValue:    USD value the cashier estimated for items the
+//                      customer brought in (only meaningful for 'trade').
+//                      Ignored for sales.
+// The net cash for the transaction is computed here as gross − tradeIn:
+//   - sale  → net cash = sum of (price × qty)  (positive)
+//   - trade → net cash = sum of (price × qty) − tradeInValue  (signed)
+// Each row written carries the same transaction_type / trade_in_value_usd /
+// net_cash_usd values for query consistency (so any one row from the
+// transaction tells the full story).
 export const submitStorefrontTransaction = async ({
   cart,             // [{ kind, productId|slabId|singleId, scanned_code, quantity, price, ...meta }, ...]
   paymentMethodId,
   cashierId,
   saleDate,         // 'YYYY-MM-DD'
+  transactionType = 'sale',
+  tradeInValue = null,
+  tradeInNotes = null,
 }) => {
   if (!Array.isArray(cart) || cart.length === 0) {
     throw new Error('Cart is empty')
+  }
+
+  // Compute gross + net cash up-front so each line write gets the same value.
+  const grossValue = cart.reduce((s, l) => {
+    const qty = Number(l.quantity ?? 1) || 0
+    const price = Number(l.price) || 0
+    return s + qty * price
+  }, 0)
+  const tradeIn = transactionType === 'trade' && tradeInValue != null
+    ? Number(tradeInValue) || 0
+    : null
+  const netCash = transactionType === 'trade'
+    ? grossValue - (tradeIn || 0)
+    : grossValue
+  const txMeta = {
+    transactionType,
+    tradeInValue: tradeIn,
+    tradeInNotes: transactionType === 'trade' ? (tradeInNotes || null) : null,
+    netCash,
   }
 
   // Resolve key location IDs once
@@ -2207,6 +2261,7 @@ export const submitStorefrontTransaction = async ({
           sourceCandidates: line.inventory || [],
           locationIds: { frontStore: frontStoreId, master: masterId },
           saleDate,
+          txMeta,
         })
         ok.push({ line, result })
       } else if (line.kind === 'slab') {
@@ -2215,6 +2270,7 @@ export const submitStorefrontTransaction = async ({
           salePrice: line.price,
           paymentMethodId, cashierId, transactionId,
           saleDate,
+          txMeta,
         })
         ok.push({ line, result })
       } else if (line.kind === 'single') {
@@ -2224,6 +2280,7 @@ export const submitStorefrontTransaction = async ({
           salePrice: line.price,
           paymentMethodId, cashierId, transactionId,
           saleDate,
+          txMeta,
         })
         ok.push({ line, result })
       } else {
@@ -2235,5 +2292,121 @@ export const submitStorefrontTransaction = async ({
     }
   }
 
-  return { transaction_id: transactionId, ok, failed }
+  return {
+    transaction_id: transactionId,
+    transaction_type: txMeta.transactionType,
+    gross_value: grossValue,
+    trade_in_value: txMeta.tradeInValue,
+    net_cash: txMeta.netCash,
+    ok, failed,
+  }
+}
+
+// Fetch a daily storefront summary across all 3 sale tables. Dedupes by
+// transaction_id (each transaction may span sealed + single + slab rows,
+// but they all share the same header values). Returns:
+//   {
+//     date,
+//     transactions: [{ transaction_id, type, net_cash, payment_method_id, gross_value }, ...],
+//     totals: { sale_count, sale_net_cash, trade_count, trade_net_cash, total_net_cash },
+//     by_payment: { [payment_method_name]: { count, total_net_cash } }
+//   }
+// The page widget at top of StorefrontSale renders this so the cashier sees
+// daily numbers without leaving the page they're working in.
+export const fetchStorefrontDailySummary = async (date) => {
+  const dayStr = date || new Date().toLocaleDateString('en-CA')
+
+  // Pull header-relevant fields from each table for this date.
+  // singles / slabs are filtered by sale_date + transaction_id IS NOT NULL
+  // so we don't pick up Cards-Scan-Sell rows (those have null transaction_id).
+  const [salesRes, singlesRes, slabsRes, pmRes] = await Promise.all([
+    supabase
+      .from('storefront_sales')
+      .select('transaction_id, transaction_type, net_cash_usd, payment_method_id, sale_price, quantity, trade_in_value_usd')
+      .eq('date', dayStr)
+      .eq('deleted', false),
+    supabase
+      .from('singles')
+      .select('transaction_id, transaction_type, net_cash_usd, payment_method_id, sale_price_usd, quantity, trade_in_value_usd, status')
+      .eq('sale_date', dayStr)
+      .not('transaction_id', 'is', null)
+      .eq('status', 'sold'),
+    supabase
+      .from('slabs')
+      .select('transaction_id, transaction_type, net_cash_usd, payment_method_id, sale_price_usd, trade_in_value_usd, status')
+      .eq('sale_date', dayStr)
+      .not('transaction_id', 'is', null)
+      .eq('status', 'sold'),
+    supabase
+      .from('payment_methods')
+      .select('id, name'),
+  ])
+  if (salesRes.error) throw salesRes.error
+  if (singlesRes.error) throw singlesRes.error
+  if (slabsRes.error) throw slabsRes.error
+  if (pmRes.error) throw pmRes.error
+
+  // Dedupe by transaction_id. We track first-seen header values, AND
+  // accumulate gross_value across all rows of the same transaction (each
+  // table contributes line subtotals).
+  const txMap = new Map()
+  const addRow = (r, lineGross) => {
+    if (!r.transaction_id) return
+    const existing = txMap.get(r.transaction_id)
+    if (existing) {
+      existing.gross_value += lineGross
+    } else {
+      txMap.set(r.transaction_id, {
+        transaction_id: r.transaction_id,
+        type: r.transaction_type || 'sale',
+        net_cash: r.net_cash_usd != null ? Number(r.net_cash_usd) : null,
+        trade_in_value: r.trade_in_value_usd != null ? Number(r.trade_in_value_usd) : null,
+        payment_method_id: r.payment_method_id,
+        gross_value: lineGross,
+      })
+    }
+  }
+  for (const r of salesRes.data || []) {
+    addRow(r, (Number(r.sale_price) || 0))   // storefront_sales.sale_price is the LINE total (price × qty stored upstream)
+  }
+  for (const r of singlesRes.data || []) {
+    const qty = Number(r.quantity) || 1
+    addRow(r, (Number(r.sale_price_usd) || 0) * qty)
+  }
+  for (const r of slabsRes.data || []) {
+    addRow(r, Number(r.sale_price_usd) || 0)
+  }
+
+  const pmById = new Map((pmRes.data || []).map(p => [p.id, p.name]))
+  const transactions = Array.from(txMap.values())
+
+  let saleCount = 0, saleNetCash = 0, tradeCount = 0, tradeNetCash = 0
+  const byPayment = {}
+  for (const t of transactions) {
+    const cash = Number(t.net_cash || 0)
+    if (t.type === 'trade') {
+      tradeCount++
+      tradeNetCash += cash
+    } else {
+      saleCount++
+      saleNetCash += cash
+    }
+    const pmName = pmById.get(t.payment_method_id) || 'Unknown'
+    if (!byPayment[pmName]) byPayment[pmName] = { count: 0, total_net_cash: 0 }
+    byPayment[pmName].count++
+    byPayment[pmName].total_net_cash += cash
+  }
+
+  return {
+    date: dayStr,
+    transactions,
+    totals: {
+      sale_count: saleCount,
+      sale_net_cash: saleNetCash,
+      trade_count: tradeCount,
+      trade_net_cash: tradeNetCash,
+      total_net_cash: saleNetCash + tradeNetCash,
+    },
+    by_payment: byPayment,
+  }
 }

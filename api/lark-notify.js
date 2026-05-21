@@ -715,8 +715,11 @@ function buildMessage(body) {
     // One Lark message per cart submit (NOT per line). Listed by category so
     // the team can spot at a glance "boxes vs slabs vs singles sold today".
     const {
-      transaction_id, cashier, payment_method, date,
+      transaction_id, payment_method, date,
       items = [], total, total_units,
+      transaction_type = 'sale',   // 'sale' | 'trade'
+      trade_in_value,              // only for trade — what customer brought (USD)
+      net_cash,                    // signed; for sale = total, for trade = total - trade_in_value
     } = body
     if (!Array.isArray(items) || items.length === 0) {
       throw new Error('storefront_transaction: missing items')
@@ -724,9 +727,11 @@ function buildMessage(body) {
     const KIND_ICON = { sealed: '📦', slab: '💎', single: '🎴' }
     const KIND_LABEL = { sealed: 'Sealed', slab: 'Slab', single: 'Single' }
 
+    const headerEmoji = transaction_type === 'trade' ? '🔄' : '🛍️'
+    const headerText = transaction_type === 'trade' ? 'Storefront Trade' : 'Storefront Sale'
+
     const lines = []
-    lines.push('🛍️ Storefront Sale')
-    if (cashier) lines.push(`Cashier: ${cashier}`)
+    lines.push(`${headerEmoji} ${headerText}`)
     if (payment_method) lines.push(`Payment: ${payment_method}`)
     if (date) lines.push(`Date: ${date}`)
     lines.push('')
@@ -750,7 +755,18 @@ function buildMessage(body) {
       lines.push('')
     }
 
-    lines.push(`Total: ${total_units ?? items.length} unit${total_units === 1 ? '' : 's'} · $${(Number(total) || 0).toFixed(2)}`)
+    lines.push(`Items: ${total_units ?? items.length} unit${total_units === 1 ? '' : 's'} · value $${(Number(total) || 0).toFixed(2)}`)
+
+    // Trade math at the bottom so it's the last thing the reader sees.
+    if (transaction_type === 'trade') {
+      const ti = Number(trade_in_value) || 0
+      const nc = Number(net_cash) || 0
+      lines.push(`Trade-in: $${ti.toFixed(2)} (value of items customer brought)`)
+      if (nc > 0)      lines.push(`💵 Net: customer paid us $${nc.toFixed(2)}`)
+      else if (nc < 0) lines.push(`💸 Net: we paid customer $${Math.abs(nc).toFixed(2)}`)
+      else             lines.push(`⚖️ Net: even trade`)
+    }
+
     if (transaction_id) lines.push(`Txn: ${String(transaction_id).slice(0, 8)}…`)
     lines.push(`Time: ${nowUtcStamp()}`)
     return lines.join('\n')
