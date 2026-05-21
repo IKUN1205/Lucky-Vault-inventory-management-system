@@ -129,7 +129,9 @@ export default function JapanAcquisitions() {
     const name = newVendorName.trim()
     if (!name) return
     try {
-      const newVendor = await createVendor({ name, country: 'JP', active: true })
+      // vendors.country is an enum (`region`) — canonical Japan value is
+      // 'Japan', not 'JP' / 'JPN' (those throw 22P02).
+      const newVendor = await createVendor({ name, country: 'Japan', active: true })
       setVendors(v => [...v, newVendor].sort((a, b) => a.name.localeCompare(b.name)))
       setHeader(h => ({ ...h, vendor_id: newVendor.id }))
       setNewVendorName('')

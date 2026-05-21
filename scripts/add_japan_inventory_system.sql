@@ -57,7 +57,7 @@ ON CONFLICT (name) DO UPDATE SET active = true;
 INSERT INTO vendors (name, country, active, notes)
 SELECT
   'Japan Warehouse (Internal Transfer)',
-  'JP',
+  'Japan',
   true,
   'Synthetic vendor for Japan→US cross-border shipments. Do not use for real purchases.'
 WHERE NOT EXISTS (

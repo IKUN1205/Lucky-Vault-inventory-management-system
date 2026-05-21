@@ -1623,15 +1623,16 @@ export const fetchJapanInventory = async () => {
 }
 
 // JP-side vendors (for the Japan Acquisitions vendor dropdown). Returns
-// vendors marked country='JP' plus any vendors without a country (legacy).
-// Excludes the synthetic internal-transfer vendor — that's only used by
-// the Japan→US shipment page.
+// vendors marked country='Japan' (the enum's canonical Japan value — JP /
+// JPN are not in the region enum, only "Japan") plus any vendors without a
+// country (legacy). Excludes the synthetic internal-transfer vendor —
+// that's only used by the Japan→US shipment page.
 export const fetchJapanVendors = async () => {
   const { data, error } = await supabase
     .from('vendors')
     .select('*')
     .eq('active', true)
-    .or('country.eq.JP,country.is.null')
+    .or('country.eq.Japan,country.is.null')
     .neq('name', 'Japan Warehouse (Internal Transfer)')
     .order('name')
   if (error) throw error
