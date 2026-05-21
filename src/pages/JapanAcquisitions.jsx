@@ -171,6 +171,9 @@ export default function JapanAcquisitions() {
 
     setSubmitting(true)
     let ok = 0, fail = 0
+    const larkItems = []
+    let totalJpy = 0
+    let totalUnits = 0
     try {
       for (const item of valid) {
         try {
@@ -185,6 +188,20 @@ export default function JapanAcquisitions() {
             notes: header.notes || null,
           })
           ok++
+          // Build Lark payload pieces from the validated form data so we
+          // can fire one consolidated notification at the end of the loop.
+          const p = products.find(pp => pp.id === item.product_id)
+          const launch = p ? extractLaunchName(p.name, p.category) : 'Unknown'
+          const qty = parseInt(item.quantity)
+          const unitJpy = parseFloat(item.unit_cost_jpy) || 0
+          const lineJpy = qty * unitJpy
+          larkItems.push({
+            name: p ? `${p.brand} | ${launch} | ${p.category || p.type} | ${p.language}` : 'Unknown',
+            quantity: qty,
+            cost: lineJpy,
+          })
+          totalJpy += lineJpy
+          totalUnits += qty
         } catch (err) {
           console.error('[JapanAcq] line failed:', err)
           fail++
@@ -192,6 +209,33 @@ export default function JapanAcquisitions() {
       }
       if (ok > 0) {
         addToast(`✓ ${ok} item${ok === 1 ? '' : 's'} added to Japan Warehouse${fail ? ` (${fail} failed)` : ''}`, ok === valid.length ? 'success' : 'info')
+
+        // Fire-and-forget Lark — reuses the 'purchased' type with
+        // sourceCountry='Japan' so dispatch routes to both the Acquisitions
+        // Squad (global visibility) and the Japan group (if configured).
+        try {
+          const vendor = vendors.find(v => v.id === header.vendor_id)
+          const acquirer = users.find(u => u.id === header.acquirer_id)
+          fetch('/api/lark-notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'purchased',
+              acquirer: acquirer?.name || 'Unknown',
+              vendor: vendor?.name || null,
+              sourceCountry: 'Japan',
+              currency: 'JPY',
+              totalCost: totalJpy,
+              totalCostUSD: convertToUSD(totalJpy, 'JPY'),
+              items: larkItems,
+              totalUnits,
+              // No carrier/tracking for offline buys
+            }),
+          }).catch(err => console.error('[lark-notify] jp_acquisition failed:', err))
+        } catch (err) {
+          console.error('[lark-notify] jp_acquisition payload build failed:', err)
+        }
+
         // Reset only line items, keep header so multiple batches from same
         // vendor go fast.
         setLineItems([{ id: 1, product_id: '', quantity: 1, unit_cost_jpy: '' }])

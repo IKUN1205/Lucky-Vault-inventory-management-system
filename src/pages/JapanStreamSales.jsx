@@ -129,6 +129,9 @@ export default function JapanStreamSales() {
 
     setSubmitting(true)
     let ok = 0, fail = 0
+    const larkItems = []
+    let totalJpyAccum = 0
+    let totalUnitsAccum = 0
     try {
       for (const item of valid) {
         try {
@@ -142,6 +145,23 @@ export default function JapanStreamSales() {
             notes: header.notes || null,
           })
           ok++
+          // Build Lark payload pieces from the form so one digest goes out
+          // after the whole submit completes.
+          const inv = inventory.find(r => r.product_id === item.product_id)
+          const p = inv?.product
+          const launch = p ? extractLaunchName(p.name, p.category) : 'Unknown'
+          const qty = parseInt(item.quantity)
+          const unitJpy = parseFloat(item.unit_price_jpy) || 0
+          const lineJpy = qty * unitJpy
+          larkItems.push({
+            name: p ? `${p.brand} | ${launch} | ${p.category || p.type} | ${p.language}` : 'Unknown',
+            quantity: qty,
+            unitJpy,
+            lineJpy,
+            lineUsd: convertToUSD(lineJpy, 'JPY'),
+          })
+          totalJpyAccum += lineJpy
+          totalUnitsAccum += qty
         } catch (err) {
           console.error('[JapanStreamSale] line failed:', err)
           fail++
@@ -149,6 +169,30 @@ export default function JapanStreamSales() {
       }
       if (ok > 0) {
         addToast(`✓ ${ok} sale${ok === 1 ? '' : 's'} recorded${fail ? ` (${fail} failed)` : ''}`, ok === valid.length ? 'success' : 'info')
+
+        // Fire-and-forget Lark — jp_stream_sale type, routes to Japan group
+        // (LARK_WEBHOOK_JAPAN env var, falls back to main URL).
+        try {
+          const streamer = users.find(u => u.id === header.streamer_id)
+          fetch('/api/lark-notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'jp_stream_sale',
+              streamer: streamer?.name || 'Unknown',
+              recordedBy: user?.name || null,
+              saleDate: header.sale_date,
+              notes: header.notes || null,
+              items: larkItems,
+              totalUnits: totalUnitsAccum,
+              totalJpy: totalJpyAccum,
+              totalUsd: convertToUSD(totalJpyAccum, 'JPY'),
+            }),
+          }).catch(err => console.error('[lark-notify] jp_stream_sale failed:', err))
+        } catch (err) {
+          console.error('[lark-notify] jp_stream_sale payload build failed:', err)
+        }
+
         setItems([{ id: 1, product_id: '', quantity: 1, unit_price_jpy: '' }])
         const [inv, recent] = await Promise.all([
           fetchJapanInventory(),

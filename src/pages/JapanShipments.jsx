@@ -178,6 +178,9 @@ export default function JapanShipments() {
 
     setSubmitting(true)
     let ok = 0, fail = 0
+    const larkItems = []
+    let totalJpyAccum = 0
+    let totalUnitsAccum = 0
     try {
       for (const item of valid) {
         try {
@@ -193,6 +196,20 @@ export default function JapanShipments() {
             notes: header.notes || null,
           })
           ok++
+          const inv = inventory.find(r => r.product_id === item.product_id)
+          const p = inv?.product
+          const launch = p ? extractLaunchName(p.name, p.category) : 'Unknown'
+          const qty = parseInt(item.quantity)
+          const unitJpy = parseFloat(item.unit_cost_jpy) || 0
+          const lineJpy = qty * unitJpy
+          larkItems.push({
+            name: p ? `${p.brand} | ${launch} | ${p.category || p.type} | ${p.language}` : 'Unknown',
+            quantity: qty,
+            lineJpy,
+            lineUsd: convertToUSD(lineJpy, 'JPY'),
+          })
+          totalJpyAccum += lineJpy
+          totalUnitsAccum += qty
         } catch (err) {
           console.error('[JapanShipment] line failed:', err)
           fail++
@@ -203,6 +220,33 @@ export default function JapanShipments() {
           `✓ Shipped ${ok} line${ok === 1 ? '' : 's'} → US (pending receive)${fail ? ` · ${fail} failed` : ''}`,
           ok === valid.length ? 'success' : 'info'
         )
+
+        // Fire-and-forget Lark — jp_to_us_shipment type. Dual-target:
+        // Japan group sees "we shipped this" + Acquisitions Squad sees
+        // "incoming package, ready for Intake to Master". AfterShip cron
+        // takes over for real-time tracking updates from here.
+        try {
+          const shipper = users.find(u => u.id === header.shipper_id)
+          fetch('/api/lark-notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'jp_to_us_shipment',
+              shipper: shipper?.name || 'Unknown',
+              shippedDate: header.shipped_date,
+              notes: header.notes || null,
+              items: larkItems,
+              totalUnits: totalUnitsAccum,
+              totalJpy: totalJpyAccum,
+              totalUsd: convertToUSD(totalJpyAccum, 'JPY'),
+              carrier: header.carrier || null,
+              trackingNumber: header.tracking_number?.trim() || null,
+            }),
+          }).catch(err => console.error('[lark-notify] jp_to_us_shipment failed:', err))
+        } catch (err) {
+          console.error('[lark-notify] jp_to_us_shipment payload build failed:', err)
+        }
+
         // Reset items, keep header for batch-shipping same package
         setItems([{ id: 1, product_id: '', quantity: 1, unit_cost_jpy: '', source_acquisition_id: '' }])
         // Refresh

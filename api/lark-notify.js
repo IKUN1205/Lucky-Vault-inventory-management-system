@@ -88,6 +88,20 @@ export default async function handler(req, res) {
     return handleReceive(body, res)
   }
 
+  // ----- Japan-side events ----------------------------------------------
+  // Three flavors:
+  //   jp_stream_sale  — direct livestream sale out of Japan Warehouse
+  //   jp_to_us_shipment — cross-border shipment; dual-target so US
+  //                       Acquisitions team also gets a heads-up
+  // (日本进货 reuses the existing 'purchased' type with sourceCountry='Japan'
+  //  + currency='JPY' — buildMessage already handles those cases.)
+  if (type === 'jp_stream_sale') {
+    return handleJapanEvent(body, res, buildJpStreamSale, /*alsoToAcquisitions=*/false)
+  }
+  if (type === 'jp_to_us_shipment') {
+    return handleJapanEvent(body, res, buildJpToUSShipment, /*alsoToAcquisitions=*/true)
+  }
+
   // ----- Singles in-and-out events --------------------------------------
   // All five route to the same "inventory in/out" Lark group, configured
   // via LARK_WEBHOOK_INVENTORY_IO (falls back to LARK_WEBHOOK_URL).
@@ -269,29 +283,40 @@ async function handlePurchased(body, res) {
     return res.status(400).json({ error: err.message || 'Invalid payload' })
   }
 
-  const acqUrl = process.env.LARK_WEBHOOK_ACQUISITIONS
-  const url = acqUrl || process.env.LARK_WEBHOOK_URL
-  if (!url) {
+  // Dual-target routing:
+  //   - All purchases → Acquisitions Squad (fallback: main URL)
+  //   - Japan-sourced purchases ALSO → Japan group (if LARK_WEBHOOK_JAPAN
+  //     is set). De-duped if the same URL is used for both.
+  // Sending to acquisitions for Japan purchases too is intentional: gives
+  // global visibility into spending and keeps the existing audit habit.
+  const acqUrl = process.env.LARK_WEBHOOK_ACQUISITIONS || process.env.LARK_WEBHOOK_URL
+  const jpUrl = (body.sourceCountry === 'Japan') ? process.env.LARK_WEBHOOK_JAPAN : null
+  const targets = []
+  if (acqUrl) targets.push({ name: 'acquisitions', url: acqUrl })
+  if (jpUrl && jpUrl !== acqUrl) targets.push({ name: 'japan', url: jpUrl })
+  if (targets.length === 0) {
     console.error('[lark-notify] purchased: no webhook configured (LARK_WEBHOOK_ACQUISITIONS / LARK_WEBHOOK_URL)')
     return res.status(500).json({ error: 'No webhook configured' })
   }
 
-  try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ msg_type: 'text', content: { text } })
-    })
-    const txt = await r.text()
-    if (!r.ok) {
-      console.error('[lark-notify] purchased: Lark non-OK:', r.status, txt)
-      return res.status(502).json({ error: 'Lark webhook failed', status: r.status, details: txt })
+  const results = await Promise.all(targets.map(async t => {
+    try {
+      const r = await fetch(t.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text } })
+      })
+      const txt = await r.text()
+      if (!r.ok) {
+        console.error(`[lark-notify] purchased ${t.name}: Lark non-OK:`, r.status, txt)
+      }
+      return { target: t.name, ok: r.ok, status: r.status, response: txt }
+    } catch (err) {
+      console.error(`[lark-notify] purchased ${t.name} send failed:`, err)
+      return { target: t.name, ok: false, error: String(err?.message || err) }
     }
-    return res.status(200).json({ ok: true, lark: txt, target: acqUrl ? 'acquisitions' : 'main_fallback' })
-  } catch (err) {
-    console.error('[lark-notify] purchased: send failed:', err)
-    return res.status(500).json({ error: 'Failed to call Lark webhook', message: String(err?.message || err) })
-  }
+  }))
+  return res.status(200).json({ ok: results.every(r => r.ok), results })
 }
 
 // ---- receive: dual-target dispatch (Acquisitions Squad + Backend Core) ----
@@ -867,4 +892,148 @@ function buildSingleDeleted(body) {
   }
   if (body.operator_name) parts.push(`by ${body.operator_name}`)
   return parts.join(' · ')
+}
+
+// ============================================================================
+// Japan-side Lark dispatch
+// ============================================================================
+// Japan events route to LARK_WEBHOOK_JAPAN if it's set, otherwise fall
+// through to the main URL so messages never silently drop. jp_to_us_shipment
+// ALSO fans out to LARK_WEBHOOK_ACQUISITIONS (US-side intake team) so
+// they know a package is on the way without having to refresh the
+// pending-acquisitions list. Duplicate target URLs are de-duped.
+function getJapanWebhook() {
+  return process.env.LARK_WEBHOOK_JAPAN || process.env.LARK_WEBHOOK_URL || null
+}
+
+async function handleJapanEvent(body, res, builder, alsoToAcquisitions) {
+  let text
+  try {
+    text = builder(body)
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Invalid payload' })
+  }
+
+  const jpUrl = getJapanWebhook()
+  const acqUrl = alsoToAcquisitions ? process.env.LARK_WEBHOOK_ACQUISITIONS : null
+  const targets = []
+  if (jpUrl) targets.push({ name: 'japan', url: jpUrl })
+  if (acqUrl && acqUrl !== jpUrl) targets.push({ name: 'acquisitions', url: acqUrl })
+  if (targets.length === 0) {
+    console.error('[lark-notify] Japan event: no webhook configured')
+    return res.status(500).json({ error: 'No webhook configured (set LARK_WEBHOOK_JAPAN or LARK_WEBHOOK_URL)' })
+  }
+
+  const results = await Promise.all(targets.map(async t => {
+    try {
+      const r = await fetch(t.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text } }),
+      })
+      const txt = await r.text()
+      return { target: t.name, ok: r.ok, status: r.status, response: txt }
+    } catch (err) {
+      console.error(`[lark-notify] Japan event ${t.name} send failed:`, err)
+      return { target: t.name, ok: false, error: String(err?.message || err) }
+    }
+  }))
+
+  return res.status(200).json({ ok: results.every(r => r.ok), results })
+}
+
+// 🎌 Japan Live Sale Recorded
+// Streamer: Will
+// Date: 2026-05-21
+// • OP-13 Booster Box × 5  ¥50,000  (≈ $335 USD)
+// Total: 5 units / ¥50,000 (≈ $335 USD)
+// Time: 2026-05-21 14:32 PT
+function buildJpStreamSale(body) {
+  const {
+    streamer,                  // streamer name
+    recordedBy,                // who entered the form (optional)
+    saleDate,                  // YYYY-MM-DD
+    items = [],                // [{ name, quantity, unitJpy, lineJpy, lineUsd }]
+    totalUnits,
+    totalJpy,
+    totalUsd,
+    notes,
+  } = body
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('jp_stream_sale: missing items')
+  }
+  const lines = []
+  lines.push('🎌 Japan Live Sale Recorded')
+  if (streamer) lines.push(`Streamer: ${streamer}`)
+  if (recordedBy && recordedBy !== streamer) lines.push(`Recorded by: ${recordedBy}`)
+  if (saleDate) lines.push(`Date: ${saleDate}`)
+  if (notes) lines.push(`Notes: ${notes}`)
+  lines.push('')
+  for (const it of items) {
+    const jpyStr = it.lineJpy != null ? `  ¥${Number(it.lineJpy).toLocaleString()}` : ''
+    const usdStr = it.lineUsd != null ? `  (≈ ${fmtUsd(it.lineUsd)})` : ''
+    lines.push(`• ${it.name || 'Unknown'} × ${it.quantity ?? 0}${jpyStr}${usdStr}`)
+  }
+  lines.push('')
+  const totals = []
+  if (totalUnits != null) totals.push(`${totalUnits} units`)
+  if (totalJpy != null) totals.push(`¥${Number(totalJpy).toLocaleString()}`)
+  if (totalUsd != null) totals.push(`≈ ${fmtUsd(totalUsd)}`)
+  if (totals.length) lines.push(`Total: ${totals.join(' / ')}`)
+  lines.push(`Time: ${nowUtcStamp()}`)
+  return lines.join('\n')
+}
+
+// 📦🇯🇵→🇺🇸 Japan→US Shipment Dispatched
+// Shipper: Will
+// Date: 2026-05-21
+// • OP-13 Booster Box × 30  cost basis ¥150,000  (≈ $1,005 USD)
+// Total: 30 units / cost basis ¥150,000 (≈ $1,005 USD)
+// Carrier: Japan Post
+// Tracking: EE123456789JP
+// Track: https://...
+// Time: ...
+function buildJpToUSShipment(body) {
+  const {
+    shipper,
+    shippedDate,
+    items = [],
+    totalUnits,
+    totalJpy,
+    totalUsd,
+    carrier,
+    trackingNumber,
+    notes,
+  } = body
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('jp_to_us_shipment: missing items')
+  }
+  const lines = []
+  lines.push('📦🇯🇵→🇺🇸 Japan→US Shipment Dispatched')
+  if (shipper) lines.push(`Shipper: ${shipper}`)
+  if (shippedDate) lines.push(`Date: ${shippedDate}`)
+  if (notes) lines.push(`Notes: ${notes}`)
+  lines.push('')
+  for (const it of items) {
+    const costStr = it.lineJpy != null
+      ? `  cost basis ¥${Number(it.lineJpy).toLocaleString()}${it.lineUsd != null ? `  (≈ ${fmtUsd(it.lineUsd)})` : ''}`
+      : ''
+    lines.push(`• ${it.name || 'Unknown'} × ${it.quantity ?? 0}${costStr}`)
+  }
+  lines.push('')
+  const totals = []
+  if (totalUnits != null) totals.push(`${totalUnits} units`)
+  if (totalJpy != null) totals.push(`cost basis ¥${Number(totalJpy).toLocaleString()}`)
+  if (totalUsd != null) totals.push(`≈ ${fmtUsd(totalUsd)}`)
+  if (totals.length) lines.push(`Total: ${totals.join(' / ')}`)
+  if (trackingNumber) {
+    lines.push('')
+    lines.push(`Carrier: ${carrier || 'Unknown'}`)
+    lines.push(`Tracking: ${trackingNumber}`)
+    const url = buildTrackingUrl(carrier, trackingNumber)
+    if (url) lines.push(`Track: ${url}`)
+    lines.push('⏳ US team — pending receive in Intake to Master')
+  }
+  lines.push(`Time: ${nowUtcStamp()}`)
+  return lines.join('\n')
 }
