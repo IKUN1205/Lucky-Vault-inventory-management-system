@@ -1559,3 +1559,304 @@ export const notifySlabsLark = (payload) => {
     console.warn('[notifySlabsLark] threw synchronously (non-fatal):', err)
   }
 }
+
+// ============================================================================
+// JAPAN inventory system — helpers
+// ============================================================================
+// All Japan-side data ops route through here so pages stay thin. Japan reuses
+// the existing acquisitions / inventory / vendors / users tables, distinguished
+// by:
+//   - locations.name = 'Japan Warehouse'
+//   - acquisitions.origin = 'jp_vendor' | 'jp_to_us_shipment'
+//   - the synthetic "Japan Warehouse (Internal Transfer)" vendor flags
+//     cross-border shipment acquisitions
+// See scripts/add_japan_inventory_system.sql for the schema additions.
+// ============================================================================
+
+// Cached lookups so we don't re-query for these singletons on every action.
+// Reset on page reload (per-tab cache via module scope is fine for these).
+let _cachedJapanLocationId = null
+let _cachedJapanInternalVendorId = null
+
+export const fetchJapanWarehouseLocation = async () => {
+  if (_cachedJapanLocationId) return _cachedJapanLocationId
+  const { data, error } = await supabase
+    .from('locations')
+    .select('id, name')
+    .eq('name', 'Japan Warehouse')
+    .maybeSingle()
+  if (error) throw error
+  if (!data) throw new Error("Location 'Japan Warehouse' not found — run scripts/add_japan_inventory_system.sql first")
+  _cachedJapanLocationId = data.id
+  return data.id
+}
+
+export const fetchJapanInternalVendor = async () => {
+  if (_cachedJapanInternalVendorId) return _cachedJapanInternalVendorId
+  const { data, error } = await supabase
+    .from('vendors')
+    .select('id, name')
+    .eq('name', 'Japan Warehouse (Internal Transfer)')
+    .maybeSingle()
+  if (error) throw error
+  if (!data) throw new Error("Vendor 'Japan Warehouse (Internal Transfer)' not found — run scripts/add_japan_inventory_system.sql first")
+  _cachedJapanInternalVendorId = data.id
+  return data.id
+}
+
+// View what's currently at Japan Warehouse. Same shape as fetchInventory but
+// pre-filtered to the JP location so the page doesn't have to know the
+// location id.
+export const fetchJapanInventory = async () => {
+  const locId = await fetchJapanWarehouseLocation()
+  const { data, error } = await supabase
+    .from('inventory')
+    .select(`
+      *,
+      product:products(*),
+      location:locations(*)
+    `)
+    .eq('location_id', locId)
+    .or('deleted.is.null,deleted.eq.false')
+  if (error) throw error
+  return data || []
+}
+
+// JP-side vendors (for the Japan Acquisitions vendor dropdown). Returns
+// vendors marked country='JP' plus any vendors without a country (legacy).
+// Excludes the synthetic internal-transfer vendor — that's only used by
+// the Japan→US shipment page.
+export const fetchJapanVendors = async () => {
+  const { data, error } = await supabase
+    .from('vendors')
+    .select('*')
+    .eq('active', true)
+    .or('country.eq.JP,country.is.null')
+    .neq('name', 'Japan Warehouse (Internal Transfer)')
+    .order('name')
+  if (error) throw error
+  return data || []
+}
+
+// Recent Japan offline purchases (jp_vendor origin only), for the
+// Acquisitions page's "recent" list and as source candidates for the
+// Japan→US Shipment page's optional `source_acquisition_id` linkage.
+export const fetchJapanAcquisitions = async (limit = 50) => {
+  const { data, error } = await supabase
+    .from('acquisitions')
+    .select(`
+      *,
+      vendor:vendors(name),
+      payment_method:payment_methods(name),
+      acquirer:users!acquirer_id(name),
+      product:products(*)
+    `)
+    .eq('origin', 'jp_vendor')
+    .or('deleted.is.null,deleted.eq.false')
+    .order('date_purchased', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return data || []
+}
+
+// Japan offline purchase = instant receive (no separate Intake step).
+// Atomic-ish (best effort): create acquisition row with status='Received',
+// then bump Japan inventory by the qty. If inventory write fails we leave
+// the acquisition row in place so the user can manually reconcile rather
+// than silently swallow it (matches the US Intake to Master semantics).
+export const createJapanAcquisition = async ({
+  product_id, quantity, unit_cost_jpy, vendor_id, payment_method_id,
+  acquirer_id, date_purchased, notes,
+}) => {
+  const locId = await fetchJapanWarehouseLocation()
+  const qty = parseInt(quantity, 10)
+  const costJpy = parseFloat(unit_cost_jpy) || 0
+  const totalCostJpy = costJpy * qty
+  const totalCostUsd = convertToUSD(totalCostJpy, 'JPY')
+  const unitCostUsd = qty > 0 ? totalCostUsd / qty : 0
+
+  const acqRow = {
+    date_purchased: date_purchased || new Date().toLocaleDateString('en-CA'),
+    acquirer_id: acquirer_id || null,
+    source_country: 'JP',
+    vendor_id: vendor_id || null,
+    payment_method_id: payment_method_id || null,
+    product_id,
+    quantity_purchased: qty,
+    quantity_received: qty,                  // instant-receive
+    cost: totalCostJpy,
+    currency: 'JPY',
+    cost_usd: totalCostUsd,
+    status: 'Received',                       // instant-receive
+    origin: 'jp_vendor',
+    notes: notes || null,
+  }
+
+  const { data: acq, error: acqErr } = await supabase
+    .from('acquisitions')
+    .insert(acqRow)
+    .select()
+    .single()
+  if (acqErr) throw acqErr
+
+  // Bump Japan inventory using the existing weighted-avg helper. Cost basis
+  // arg = per-unit USD so it averages correctly with any existing stock of
+  // the same SKU.
+  await updateInventory(product_id, locId, qty, unitCostUsd)
+  return acq
+}
+
+// Record a direct livestream sale out of Japan Warehouse. Decrements
+// inventory + inserts into japan_stream_sales (audit log). USD snapshot
+// uses the static exchange rate at sale time.
+export const createJapanStreamSale = async ({
+  product_id, quantity, unit_price_jpy, sale_date,
+  streamer_id, recorded_by_id, notes,
+}) => {
+  const locId = await fetchJapanWarehouseLocation()
+  const qty = parseInt(quantity, 10)
+  const unitJpy = parseFloat(unit_price_jpy) || 0
+  const revenueJpy = unitJpy * qty
+  const revenueUsd = convertToUSD(revenueJpy, 'JPY')
+
+  const row = {
+    product_id,
+    quantity: qty,
+    unit_price_jpy: unitJpy || null,
+    revenue_jpy: revenueJpy,
+    revenue_usd: revenueUsd,
+    sale_date: sale_date || new Date().toLocaleDateString('en-CA'),
+    streamer_id: streamer_id || null,
+    recorded_by_id: recorded_by_id || null,
+    notes: notes || null,
+  }
+  const { data: sale, error: saleErr } = await supabase
+    .from('japan_stream_sales')
+    .insert(row)
+    .select()
+    .single()
+  if (saleErr) throw saleErr
+
+  // Decrement Japan inventory (negative delta — cost basis unchanged on outflow)
+  await updateInventory(product_id, locId, -qty)
+  return sale
+}
+
+export const fetchJapanStreamSales = async (limit = 50) => {
+  const { data, error } = await supabase
+    .from('japan_stream_sales')
+    .select(`
+      *,
+      product:products(name, brand, language, type, category),
+      streamer:users!streamer_id(name),
+      recorded_by:users!recorded_by_id(name)
+    `)
+    .eq('deleted', false)
+    .order('sale_date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return data || []
+}
+
+// Soft-delete a Japan stream sale and refund the inventory. Mirrors the
+// US stream_count Undo flow's atomicity convention — reverse inventory
+// FIRST, then mark the row deleted, so a mid-flow crash leaves the row
+// visible (recoverable) rather than missing-but-stock-adjusted.
+export const undoJapanStreamSale = async (saleId, deletedById = null) => {
+  const { data: sale, error: getErr } = await supabase
+    .from('japan_stream_sales')
+    .select('id, product_id, quantity, deleted')
+    .eq('id', saleId)
+    .maybeSingle()
+  if (getErr) throw getErr
+  if (!sale) throw new Error('Sale not found')
+  if (sale.deleted) throw new Error('Sale already deleted')
+
+  const locId = await fetchJapanWarehouseLocation()
+  await updateInventory(sale.product_id, locId, sale.quantity)  // refund (positive delta)
+  const { error: delErr } = await supabase
+    .from('japan_stream_sales')
+    .update({
+      deleted: true,
+      deleted_at: new Date().toISOString(),
+      deleted_by_id: deletedById || null,
+    })
+    .eq('id', saleId)
+  if (delErr) throw delErr
+}
+
+// Japan→US cross-border shipment. Creates a 'jp_to_us_shipment' acquisition
+// row owned by the synthetic Internal Transfer vendor — this makes it pop
+// up in Intake to Master automatically once it reaches the US side. Japan
+// inventory is decremented immediately (items have physically left).
+// Optional source_acquisition_id links back to the original Japan buy for
+// cost-trace down the road.
+export const createJapanToUSShipment = async ({
+  product_id, quantity, unit_cost_jpy, source_acquisition_id,
+  carrier, tracking_number, shipped_date, shipper_id, notes,
+}) => {
+  const locId = await fetchJapanWarehouseLocation()
+  const vendorId = await fetchJapanInternalVendor()
+  const qty = parseInt(quantity, 10)
+  const costJpy = parseFloat(unit_cost_jpy) || 0
+  const totalCostJpy = costJpy * qty
+  const totalCostUsd = convertToUSD(totalCostJpy, 'JPY')
+
+  const acqRow = {
+    date_purchased: shipped_date || new Date().toLocaleDateString('en-CA'),
+    acquirer_id: shipper_id || null,
+    source_country: 'JP',
+    vendor_id: vendorId,
+    payment_method_id: null,
+    product_id,
+    quantity_purchased: qty,
+    quantity_received: 0,                     // arrives at US later
+    cost: totalCostJpy,
+    currency: 'JPY',
+    cost_usd: totalCostUsd,
+    status: 'Purchased',                      // pending US Intake
+    origin: 'jp_to_us_shipment',
+    source_acquisition_id: source_acquisition_id || null,
+    carrier: carrier || null,
+    tracking_number: tracking_number?.trim() || null,
+    notes: notes || null,
+  }
+
+  const { data: acq, error: acqErr } = await supabase
+    .from('acquisitions')
+    .insert(acqRow)
+    .select()
+    .single()
+  if (acqErr) throw acqErr
+
+  await updateInventory(product_id, locId, -qty)  // items physically gone
+  return acq
+}
+
+// All active Japan→US shipments (for the shipment page's recent list +
+// in-transit visibility). Filters out delivered/canceled by default;
+// pass { includeAll: true } to see everything.
+export const fetchJapanToUSShipments = async ({ limit = 50, includeAll = false } = {}) => {
+  let q = supabase
+    .from('acquisitions')
+    .select(`
+      *,
+      acquirer:users!acquirer_id(name),
+      vendor:vendors(name),
+      product:products(*),
+      source_acquisition:acquisitions!source_acquisition_id(id, date_purchased, vendor:vendors(name))
+    `)
+    .eq('origin', 'jp_to_us_shipment')
+    .or('deleted.is.null,deleted.eq.false')
+    .order('date_purchased', { ascending: false })
+    .limit(limit)
+  if (!includeAll) {
+    q = q.in('status', ['Purchased', 'Partially Received'])
+  }
+  const { data, error } = await q
+  if (error) throw error
+  return data || []
+}
+

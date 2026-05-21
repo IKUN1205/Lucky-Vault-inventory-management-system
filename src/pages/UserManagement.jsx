@@ -12,8 +12,8 @@ import { Users, Plus, Edit2, Trash2, Save, X, UserPlus, Key, RefreshCw, Check } 
 // Management.
 //
 // Section ordering matches the sidebar (Overview → Receive → Operations →
-// Sales → Reports → Cards → Admin) so the picker reads top-to-bottom the
-// same way the sidebar does. Pages that aren't in the sidebar (legacy or
+// Sales → Reports → Cards → Japan → Admin) so the picker reads top-to-bottom
+// the same way the sidebar does. Pages that aren't in the sidebar (legacy or
 // deep-link only) live in a final "Legacy / Deep-link" section, which is
 // `collapsible: true` so it doesn't bulk up the picker by default.
 const PAGE_SECTIONS = [
@@ -57,6 +57,14 @@ const PAGE_SECTIONS = [
     { path: '/cards', label: 'Cards Inventory' },
     { path: '/cards/scan', label: 'Cards Scan' },
     { path: '/cards/log', label: 'Cards Activity Log' },
+  ]},
+  // Japan 🇯🇵 — lightweight branch, shared DB.
+  // See scripts/add_japan_inventory_system.sql.
+  { title: 'Japan 🇯🇵', items: [
+    { path: '/jp/inventory', label: '日本库存 / Japan Inventory' },
+    { path: '/jp/acquisitions', label: '日本进货 / Japan Acquisitions' },
+    { path: '/jp/stream-sales', label: '日本直播售卖 / Japan Stream Sales' },
+    { path: '/jp/shipments', label: '日本→美国发货 / Japan→US Shipment' },
   ]},
   { title: 'Admin', items: [
     { path: '/high-value', label: 'High Value' },

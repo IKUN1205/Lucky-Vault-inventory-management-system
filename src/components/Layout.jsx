@@ -34,7 +34,8 @@ import {
   CopyPlus,
   History as HistoryIcon,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Tv2
 } from 'lucide-react'
 
 // localStorage key for the icon-only-vs-expanded sidebar preference.
@@ -113,6 +114,19 @@ const navSections = [
       { path: '/cards',        label: 'Inventory',    icon: Layers },
       { path: '/cards/scan',   label: 'Scan',         icon: ScanLine },
       { path: '/cards/log',    label: 'Activity Log', icon: HistoryIcon },
+    ]
+  },
+  {
+    // Japan inventory system (2026-05-21). Lightweight branch that lives
+    // inside the same DB — Japan Warehouse location + jp_vendor /
+    // jp_to_us_shipment acquisition origins. Japan team only needs these
+    // four pages; the rest of the app's permissions can stay off.
+    title: 'Japan 🇯🇵',
+    items: [
+      { path: '/jp/inventory',     label: '日本库存',       icon: Package },
+      { path: '/jp/acquisitions',  label: '日本进货',       icon: ShoppingCart },
+      { path: '/jp/stream-sales',  label: '日本直播售卖',   icon: Tv2 },
+      { path: '/jp/shipments',     label: '日本→美国发货',  icon: Truck },
     ]
   },
   {

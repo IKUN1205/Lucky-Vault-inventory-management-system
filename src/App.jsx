@@ -40,6 +40,10 @@ import SlabsScan from './pages/SlabsScan'
 import Inventory from './pages/Inventory'
 import CardsScan from './pages/CardsScan'
 import CardsLog from './pages/CardsLog'
+import JapanInventory from './pages/JapanInventory'
+import JapanAcquisitions from './pages/JapanAcquisitions'
+import JapanStreamSales from './pages/JapanStreamSales'
+import JapanShipments from './pages/JapanShipments'
 
 // Components
 import Layout from './components/Layout'
@@ -186,6 +190,19 @@ function AppRoutes() {
       } />
       <Route path="/cards/log" element={
         <ProtectedRoute path="/singles"><Layout><CardsLog /></Layout></ProtectedRoute>
+      } />
+      {/* Japan inventory system — see scripts/add_japan_inventory_system.sql */}
+      <Route path="/jp/inventory" element={
+        <ProtectedRoute path="/jp/inventory"><Layout><JapanInventory /></Layout></ProtectedRoute>
+      } />
+      <Route path="/jp/acquisitions" element={
+        <ProtectedRoute path="/jp/acquisitions"><Layout><JapanAcquisitions /></Layout></ProtectedRoute>
+      } />
+      <Route path="/jp/stream-sales" element={
+        <ProtectedRoute path="/jp/stream-sales"><Layout><JapanStreamSales /></Layout></ProtectedRoute>
+      } />
+      <Route path="/jp/shipments" element={
+        <ProtectedRoute path="/jp/shipments"><Layout><JapanShipments /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
