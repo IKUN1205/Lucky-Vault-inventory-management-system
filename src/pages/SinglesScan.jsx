@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fetchSingleByIdentifier, fetchCardSets } from '../lib/supabase'
+import { fetchSingleByIdentifier, fetchCardSets, updateSingle } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SellSingleModal from '../components/SellSingleModal'
 import QuickIntakeModal from '../components/QuickIntakeModal'
@@ -103,16 +103,60 @@ export default function SinglesScan() {
       const existing = await fetchSingleByIdentifier(trimmed)
 
       if (mode === 'intake') {
+        // Stacking intake (per user directive 2026-05-21): if the same TCG ID
+        // is scanned again AND the existing row is a raw card sitting in
+        // inventory, bump its quantity by 1 instead of refusing. No modal,
+        // no extra clicks — the cashier just keeps scanning. The condition
+        // is inherited from the existing row (we don't ask, because for the
+        // 95% case "same card, just another copy" it's the same condition).
+        //
+        // We still REFUSE in these cases:
+        //   - Existing is graded (cert# is unique; a second scan means the
+        //     scanner mis-read or the customer brought a sold/listed slab)
+        //   - Existing is sold / listed / anything non-inventory
+        //   - Existing is soft-deleted (fetchSingleByIdentifier already
+        //     filters those out, but defensive check in case it changes)
         if (existing) {
-          // Duplicate — refuse to intake again, point to existing
-          pushHistory({
-            cert: trimmed,
-            mode,
-            ok: false,
-            msg: `Already in inventory (${existing.status}). Card: ${existing.card_name} ${existing.card_number || ''}`,
-            single: existing
-          })
-          addToast?.(`Scanned ${trimmed} already in inventory`, 'error')
+          const isStackable =
+            existing.form === 'raw'
+            && existing.status === 'in_inventory'
+            && existing.deleted !== true
+          if (isStackable) {
+            try {
+              const newQty = (Number(existing.quantity) || 0) + 1
+              const updated = await updateSingle(existing.id, { quantity: newQty })
+              pushHistory({
+                cert: trimmed,
+                mode,
+                ok: true,
+                msg: `+1 to existing ${existing.condition || 'raw'} stack — now qty ${newQty}`,
+                single: updated,
+              })
+              addToast?.(`+1 to ${existing.card_name} (now ${newQty})`, 'success')
+            } catch (err) {
+              console.error('[SinglesScan] stack bump failed:', err)
+              pushHistory({
+                cert: trimmed,
+                mode,
+                ok: false,
+                msg: `Failed to bump quantity: ${err.message || err}`,
+                single: existing,
+              })
+              addToast?.(`Failed to bump qty: ${err.message || err}`, 'error')
+            }
+          } else {
+            // Graded / sold / listed / etc. — keep the old refuse behavior.
+            // Stacking these would be wrong (cert# is unique; sold rows
+            // shouldn't accept new inventory without a status flip).
+            pushHistory({
+              cert: trimmed,
+              mode,
+              ok: false,
+              msg: `Already in inventory (${existing.status}, ${existing.form}). Use Cards Inventory to adjust.`,
+              single: existing
+            })
+            addToast?.(`${trimmed}: ${existing.form} ${existing.status} — can't stack`, 'error')
+          }
         } else {
           // Not found → open in-page QuickIntakeModal pre-filled with this
           // scanner-read identifier. Keeps the user on the Scan page so they
