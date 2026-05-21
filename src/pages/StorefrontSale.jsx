@@ -34,9 +34,14 @@ import {
 const today = () => new Date().toLocaleDateString('en-CA')
 
 const KIND_META = {
-  sealed: { icon: Package, color: 'text-amber-300',   label: 'Sealed' },
-  slab:   { icon: Diamond, color: 'text-emerald-300', label: 'Slab'   },
-  single: { icon: Layers,  color: 'text-blue-300',    label: 'Single' },
+  sealed:        { icon: Package, color: 'text-amber-300',   label: 'Sealed'    },
+  slab:          { icon: Diamond, color: 'text-emerald-300', label: 'Slab'      },
+  single:        { icon: Layers,  color: 'text-blue-300',    label: 'Single'    },
+  // Buy-only manual lines: cashier types description because the item isn't
+  // in our cards inventory yet (cert / TCG ID not captured). These rows are
+  // recorded in storefront_sales only; no slabs / singles row is created.
+  slab_manual:   { icon: Diamond, color: 'text-emerald-300', label: 'Slab (manual)' },
+  single_manual: { icon: Layers,  color: 'text-blue-300',    label: 'Single (manual)' },
 }
 
 const fmtUsd = (n) => {
@@ -58,10 +63,14 @@ export default function StorefrontSale() {
   const [cart, setCart] = useState([])
   const [unknownCode, setUnknownCode] = useState(null)
 
-  // Trade state. transactionType='sale' is the default; switching to 'trade'
-  // reveals the trade-in value input and the signed net-cash display.
+  // Transaction type: 'sale' (default), 'trade', or 'buy'.
+  //   - sale  : customer pays us. cart total = customer pays.
+  //   - trade : items exchanged. trade-in value input shows; net cash signed.
+  //   - buy   : we pay customer. cart shows what we're buying (sealed via
+  //             scan, slabs/singles via Manual Line button). net cash = -gross.
   const [transactionType, setTransactionType] = useState('sale')
   const [tradeInValue, setTradeInValue] = useState('')   // string so the input stays controlled
+  const [manualLineDraft, setManualLineDraft] = useState(null)  // open modal state
 
   // Daily summary state. Re-fetched after each successful submit so the
   // widget always reflects today's running totals.
@@ -113,12 +122,15 @@ export default function StorefrontSale() {
     return cart.reduce((sum, line) => sum + (Number(line.quantity ?? 1) || 0), 0)
   }, [cart])
 
-  // Trade math: net cash = what we receive (positive) or pay (negative)
-  // cartGross   = total value of items the customer is taking
-  // tradeIn     = total value (cashier-estimated) of items they're bringing
-  // netCash     = cartGross - tradeIn  (signed)
+  // Net cash direction by transaction type:
+  //   sale  → +cartGross (customer pays us)
+  //   trade → cartGross − tradeIn  (signed; can be negative)
+  //   buy   → -cartGross           (we pay customer the full amount)
   const tradeInNum = Number(tradeInValue) || 0
-  const netCash = transactionType === 'trade' ? (cartGross - tradeInNum) : cartGross
+  const netCash =
+    transactionType === 'buy'   ? -cartGross
+    : transactionType === 'trade' ? (cartGross - tradeInNum)
+    :                              cartGross
 
   // ---------- cart line builders (unchanged from v1) ----------
 
@@ -240,10 +252,27 @@ export default function StorefrontSale() {
     setUnknownCode(null)
     try {
       const result = await lookupScannedCode(code)
-      if (result.kind === 'sealed') addOrIncrementSealed(result)
-      else if (result.kind === 'slab') addSlab(result.slab)
-      else if (result.kind === 'single') addOrIncrementSingle(result.single)
-      else if (result.kind === 'unknown') setUnknownCode(code)
+      if (result.kind === 'sealed') {
+        addOrIncrementSealed(result)
+      } else if (result.kind === 'slab') {
+        // In Buy mode, scanning an existing slab's cert# doesn't make sense
+        // — customer is selling us a NEW slab that isn't in our system yet.
+        // Tell the cashier to use the manual-line button so they capture
+        // the right description (no auto-create into slabs table).
+        if (transactionType === 'buy') {
+          addToast('In Buy mode, add slabs via + Add Manual Line (we don\'t auto-create slab records)', 'info')
+        } else {
+          addSlab(result.slab)
+        }
+      } else if (result.kind === 'single') {
+        if (transactionType === 'buy') {
+          addToast('In Buy mode, add singles via + Add Manual Line', 'info')
+        } else {
+          addOrIncrementSingle(result.single)
+        }
+      } else if (result.kind === 'unknown') {
+        setUnknownCode(code)
+      }
     } catch (err) {
       console.error('[StorefrontSale] lookup failed:', err)
       addToast(`Lookup failed: ${err.message || err}`, 'error')
@@ -252,6 +281,30 @@ export default function StorefrontSale() {
       setScanValue('')
       setTimeout(() => inputRef.current?.focus(), 0)
     }
+  }
+
+  // Open the manual-line modal (Buy mode only). The modal handles the
+  // form; on save it calls back with { kind, description, quantity, price }
+  // which we append as a slab_manual / single_manual cart line.
+  const openManualLine = (subKind /* 'slab' | 'single' */) => {
+    setManualLineDraft({ subKind, description: '', quantity: 1, price: '' })
+  }
+  const saveManualLine = () => {
+    const draft = manualLineDraft
+    if (!draft) return
+    const desc = (draft.description || '').trim()
+    if (!desc) { addToast('Description is required', 'error'); return }
+    const qty = Math.max(1, parseInt(draft.quantity) || 1)
+    const price = parseFloat(draft.price)
+    if (isNaN(price) || price < 0) { addToast('Price required', 'error'); return }
+    const kind = draft.subKind === 'slab' ? 'slab_manual' : 'single_manual'
+    const key = `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    setCart(prev => [
+      ...prev,
+      { kind, key, description: desc, quantity: draft.subKind === 'slab' ? 1 : qty, price: String(price) },
+    ])
+    setManualLineDraft(null)
+    addToast(`Added: ${draft.subKind} — ${desc}`, 'success')
   }
 
   // ---------- cart editing ----------
@@ -278,14 +331,22 @@ export default function StorefrontSale() {
     for (const line of cart) {
       const price = Number(line.price)
       if (line.price === '' || line.price == null || isNaN(price) || price < 0) {
-        const label = line.kind === 'sealed' ? line.product.name
-                    : line.kind === 'slab'   ? line.slab.item_name
-                                              : line.single.card_name
+        const label =
+          line.kind === 'sealed' ? line.product.name
+          : line.kind === 'slab' ? line.slab.item_name
+          : line.kind === 'single' ? line.single.card_name
+          : line.kind === 'slab_manual' || line.kind === 'single_manual' ? (line.description || '(no description)')
+          : 'unknown'
         return `Missing price for: ${label}`
       }
       const qty = Number(line.quantity ?? 1)
       if (line.kind !== 'slab' && (!qty || qty < 1)) {
         return 'Quantity must be at least 1'
+      }
+      // In buy mode, manual lines require a description (already enforced in
+      // the modal save path, but double-check here).
+      if ((line.kind === 'slab_manual' || line.kind === 'single_manual') && !(line.description || '').trim()) {
+        return 'Manual line missing description'
       }
     }
     if (transactionType === 'trade') {
@@ -340,10 +401,21 @@ export default function StorefrontSale() {
                 price: Number(line.price) || 0,
               }
             }
-            const setLabel = line.single.set?.name ? ` (${line.single.set.name})` : ''
+            if (line.kind === 'single') {
+              const setLabel = line.single.set?.name ? ` (${line.single.set.name})` : ''
+              return {
+                kind: 'single',
+                name: `${line.single.card_name}${line.single.card_number ? ` #${line.single.card_number}` : ''}${setLabel}`,
+                quantity: Number(line.quantity) || 1,
+                price: Number(line.price) || 0,
+              }
+            }
+            // Buy-mode manual lines (slab_manual / single_manual) — Lark
+            // gets the kind + description as-is so the feed clearly says
+            // "this was hand-typed for a buy, not a system match".
             return {
-              kind: 'single',
-              name: `${line.single.card_name}${line.single.card_number ? ` #${line.single.card_number}` : ''}${setLabel}`,
+              kind: line.kind,
+              name: line.description || '(no description)',
               quantity: Number(line.quantity) || 1,
               price: Number(line.price) || 0,
             }
@@ -391,6 +463,7 @@ export default function StorefrontSale() {
   // at-a-glance: how much money is changing hands and which direction.
   const submitLabel = (() => {
     if (transactionType === 'sale') return `Complete Sale (${fmtUsd(cartGross)})`
+    if (transactionType === 'buy')  return `Complete Buy (we pay ${fmtUsd(cartGross)})`
     if (netCash > 0) return `Complete Trade (customer pays ${fmtUsd(netCash)})`
     if (netCash < 0) return `Complete Trade (we pay ${fmtUsd(Math.abs(netCash))})`
     return 'Complete Trade (even)'
@@ -541,7 +614,42 @@ export default function StorefrontSale() {
             >
               Trade
             </button>
+            <button
+              type="button"
+              onClick={() => { setTransactionType('buy'); setTradeInValue('') }}
+              disabled={submitting}
+              className={`px-4 py-1.5 text-sm rounded-md transition flex items-center gap-2 ${
+                transactionType === 'buy'
+                  ? 'bg-vault-gold text-vault-dark font-semibold'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Buy
+            </button>
           </div>
+
+          {/* Buy mode only: manual-line button — slabs/singles entered by
+              hand here, since they aren't in our cards inventory yet. */}
+          {transactionType === 'buy' && (
+            <>
+              <button
+                type="button"
+                onClick={() => openManualLine('slab')}
+                disabled={submitting}
+                className="text-xs px-2.5 py-1 border border-emerald-500/40 text-emerald-300 rounded hover:bg-emerald-500/10 disabled:opacity-50"
+              >
+                + Slab (manual)
+              </button>
+              <button
+                type="button"
+                onClick={() => openManualLine('single')}
+                disabled={submitting}
+                className="text-xs px-2.5 py-1 border border-blue-500/40 text-blue-300 rounded hover:bg-blue-500/10 disabled:opacity-50"
+              >
+                + Single (manual)
+              </button>
+            </>
+          )}
 
           <div className="flex-1" />
 
@@ -584,7 +692,11 @@ export default function StorefrontSale() {
             {/* Subtotal / trade math */}
             <div className="pt-3 mt-3 border-t border-vault-border space-y-2">
               <div className="flex justify-between items-center text-sm text-gray-300">
-                <span>Cart total (items going to customer)</span>
+                <span>
+                  {transactionType === 'buy'
+                    ? 'Cart total (items we are buying from customer)'
+                    : 'Cart total (items going to customer)'}
+                </span>
                 <span className="text-white font-semibold">{fmtUsd(cartGross)}</span>
               </div>
 
@@ -630,6 +742,15 @@ export default function StorefrontSale() {
                   </div>
                 </div>
               )}
+
+              {transactionType === 'buy' && (
+                <div className="flex justify-end">
+                  <div className="text-right">
+                    <div className="text-xs uppercase tracking-wider text-gray-500">We pay customer</div>
+                    <div className="text-2xl font-bold text-red-300">{fmtUsd(cartGross)}</div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -649,6 +770,109 @@ export default function StorefrontSale() {
           }
         </button>
       </div>
+
+      {/* Manual buy-line modal (Buy mode only) */}
+      {manualLineDraft && (
+        <ManualLineModal
+          draft={manualLineDraft}
+          onChange={(patch) => setManualLineDraft(d => ({ ...d, ...patch }))}
+          onSave={saveManualLine}
+          onCancel={() => setManualLineDraft(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// ManualLineModal — used in Buy mode to add a slab / single without an
+// existing card record. Cashier types description + qty + price. We don't
+// auto-create slabs/singles rows — that's a separate Cards Scan intake.
+// ============================================================================
+function ManualLineModal({ draft, onChange, onSave, onCancel }) {
+  if (!draft) return null
+  const isSlab = draft.subKind === 'slab'
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <form
+        onSubmit={(e) => { e.preventDefault(); onSave() }}
+        className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-md w-full p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 mb-3">
+          {isSlab
+            ? <Diamond size={18} className="text-emerald-300" />
+            : <Layers size={18} className="text-blue-300" />}
+          <h3 className="font-semibold text-base text-white">
+            Buy {isSlab ? 'slab' : 'single'} — manual entry
+          </h3>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          The {isSlab ? 'slab' : 'single'} isn't in our cards inventory yet, so we just record the money out.
+          The store staff intakes the card properly later via Cards Scan.
+        </p>
+
+        <label className="block text-xs text-gray-400 mb-1">
+          Description <span className="text-red-400">*</span>
+        </label>
+        <input
+          type="text"
+          value={draft.description}
+          onChange={(e) => onChange({ description: e.target.value })}
+          placeholder={isSlab ? 'e.g. PSA 10 Charizard Base Set #4' : 'e.g. NM Pikachu Promo'}
+          autoFocus
+          className="w-full mb-3"
+        />
+
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">
+              Qty {isSlab && <span className="text-gray-600">(slab = 1)</span>}
+            </label>
+            <input
+              type="number"
+              min="1"
+              value={draft.quantity}
+              onChange={(e) => onChange({ quantity: parseInt(e.target.value) || 1 })}
+              disabled={isSlab}
+              className="w-full"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">
+              Price (USD, per unit) <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={draft.price}
+              onChange={(e) => onChange({ price: e.target.value })}
+              placeholder="0.00"
+              className="w-full"
+            />
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-3 py-2 text-sm text-gray-300 hover:text-white"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="px-3 py-2 text-sm bg-vault-gold/20 border border-vault-gold/60 text-vault-gold hover:bg-vault-gold/30 rounded-lg"
+          >
+            Add to cart
+          </button>
+        </div>
+      </form>
     </div>
   )
 }
@@ -679,7 +903,9 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
   const paymentEntries = Object.entries(by_payment)
     .sort((a, b) => (b[1].total_net_cash || 0) - (a[1].total_net_cash || 0))
 
-  const hasActivity = (totals.sale_count || 0) > 0 || (totals.trade_count || 0) > 0
+  const hasActivity = (totals.sale_count || 0) > 0
+    || (totals.trade_count || 0) > 0
+    || (totals.buy_count || 0) > 0
 
   return (
     <div className="card mb-4 border-vault-gold/20">
@@ -704,11 +930,11 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
       {!hasActivity ? (
         <p className="text-sm text-gray-500 text-center py-2">No transactions yet today.</p>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {/* Sales column */}
           <div>
             <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Sales</div>
-            <div className="flex items-baseline gap-2">
+            <div className="flex items-baseline gap-2 flex-wrap">
               <span className="text-2xl font-bold text-vault-gold">{fmtUsd(totals.sale_net_cash)}</span>
               <span className="text-xs text-gray-400">/ {totals.sale_count} txn</span>
             </div>
@@ -717,7 +943,7 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
           {/* Trades column */}
           <div>
             <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Trades (net)</div>
-            <div className="flex items-baseline gap-2">
+            <div className="flex items-baseline gap-2 flex-wrap">
               <span className={`text-2xl font-bold ${
                 (totals.trade_net_cash || 0) > 0 ? 'text-emerald-300'
                   : (totals.trade_net_cash || 0) < 0 ? 'text-red-300'
@@ -726,6 +952,20 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
                 {fmtUsd(totals.trade_net_cash)}
               </span>
               <span className="text-xs text-gray-400">/ {totals.trade_count} txn</span>
+            </div>
+          </div>
+
+          {/* Buys column — cash flows OUT, so usually negative */}
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Buys</div>
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className={`text-2xl font-bold ${
+                (totals.buy_net_cash || 0) < 0 ? 'text-red-300'
+                  : 'text-gray-300'
+              }`}>
+                {fmtUsd(totals.buy_net_cash)}
+              </span>
+              <span className="text-xs text-gray-400">/ {totals.buy_count} txn</span>
             </div>
           </div>
 
@@ -789,12 +1029,29 @@ function CartRow({ line, onUpdate, onRemove, disabled }) {
     sub = `${line.slab.grading_company} · cert #${line.slab.cert_number}`
     available = 1
     qtyEditable = false
-  } else {
+  } else if (line.kind === 'single') {
     const setLine = line.single.set?.name ? ` · ${line.single.set.name}` : ''
     title = `${line.single.card_name}${line.single.card_number ? ` #${line.single.card_number}` : ''}`
     sub = `${line.single.condition || 'raw'}${setLine} · TCG ${line.single.tcg_id}`
     available = line.available
     qtyEditable = true
+  } else if (line.kind === 'slab_manual') {
+    // Buy mode manual entry — only description (cashier-typed) to show.
+    title = line.description || '(no description)'
+    sub = 'Manual buy — not yet in slabs inventory (intake separately via Cards Scan)'
+    available = 1
+    qtyEditable = false
+  } else if (line.kind === 'single_manual') {
+    title = line.description || '(no description)'
+    sub = 'Manual buy — not yet in singles inventory (intake separately via Cards Scan)'
+    // No DB-side cap for manual singles — qty is whatever cashier typed.
+    available = 999
+    qtyEditable = true
+  } else {
+    title = '(unknown line kind)'
+    sub = ''
+    available = 1
+    qtyEditable = false
   }
 
   const qty = Number(line.quantity ?? 1) || 1

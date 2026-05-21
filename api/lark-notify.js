@@ -724,11 +724,25 @@ function buildMessage(body) {
     if (!Array.isArray(items) || items.length === 0) {
       throw new Error('storefront_transaction: missing items')
     }
-    const KIND_ICON = { sealed: '📦', slab: '💎', single: '🎴' }
-    const KIND_LABEL = { sealed: 'Sealed', slab: 'Slab', single: 'Single' }
+    const KIND_ICON = {
+      sealed: '📦', slab: '💎', single: '🎴',
+      slab_manual: '💎', single_manual: '🎴',
+    }
+    const KIND_LABEL = {
+      sealed: 'Sealed', slab: 'Slab', single: 'Single',
+      slab_manual: 'Slab (manual buy)', single_manual: 'Single (manual buy)',
+    }
 
-    const headerEmoji = transaction_type === 'trade' ? '🔄' : '🛍️'
-    const headerText = transaction_type === 'trade' ? 'Storefront Trade' : 'Storefront Sale'
+    // Title varies by type so the team can spot "we bought" vs "we sold"
+    // vs "we traded" at a glance in the Lark feed.
+    const headerEmoji =
+      transaction_type === 'trade' ? '🔄'
+      : transaction_type === 'buy' ? '🤝'
+      : '🛍️'
+    const headerText =
+      transaction_type === 'trade' ? 'Storefront Trade'
+      : transaction_type === 'buy' ? 'Storefront Buy'
+      : 'Storefront Sale'
 
     const lines = []
     lines.push(`${headerEmoji} ${headerText}`)
@@ -737,27 +751,31 @@ function buildMessage(body) {
     lines.push('')
 
     // Group by kind, render in fixed order so the message reads the same
-    // across transactions regardless of scan order.
-    const byKind = { sealed: [], slab: [], single: [] }
+    // across transactions regardless of scan order. Manual buy-only kinds
+    // get their own groups so buyers vs scanned items are visually
+    // distinguishable in the Lark feed.
+    const orderedKinds = ['sealed', 'slab', 'single', 'slab_manual', 'single_manual']
+    const byKind = Object.fromEntries(orderedKinds.map(k => [k, []]))
     for (const it of items) {
-      const k = byKind[it.kind] ? it.kind : 'sealed'
+      const k = byKind[it.kind] !== undefined ? it.kind : 'sealed'
       byKind[k].push(it)
     }
-    for (const k of ['sealed', 'slab', 'single']) {
+    for (const k of orderedKinds) {
       const group = byKind[k]
       if (group.length === 0) continue
       lines.push(`${KIND_ICON[k]} ${KIND_LABEL[k]} (${group.length})`)
       for (const it of group) {
         const sub = (Number(it.price) || 0) * (Number(it.quantity) || 1)
         const qtyStr = (Number(it.quantity) || 1) > 1 ? ` × ${it.quantity}` : ''
-        lines.push(`  • ${it.name || 'Unknown'}${qtyStr}  $${sub.toFixed(2)}`)
+        const name = it.name || it.description || 'Unknown'
+        lines.push(`  • ${name}${qtyStr}  $${sub.toFixed(2)}`)
       }
       lines.push('')
     }
 
     lines.push(`Items: ${total_units ?? items.length} unit${total_units === 1 ? '' : 's'} · value $${(Number(total) || 0).toFixed(2)}`)
 
-    // Trade math at the bottom so it's the last thing the reader sees.
+    // Final money line varies by type so it's unambiguous in the feed.
     if (transaction_type === 'trade') {
       const ti = Number(trade_in_value) || 0
       const nc = Number(net_cash) || 0
@@ -765,6 +783,9 @@ function buildMessage(body) {
       if (nc > 0)      lines.push(`💵 Net: customer paid us $${nc.toFixed(2)}`)
       else if (nc < 0) lines.push(`💸 Net: we paid customer $${Math.abs(nc).toFixed(2)}`)
       else             lines.push(`⚖️ Net: even trade`)
+    } else if (transaction_type === 'buy') {
+      const nc = Number(net_cash) || 0
+      lines.push(`💸 We paid customer $${Math.abs(nc).toFixed(2)}`)
     }
 
     if (transaction_id) lines.push(`Txn: ${String(transaction_id).slice(0, 8)}…`)

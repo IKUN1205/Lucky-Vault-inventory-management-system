@@ -2043,8 +2043,12 @@ const _sellSealedLine = async ({
     .eq('location_id', frontStoreId)
     .maybeSingle()
   const unitCost = frontInv?.avg_cost_basis ?? 0
+  // storefront_sales.sale_price is the LINE TOTAL (price × qty) by
+  // convention — matches legacy rows and the daily summary calculation.
+  // cost_basis matches: also line total. profit = lineTotal − costBasis.
+  const linePrice = (Number(salePrice) || 0) * quantity
   const costBasis = unitCost * quantity
-  const profit = (Number(salePrice) || 0) - costBasis
+  const profit = linePrice - costBasis
 
   const sale = await createStorefrontSale({
     date: saleDate,
@@ -2052,7 +2056,7 @@ const _sellSealedLine = async ({
     product_id: product.id,
     location_id: frontStoreId,
     quantity,
-    sale_price: Number(salePrice) || 0,
+    sale_price: linePrice,
     cost_basis: costBasis,
     profit,
     payment_method_id: paymentMethodId || null,
@@ -2184,6 +2188,104 @@ const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, c
   return inserted
 }
 
+// ----- BUY: store buys items from a customer (cash flows OUT to customer) -----
+
+// Buy a sealed product line: INCREASE Front Store inventory by qty, weight-
+// average avg_cost_basis with the price we just paid. Record the buy in
+// storefront_sales (product_id filled, sale_price stores the LINE total
+// we paid, net_cash_usd is negative because cash left our drawer).
+const _buySealedLine = async ({
+  product,
+  quantity,
+  unitPrice,
+  paymentMethodId,
+  cashierId,
+  transactionId,
+  locationIds,   // { frontStore: uuid }
+  saleDate,
+  txMeta = {},
+}) => {
+  const frontStoreId = locationIds.frontStore
+  const qty = Number(quantity) || 1
+  const price = Number(unitPrice) || 0
+  const lineTotal = price * qty
+
+  // updateInventory handles weighted-average cost basis when quantity
+  // change is positive AND newAvgCost is provided. Existing avg blends
+  // with the new cost we just paid.
+  await updateInventory(product.id, frontStoreId, qty, price)
+
+  // Record the money out. We deliberately set cost_basis = NULL and
+  // profit = NULL here — both are inherent to SELL semantics; on buys
+  // they don't apply. transaction_type='buy' plus the negative net_cash
+  // is the discriminator downstream queries should look at.
+  const sale = await createStorefrontSale({
+    date: saleDate,
+    sale_type: 'Itemized',
+    product_id: product.id,
+    location_id: frontStoreId,
+    quantity: qty,
+    sale_price: lineTotal,   // line total paid (per-unit × qty)
+    cost_basis: null,
+    profit: null,
+    payment_method_id: paymentMethodId || null,
+    cashier_id: cashierId || null,
+    transaction_id: transactionId,
+    transaction_type: 'buy',
+    trade_in_value_usd: null,
+    net_cash_usd: -lineTotal,   // signed negative: cash out
+    trade_in_notes: null,
+    notes: 'BUY: sealed inventory acquired from customer',
+  })
+
+  return { sale, inventory_delta: +qty }
+}
+
+// Buy a slab or single MANUALLY: the cashier types the description because
+// the item isn't yet in our card systems. We DO NOT insert into slabs/
+// singles here — that intake is a deliberate separate step (Cards Scan)
+// where the store staff captures cert#, condition, grading info etc.
+// We just record the money out in storefront_sales with product_id=null
+// and the description in notes (prefixed by kind for easy filtering).
+const _buyManualLine = async ({
+  subKind,        // 'slab' | 'single'
+  description,
+  quantity,
+  unitPrice,
+  paymentMethodId,
+  cashierId,
+  transactionId,
+  locationIds,    // { frontStore }
+  saleDate,
+  txMeta = {},
+}) => {
+  const qty = Number(quantity) || 1
+  const price = Number(unitPrice) || 0
+  const lineTotal = price * qty
+  const desc = (description || '').trim() || '(no description)'
+
+  const sale = await createStorefrontSale({
+    date: saleDate,
+    sale_type: 'Itemized',
+    product_id: null,
+    location_id: locationIds.frontStore || null,
+    quantity: qty,
+    sale_price: lineTotal,
+    cost_basis: null,
+    profit: null,
+    payment_method_id: paymentMethodId || null,
+    cashier_id: cashierId || null,
+    transaction_id: transactionId,
+    transaction_type: 'buy',
+    trade_in_value_usd: null,
+    net_cash_usd: -lineTotal,
+    trade_in_notes: null,
+    notes: `BUY: ${subKind} — ${desc}`,
+  })
+
+  return { sale, note: 'Recorded only — cards inventory NOT updated (intake separately via Cards Scan).' }
+}
+
 // Public: submit one storefront cart as a single transaction. Returns
 // { transaction_id, ok: [...], failed: [...] }. Caller (the page) uses the
 // failed[] to keep those lines visible for retry.
@@ -2213,6 +2315,8 @@ export const submitStorefrontTransaction = async ({
   }
 
   // Compute gross + net cash up-front so each line write gets the same value.
+  // grossValue is the absolute total value of items in the cart, regardless
+  // of direction (we receive or we pay).
   const grossValue = cart.reduce((s, l) => {
     const qty = Number(l.quantity ?? 1) || 0
     const price = Number(l.price) || 0
@@ -2221,9 +2325,14 @@ export const submitStorefrontTransaction = async ({
   const tradeIn = transactionType === 'trade' && tradeInValue != null
     ? Number(tradeInValue) || 0
     : null
-  const netCash = transactionType === 'trade'
-    ? grossValue - (tradeIn || 0)
-    : grossValue
+  // Net cash direction by transaction type:
+  //   sale  → customer pays us the gross. net = +gross
+  //   trade → net = gross − tradeIn (signed; can be negative if we pay them)
+  //   buy   → WE pay the customer the gross. net = -gross (always negative)
+  let netCash
+  if (transactionType === 'buy') netCash = -grossValue
+  else if (transactionType === 'trade') netCash = grossValue - (tradeIn || 0)
+  else netCash = grossValue
   const txMeta = {
     transactionType,
     tradeInValue: tradeIn,
@@ -2250,21 +2359,37 @@ export const submitStorefrontTransaction = async ({
   const ok = []
   const failed = []
 
+  // Route each line by (transactionType, kind). Sale + trade send to the
+  // sell-side helpers; buy sends to the buy-side helpers (which differ in
+  // direction and, for slab/single, skip touching the cards inventory).
+  const isBuy = transactionType === 'buy'
+
   for (const line of cart) {
     try {
       if (line.kind === 'sealed') {
-        const result = await _sellSealedLine({
-          product: line.product,
-          quantity: Number(line.quantity) || 1,
-          salePrice: line.price,
-          paymentMethodId, cashierId, transactionId,
-          sourceCandidates: line.inventory || [],
-          locationIds: { frontStore: frontStoreId, master: masterId },
-          saleDate,
-          txMeta,
-        })
+        const result = isBuy
+          ? await _buySealedLine({
+              product: line.product,
+              quantity: Number(line.quantity) || 1,
+              unitPrice: line.price,
+              paymentMethodId, cashierId, transactionId,
+              locationIds: { frontStore: frontStoreId, master: masterId },
+              saleDate,
+              txMeta,
+            })
+          : await _sellSealedLine({
+              product: line.product,
+              quantity: Number(line.quantity) || 1,
+              salePrice: line.price,
+              paymentMethodId, cashierId, transactionId,
+              sourceCandidates: line.inventory || [],
+              locationIds: { frontStore: frontStoreId, master: masterId },
+              saleDate,
+              txMeta,
+            })
         ok.push({ line, result })
       } else if (line.kind === 'slab') {
+        // Sale/trade only — a buy of a slab takes the manual path below.
         const result = await _sellSlabLine({
           slab: line.slab,
           salePrice: line.price,
@@ -2274,11 +2399,31 @@ export const submitStorefrontTransaction = async ({
         })
         ok.push({ line, result })
       } else if (line.kind === 'single') {
+        // Same as slab — buy goes through manual.
         const result = await _sellSingleLine({
           single: line.single,
           quantity: Number(line.quantity) || 1,
           salePrice: line.price,
           paymentMethodId, cashierId, transactionId,
+          saleDate,
+          txMeta,
+        })
+        ok.push({ line, result })
+      } else if (line.kind === 'slab_manual' || line.kind === 'single_manual') {
+        // BUY-only path: customer is selling us a slab/single. We record
+        // the money out but DO NOT auto-create a row in slabs/singles —
+        // the store staff intakes those separately via Cards Scan once
+        // they've gathered cert#/TCG ID/condition/etc.
+        if (!isBuy) {
+          throw new Error(`${line.kind} can only be used in Buy transactions`)
+        }
+        const result = await _buyManualLine({
+          subKind: line.kind === 'slab_manual' ? 'slab' : 'single',
+          description: line.description || '',
+          quantity: Number(line.quantity) || 1,
+          unitPrice: line.price,
+          paymentMethodId, cashierId, transactionId,
+          locationIds: { frontStore: frontStoreId },
           saleDate,
           txMeta,
         })
@@ -2380,16 +2525,22 @@ export const fetchStorefrontDailySummary = async (date) => {
   const pmById = new Map((pmRes.data || []).map(p => [p.id, p.name]))
   const transactions = Array.from(txMap.values())
 
-  let saleCount = 0, saleNetCash = 0, tradeCount = 0, tradeNetCash = 0
+  // Aggregate by transaction type. Buys contribute NEGATIVE cash (we paid
+  // the customer) which pulls down the daily net. The per-payment-method
+  // breakdown sums signed net_cash too, so "Cash: -$120" can show up when
+  // the day's buys outweigh the day's cash sales.
+  let saleCount = 0, saleNetCash = 0
+  let tradeCount = 0, tradeNetCash = 0
+  let buyCount = 0, buyNetCash = 0
   const byPayment = {}
   for (const t of transactions) {
     const cash = Number(t.net_cash || 0)
     if (t.type === 'trade') {
-      tradeCount++
-      tradeNetCash += cash
+      tradeCount++; tradeNetCash += cash
+    } else if (t.type === 'buy') {
+      buyCount++; buyNetCash += cash
     } else {
-      saleCount++
-      saleNetCash += cash
+      saleCount++; saleNetCash += cash
     }
     const pmName = pmById.get(t.payment_method_id) || 'Unknown'
     if (!byPayment[pmName]) byPayment[pmName] = { count: 0, total_net_cash: 0 }
@@ -2405,7 +2556,9 @@ export const fetchStorefrontDailySummary = async (date) => {
       sale_net_cash: saleNetCash,
       trade_count: tradeCount,
       trade_net_cash: tradeNetCash,
-      total_net_cash: saleNetCash + tradeNetCash,
+      buy_count: buyCount,
+      buy_net_cash: buyNetCash,
+      total_net_cash: saleNetCash + tradeNetCash + buyNetCash,
     },
     by_payment: byPayment,
   }
