@@ -4,6 +4,9 @@ import {
   lookupScannedCode,
   submitStorefrontTransaction,
   fetchStorefrontDailySummary,
+  searchProductsForStorefront,
+  searchSinglesForStorefront,
+  searchSlabsForStorefront,
 } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
@@ -11,7 +14,7 @@ import Instructions from '../components/Instructions'
 import {
   ScanLine, X, Trash2, Loader2, Package, Diamond, Layers,
   AlertTriangle, CreditCard, Save, ShoppingCart, TrendingUp, RefreshCw,
-  ChevronDown, ChevronUp, ArrowLeftRight, Coins,
+  ChevronDown, ChevronUp, ArrowLeftRight, Coins, Search, Plus,
 } from 'lucide-react'
 
 // ============================================================================
@@ -745,6 +748,20 @@ export default function StorefrontSale() {
         )}
       </div>
 
+      {/* Manual entry — fallback for items without a barcode / cert# / TCG ID.
+          Same downstream code path as scanning: clicking a result feeds the
+          existing add-to-cart handlers. Sealed → storefront/inventory, single
+          + slab → cards inventory. Singles/Slabs disabled in Buy mode (use
+          the existing "Add Manual Line" button instead, which records the
+          buy without trying to look up an existing record). */}
+      <ManualEntrySection
+        transactionType={transactionType}
+        onPickSealed={(result) => addOrIncrementSealed(result)}
+        onPickSingle={(single) => addOrIncrementSingle(single)}
+        onPickSlab={(slab) => addSlab(slab)}
+        disabled={submitting}
+      />
+
       {/* Cart with Sale/Trade tabs */}
       <div className="card mb-4">
         {/* Type tabs */}
@@ -1052,6 +1069,238 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
           </div>
         </div>
       </form>
+    </div>
+  )
+}
+
+// ============================================================================
+// ManualEntrySection — search-by-name fallback when no barcode/cert#/TCG ID.
+// ============================================================================
+// Three tabs (Sealed / Single / Slab) each with a debounced search input
+// against the corresponding table. Clicking a result invokes the SAME
+// add-to-cart handler the scan path uses, so cart behavior is identical
+// regardless of how the item got added. Default collapsed to keep the
+// scan-first UX prominent; click the header to expand.
+//
+// Buy-mode notes:
+//   - Sealed: search works (we're buying inventory to add to Front Store).
+//   - Single/Slab: search is HIDDEN since Buy lines don't reference existing
+//     singles/slabs records — those go through the "+ Add Manual Line"
+//     button on the cart instead.
+// ============================================================================
+function ManualEntrySection({ transactionType, onPickSealed, onPickSingle, onPickSlab, disabled }) {
+  const [expanded, setExpanded] = useState(false)
+  const [tab, setTab] = useState('sealed')   // 'sealed' | 'single' | 'slab'
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState(null)
+
+  // Reset query + results when switching tabs or transaction type changes.
+  useEffect(() => {
+    setQuery('')
+    setResults([])
+    setSearchError(null)
+  }, [tab, transactionType])
+
+  // Buy mode locks the tabs to Sealed only — switch back automatically if
+  // the cashier had Single/Slab open and then flipped to Buy.
+  useEffect(() => {
+    if (transactionType === 'buy' && tab !== 'sealed') setTab('sealed')
+  }, [transactionType, tab])
+
+  // Debounced search. Wait 250 ms after the last keystroke before firing
+  // so we don't hammer Supabase on every character. Cancel any in-flight
+  // fetch when the query changes.
+  useEffect(() => {
+    const q = query.trim()
+    if (q.length < 2) {
+      setResults([])
+      setSearching(false)
+      setSearchError(null)
+      return
+    }
+    setSearching(true)
+    setSearchError(null)
+    let cancelled = false
+    const t = setTimeout(async () => {
+      try {
+        let rows = []
+        if (tab === 'sealed') rows = await searchProductsForStorefront(q)
+        else if (tab === 'single') rows = await searchSinglesForStorefront(q)
+        else if (tab === 'slab')   rows = await searchSlabsForStorefront(q)
+        if (!cancelled) setResults(rows)
+      } catch (err) {
+        if (!cancelled) {
+          console.error('[ManualEntrySection] search failed:', err)
+          setSearchError(err.message || 'Search failed')
+          setResults([])
+        }
+      } finally {
+        if (!cancelled) setSearching(false)
+      }
+    }, 250)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [query, tab])
+
+  const handlePick = (row) => {
+    if (row.kind === 'sealed') onPickSealed(row)              // expects {product, inventory}
+    else if (row.kind === 'single') onPickSingle(row.single)
+    else if (row.kind === 'slab') onPickSlab(row.slab)
+    // Clear the query after picking so the cashier can start the next search.
+    setQuery('')
+    setResults([])
+  }
+
+  const isBuy = transactionType === 'buy'
+  const placeholder = tab === 'sealed' ? 'Type a brand or product name…'
+    : tab === 'single' ? 'Type card name, number, or TCG ID…'
+    : 'Type slab name or cert#…'
+
+  return (
+    <div className="card mb-4">
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="flex items-center justify-between w-full text-left"
+      >
+        <div className="flex items-center gap-2">
+          <Search size={16} className="text-vault-gold" />
+          <span className="text-sm font-semibold text-white">Manual entry (no barcode)</span>
+          <span className="text-xs text-gray-500">
+            — search by name when scanner can't find it
+          </span>
+        </div>
+        {expanded ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+      </button>
+
+      {expanded && (
+        <div className="mt-3 space-y-3">
+          {/* Sub-tabs: Sealed / Single / Slab. In Buy mode only Sealed is
+              shown (singles/slabs use "+ Add Manual Line" instead). */}
+          <div className="flex items-center gap-1 border-b border-vault-border/50 pb-2">
+            <ManualTab active={tab === 'sealed'} onClick={() => setTab('sealed')} icon={Package} label="Sealed" color="text-amber-300" />
+            {!isBuy && (
+              <>
+                <ManualTab active={tab === 'single'} onClick={() => setTab('single')} icon={Layers}  label="Single" color="text-blue-300" />
+                <ManualTab active={tab === 'slab'}   onClick={() => setTab('slab')}   icon={Diamond} label="Slab"   color="text-emerald-300" />
+              </>
+            )}
+            {isBuy && (
+              <span className="ml-auto text-[11px] text-gray-500 italic">
+                Buy mode — slabs/singles via the "+ Add Manual Line" button on the cart
+              </span>
+            )}
+          </div>
+
+          {/* Search input */}
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              disabled={disabled}
+              placeholder={placeholder}
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full pl-9 pr-3 py-2 bg-vault-darker border border-vault-border rounded-md text-white text-sm focus:outline-none focus:border-vault-gold disabled:opacity-50"
+            />
+            {searching && (
+              <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 animate-spin" />
+            )}
+          </div>
+
+          {/* Results / status */}
+          {searchError && (
+            <div className="text-xs text-red-400">{searchError}</div>
+          )}
+          {!searchError && query.trim().length > 0 && query.trim().length < 2 && (
+            <div className="text-xs text-gray-500">Type at least 2 characters…</div>
+          )}
+          {!searchError && query.trim().length >= 2 && !searching && results.length === 0 && (
+            <div className="text-xs text-gray-500">No matches.</div>
+          )}
+          {results.length > 0 && (
+            <ul className="max-h-72 overflow-y-auto divide-y divide-vault-border/50 border border-vault-border rounded-md">
+              {results.map((row, i) => (
+                <li key={i}>
+                  <ManualResultRow row={row} onPick={handlePick} disabled={disabled} isBuy={isBuy} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Tab button used inside ManualEntrySection. Keeps the JSX flat above.
+function ManualTab({ active, onClick, icon: Icon, label, color }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+        active
+          ? `bg-vault-darker/60 ${color}`
+          : 'text-gray-400 hover:text-white'
+      }`}
+    >
+      <Icon size={14} />
+      {label}
+    </button>
+  )
+}
+
+// Single row in the results list. Renders kind-specific fields and an
+// Add button. For sealed in Sale mode, show a "no stock" warning when the
+// product has no inventory anywhere (still allows adding — addOrIncrementSealed
+// will surface its own toast).
+function ManualResultRow({ row, onPick, disabled, isBuy }) {
+  let icon, color, title, sub, warning
+  if (row.kind === 'sealed') {
+    const totalQty = (row.inventory || []).reduce((s, r) => s + (r.quantity || 0), 0)
+    icon = Package; color = 'text-amber-300'
+    const launchName = row.product.category && row.product.name
+      ? row.product.name.replace(new RegExp(`\\s*${row.product.category}\\s*$`, 'i'), '').trim() || row.product.name
+      : row.product.name
+    title = `${row.product.brand} | ${launchName}`
+    sub = `${row.product.category || row.product.type || 'Sealed'} · ${row.product.language || '—'} · ${row.product.barcode ? 'UPC ' + row.product.barcode : 'no barcode'}`
+    if (!isBuy && totalQty === 0) warning = 'No stock anywhere'
+  } else if (row.kind === 'single') {
+    icon = Layers; color = 'text-blue-300'
+    const num = row.single.card_number ? ` #${row.single.card_number}` : ''
+    const setName = row.single.set?.name ? ` · ${row.single.set.name}` : ''
+    title = `${row.single.card_name}${num}`
+    sub = `${row.single.condition || 'raw'}${setName} · TCG ${row.single.tcg_id} · qty ${row.single.quantity || 1}`
+  } else if (row.kind === 'slab') {
+    icon = Diamond; color = 'text-emerald-300'
+    title = row.slab.item_name
+    sub = `${row.slab.grading_company || '?'} · cert #${row.slab.cert_number}`
+  } else {
+    return null
+  }
+  const Icon = icon
+
+  return (
+    <div className="flex items-center gap-3 px-3 py-2 bg-vault-darker/30 hover:bg-vault-darker/60 transition-colors">
+      <Icon size={16} className={`${color} flex-shrink-0`} />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-white truncate">{title}</div>
+        <div className="text-xs text-gray-500 truncate">{sub}</div>
+        {warning && <div className="text-[11px] text-amber-400 mt-0.5">⚠ {warning}</div>}
+      </div>
+      <button
+        type="button"
+        onClick={() => onPick(row)}
+        disabled={disabled}
+        className="flex-shrink-0 inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-vault-gold/20 border border-vault-gold/40 text-vault-gold rounded-md hover:bg-vault-gold/30 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <Plus size={12} />
+        Add
+      </button>
     </div>
   )
 }

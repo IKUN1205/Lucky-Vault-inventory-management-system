@@ -1985,6 +1985,99 @@ export const lookupScannedCode = async (code) => {
   return { kind: 'unknown', code: trimmed }
 }
 
+// ----- Manual search for Storefront POS (no-barcode fallback) -----
+// These three helpers back the "Manual entry" panel under the scan box:
+// cashier types a partial name / TCG ID / cert#, gets a short result list,
+// clicks one to add it to the cart. Same downstream code path as scanning
+// (each helper returns the shape lookupScannedCode would have for that kind).
+// Limit caps at 20 to keep the dropdown sane on mobile.
+
+// Sealed products by partial brand/name/type. Returns an array of
+// { kind: 'sealed', product, inventory } so the click-handler can feed it
+// straight into addOrIncrementSealed (which expects that shape).
+export const searchProductsForStorefront = async (q, limit = 20) => {
+  const term = String(q || '').trim()
+  if (term.length < 2) return []
+  const pattern = `%${term}%`
+  const { data: products, error } = await supabase
+    .from('products')
+    .select('id, brand, name, category, language, type, barcode, active')
+    .eq('active', true)
+    .or(`name.ilike.${pattern},brand.ilike.${pattern},type.ilike.${pattern}`)
+    .order('brand').order('name')
+    .limit(limit)
+  if (error) throw error
+  if (!products || products.length === 0) return []
+
+  // Fetch inventory rows for these products in one query so we don't N+1.
+  const ids = products.map(p => p.id)
+  const { data: invRows, error: invErr } = await supabase
+    .from('inventory')
+    .select(`
+      quantity, avg_cost_basis, location_id, product_id,
+      location:locations(id, name)
+    `)
+    .in('product_id', ids)
+    .gt('quantity', 0)
+  if (invErr) throw invErr
+  const invByProduct = new Map()
+  for (const r of invRows || []) {
+    if (!invByProduct.has(r.product_id)) invByProduct.set(r.product_id, [])
+    invByProduct.get(r.product_id).push({
+      location_id: r.location_id,
+      location_name: r.location?.name,
+      quantity: r.quantity,
+      avg_cost_basis: r.avg_cost_basis ?? 0,
+    })
+  }
+  return products.map(p => ({
+    kind: 'sealed',
+    product: p,
+    inventory: invByProduct.get(p.id) || [],
+  }))
+}
+
+// Singles by partial card name / card_number / tcg_id. Only returns rows
+// currently sellable (in_inventory or listed, not deleted, qty > 0).
+export const searchSinglesForStorefront = async (q, limit = 20) => {
+  const term = String(q || '').trim()
+  if (term.length < 2) return []
+  const pattern = `%${term}%`
+  const { data, error } = await supabase
+    .from('singles')
+    .select(`
+      *,
+      set:card_sets(id, brand, name, code, language),
+      location:locations(id, name)
+    `)
+    .eq('deleted', false)
+    .in('status', ['in_inventory', 'listed'])
+    .gt('quantity', 0)
+    .or(`card_name.ilike.${pattern},card_number.ilike.${pattern},tcg_id.ilike.${pattern}`)
+    .order('card_name')
+    .limit(limit)
+  if (error) throw error
+  return (data || []).map(single => ({ kind: 'single', single }))
+}
+
+// Slabs by partial item_name / cert_number. Only returns currently
+// sellable rows. Slabs are unique (qty=1) so no qty filter needed.
+export const searchSlabsForStorefront = async (q, limit = 20) => {
+  const term = String(q || '').trim()
+  if (term.length < 2) return []
+  const pattern = `%${term}%`
+  const { data, error } = await supabase
+    .from('slabs')
+    .select('*')
+    .eq('deleted', false)
+    .in('status', ['in_inventory', 'listed'])
+    .or(`item_name.ilike.${pattern},cert_number.ilike.${pattern}`)
+    .order('item_name')
+    .limit(limit)
+  if (error) throw error
+  return (data || []).map(slab => ({ kind: 'slab', slab }))
+}
+
 // ----- storefront transaction submit -----
 
 // Sell a sealed product line at the storefront. Handles auto-Move from
