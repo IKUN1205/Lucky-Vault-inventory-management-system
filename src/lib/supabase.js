@@ -1999,11 +1999,15 @@ export const searchProductsForStorefront = async (q, limit = 20) => {
   const term = String(q || '').trim()
   if (term.length < 2) return []
   const pattern = `%${term}%`
+  // ILIKE only works on text columns. products.type is an enum
+  // (product_type) so we can't include it in the OR — searching by
+  // brand + name covers what cashiers actually type ("Pokemon",
+  // "Charizard", "Mega…") and skips the enum problem.
   const { data: products, error } = await supabase
     .from('products')
     .select('id, brand, name, category, language, type, barcode, active')
     .eq('active', true)
-    .or(`name.ilike.${pattern},brand.ilike.${pattern},type.ilike.${pattern}`)
+    .or(`name.ilike.${pattern},brand.ilike.${pattern}`)
     .order('brand').order('name')
     .limit(limit)
   if (error) throw error
