@@ -2498,7 +2498,7 @@ export const fetchStorefrontDailySummary = async (date) => {
       .select(`
         id, updated_at, transaction_id, transaction_type, net_cash_usd,
         payment_method_id, sale_price_usd, trade_in_value_usd, status,
-        item_name, cert_number, grading_company, grade
+        item_name, cert_number, grading_company
       `)
       .eq('sale_date', dayStr)
       .not('transaction_id', 'is', null)
@@ -2593,14 +2593,16 @@ export const fetchStorefrontDailySummary = async (date) => {
     }, r.updated_at || null)
   }
 
-  // ---- slabs rows: item_name + cert# + grade ----
+  // ---- slabs rows: item_name already includes grade text; just append cert# ----
+  // (slabs table has no separate `grade` column — the grade is part of
+  // item_name like "Charizard PSA 10". grading_company is a short tag.)
   for (const r of slabsRes.data || []) {
     const lineGross = Number(r.sale_price_usd) || 0
-    const grade = (r.grading_company || r.grade) ? ` ${[r.grading_company, r.grade].filter(Boolean).join(' ')}` : ''
+    const co = r.grading_company ? ` ${r.grading_company}` : ''
     const cert = r.cert_number ? ` #${r.cert_number}` : ''
     addRow(r, lineGross, {
       kind: 'slab',
-      name: `${r.item_name || 'Unknown slab'}${grade}${cert}`,
+      name: `${r.item_name || 'Unknown slab'}${co}${cert}`,
       quantity: 1,
       price: lineGross,
       subtotal: lineGross,
