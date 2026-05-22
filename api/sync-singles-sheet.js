@@ -170,14 +170,16 @@ export default async function handler(req, res) {
     }
     const items = Array.from(parsed.values())
 
-    // 3. Existing singles in DB, by TCG ID.
+    // 3. Existing singles in DB, by TCG ID. Pull current_market_price_usd
+    //    too so we can skip rows that haven't actually changed (the typical
+    //    case — only a handful of prices move day to day).
     const existingByTcg = new Map()
     const ids = items.map(i => i.tcg_id)
     for (let i = 0; i < ids.length; i += 200) {
       const batch = ids.slice(i, i + 200)
       const { data, error } = await supabase
         .from('singles')
-        .select('id, tcg_id, status, form, quantity')
+        .select('id, tcg_id, status, form, quantity, current_market_price_usd')
         .in('tcg_id', batch)
         .eq('deleted', false)
       if (error) throw error
@@ -188,13 +190,22 @@ export default async function handler(req, res) {
       }
     }
 
-    // 4. Update prices on existing rows. NEVER touches quantity — see
-    //    policy comment at top of file.
-    let updatedOk = 0, updatedErr = 0
+    // 4. Update prices on existing rows — but only when the price ACTUALLY
+    //    changed. Previously every row PATCHed every run (432 sequential
+    //    HTTPs ≈ 58s, risking the 60s function timeout). Now we PATCH only
+    //    the deltas, which is typically a single-digit count.
+    //    NEVER touches quantity — see policy comment at top of file.
+    let updatedOk = 0, updatedErr = 0, updatedSkipped = 0
+    const PRICE_EPSILON = 0.005   // tolerate sub-cent float-rounding noise
     for (const item of items) {
       const existing = existingByTcg.get(item.tcg_id)
       if (!existing) continue
-      if (item.market_price == null) continue
+      if (item.market_price == null) { updatedSkipped++; continue }
+      const dbPrice = existing.current_market_price_usd
+      if (dbPrice != null && Math.abs(Number(dbPrice) - item.market_price) < PRICE_EPSILON) {
+        updatedSkipped++
+        continue
+      }
       const { error } = await supabase
         .from('singles')
         .update({
@@ -293,7 +304,8 @@ export default async function handler(req, res) {
       unique_tcg_ids: items.length,
       skipped_no_tcg_id: skipped,
       existing_in_db: existingByTcg.size,
-      prices_updated: updatedOk,
+      prices_changed: updatedOk,
+      prices_unchanged: updatedSkipped,
       prices_update_errors: updatedErr,
       new_rows_inserted: insertedOk,
       new_row_errors: insertedErr,
@@ -302,16 +314,17 @@ export default async function handler(req, res) {
     }
     console.log('[sync-singles-sheet] OK', summary)
 
-    // Lark digest. Skip when truly nothing changed (boring messages
-    // clutter the channel). New rows always notify; price-only updates
-    // notify when there were >=10 (real activity) or errors (need
-    // attention).
-    const noisy = insertedOk > 0 || insertedErr > 0 || updatedErr > 0 || setsCreated > 0
-    const meaningful = noisy || updatedOk >= 10
+    // Lark digest. Skip when truly nothing changed (boring "sync ran and
+    // did nothing" messages clutter the channel). Send when there's at
+    // least one new row, any errors, any new sets, or one+ price actually
+    // moved. The unchanged-prices count is implied by silence.
+    const meaningful =
+      insertedOk > 0 || insertedErr > 0 || updatedErr > 0
+      || setsCreated > 0 || updatedOk > 0
     if (meaningful) {
       const lines = ['🔄 Singles sheet sync']
       if (insertedOk > 0) lines.push(`✅ ${insertedOk} new singles imported`)
-      if (updatedOk > 0)  lines.push(`💲 ${updatedOk} prices refreshed`)
+      if (updatedOk > 0)  lines.push(`💲 ${updatedOk} price${updatedOk === 1 ? '' : 's'} changed`)
       if (setsCreated > 0) lines.push(`🏷️ ${setsCreated} new card_sets entries auto-created`)
       if (insertedErr + updatedErr > 0) lines.push(`⚠️ ${insertedErr + updatedErr} errors — check logs`)
       lines.push(`Took ${Math.round(durationMs / 100) / 10}s · ${today}`)
