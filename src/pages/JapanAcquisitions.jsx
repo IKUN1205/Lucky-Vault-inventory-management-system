@@ -15,6 +15,7 @@ import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import { useAuth } from '../lib/AuthContext'
 import { ShoppingCart, Save, Plus, Trash2, X } from 'lucide-react'
+import { variantLabel, variantChipClasses } from '../lib/japanVariants'
 
 // ============================================================================
 // 日本进货 — Japan offline acquisitions
@@ -38,8 +39,36 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
-const productOptionLabel = (p) =>
-  `${p.brand || '?'} | ${extractLaunchName(p.name, p.category)} | ${p.category || p.type || '?'} | ${p.language || '?'}`
+const productOptionLabel = (p) => {
+  const shortCode = p.short_code ? `${p.short_code} · ` : ''
+  return `${shortCode}${p.brand || '?'} | ${extractLaunchName(p.name, p.category)} | ${p.category || p.type || '?'} | ${p.language || '?'}`
+}
+
+// Aliases + short code joined for SearchableSelect's getOptionSearchText.
+// Lets typing "M2a", "海贼王", "OP15", etc. find the matching SKU even when
+// those terms aren't in the displayed label.
+const productSearchText = (p) => {
+  const parts = []
+  if (p.short_code) parts.push(p.short_code)
+  if (Array.isArray(p.aliases)) parts.push(...p.aliases)
+  return parts.join(' ')
+}
+
+// Dropdown row renderer: variant chip (中文) prefix + label. Easy visual
+// distinction between sealed / in-bag / single-pack versions of the same set.
+const renderProductOption = (p) => {
+  const v = p.variant
+  return (
+    <div className="flex items-center gap-2">
+      {v && (
+        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${variantChipClasses(v)} flex-shrink-0`}>
+          {variantLabel(v)}
+        </span>
+      )}
+      <span className="flex-1 truncate">{productOptionLabel(p)}</span>
+    </div>
+  )
+}
 
 export default function JapanAcquisitions() {
   const { toasts, addToast, removeToast } = useToast()
@@ -396,7 +425,9 @@ export default function JapanAcquisitions() {
                         onChange={(val) => updateLineItem(item.id, 'product_id', val)}
                         getOptionValue={(p) => p.id}
                         getOptionLabel={productOptionLabel}
-                        placeholder="Search..."
+                        getOptionSearchText={productSearchText}
+                        renderOption={renderProductOption}
+                        placeholder="搜索 short code / 中文 / English..."
                       />
                     </div>
                     <div className="col-span-4 md:col-span-2">

@@ -12,6 +12,7 @@ import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import { useAuth } from '../lib/AuthContext'
 import { Tv2, Save, Plus, Trash2, Undo2 } from 'lucide-react'
+import { variantLabel, variantChipClasses } from '../lib/japanVariants'
 
 // ============================================================================
 // 日本直播售卖 — Japan livestream sale log
@@ -35,7 +36,32 @@ const extractLaunchName = (fullName, category) => {
 const productOptionLabel = (inv) => {
   const p = inv.product
   if (!p) return '(unknown)'
-  return `${p.brand || '?'} | ${extractLaunchName(p.name, p.category)} | ${p.category || p.type || '?'} | ${p.language || '?'}  ·  ${inv.quantity} in stock`
+  const shortCode = p.short_code ? `${p.short_code} · ` : ''
+  return `${shortCode}${p.brand || '?'} | ${extractLaunchName(p.name, p.category)} | ${p.category || p.type || '?'} | ${p.language || '?'}  ·  ${inv.quantity} in stock`
+}
+
+const productSearchText = (inv) => {
+  const p = inv.product
+  if (!p) return ''
+  const parts = []
+  if (p.short_code) parts.push(p.short_code)
+  if (Array.isArray(p.aliases)) parts.push(...p.aliases)
+  return parts.join(' ')
+}
+
+const renderProductOption = (inv) => {
+  const p = inv.product
+  const v = p?.variant
+  return (
+    <div className="flex items-center gap-2">
+      {v && (
+        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${variantChipClasses(v)} flex-shrink-0`}>
+          {variantLabel(v)}
+        </span>
+      )}
+      <span className="flex-1 truncate">{productOptionLabel(inv)}</span>
+    </div>
+  )
 }
 
 export default function JapanStreamSales() {
@@ -299,7 +325,9 @@ export default function JapanStreamSales() {
                         onChange={(val) => updateItem(item.id, 'product_id', val)}
                         getOptionValue={(inv) => inv.product_id}
                         getOptionLabel={productOptionLabel}
-                        placeholder="Search what to sell..."
+                        getOptionSearchText={productSearchText}
+                        renderOption={renderProductOption}
+                        placeholder="搜索 short code / 中文 / English..."
                       />
                     </div>
                     <div className="col-span-4 md:col-span-2">

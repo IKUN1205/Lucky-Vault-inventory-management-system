@@ -1,14 +1,20 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Search, X } from 'lucide-react'
 
-export default function SearchableSelect({ 
-  options = [], 
-  value, 
-  onChange, 
+export default function SearchableSelect({
+  options = [],
+  value,
+  onChange,
   placeholder = "Type to search...",
   renderOption = null,
   getOptionLabel = null,
   getOptionValue = (opt) => opt.id,
+  // Optional extra-text accessor for fuzzy search. When provided, its
+  // return value is appended to the label text before matching, so callers
+  // can include extra terms (aliases, short codes, Chinese names, etc.)
+  // that aren't shown in the option label but should still be searchable.
+  // Backward compat: when null, only the label is searched.
+  getOptionSearchText = null,
   className = "",
   disabled = false
 }) {
@@ -51,7 +57,19 @@ export default function SearchableSelect({
     } else {
       labelText = String(option).toLowerCase()
     }
-    
+
+    // Append extra search text (aliases / short codes / etc.) if the caller
+    // provided an accessor. Useful for typing "M2a" or "海贼王" or "OP15"
+    // to find a product whose displayed label is just the English name.
+    if (getOptionSearchText) {
+      try {
+        const extra = getOptionSearchText(option)
+        if (extra) labelText += ' ' + String(extra).toLowerCase()
+      } catch {
+        // ignore — search falls back to label only
+      }
+    }
+
     // All search terms must match somewhere in the label
     return searchTerms.every(term => labelText.includes(term))
   }

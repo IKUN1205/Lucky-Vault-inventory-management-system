@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchJapanInventory } from '../lib/supabase'
 import { Package, Search, RefreshCw, ShoppingCart, ArrowRight } from 'lucide-react'
+import { variantLabel, variantChipClasses, VARIANT_ORDER, VARIANT_META } from '../lib/japanVariants'
 
 // ============================================================================
 // Japan Inventory — read-only view of what's at Japan Warehouse right now
@@ -26,6 +27,7 @@ export default function JapanInventory() {
   const [brandFilter, setBrandFilter] = useState('')
   const [langFilter, setLangFilter] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
+  const [variantFilter, setVariantFilter] = useState('')
 
   useEffect(() => { load() }, [])
 
@@ -53,12 +55,23 @@ export default function JapanInventory() {
     if (brandFilter) out = out.filter(r => r.product?.brand === brandFilter)
     if (langFilter) out = out.filter(r => r.product?.language === langFilter)
     if (typeFilter) out = out.filter(r => r.product?.type === typeFilter)
+    if (variantFilter) out = out.filter(r => r.product?.variant === variantFilter)
     if (search.trim()) {
+      // Match against name + short_code + aliases — so typing "M2a" or
+      // "海贼王" or "OP15" finds the right row even if it's not in the name.
       const q = search.trim().toLowerCase()
-      out = out.filter(r => (r.product?.name || '').toLowerCase().includes(q))
+      out = out.filter(r => {
+        const p = r.product
+        if (!p) return false
+        const hay = [
+          p.name, p.short_code,
+          ...(Array.isArray(p.aliases) ? p.aliases : []),
+        ].filter(Boolean).join(' ').toLowerCase()
+        return hay.includes(q)
+      })
     }
     return out
-  }, [rows, search, brandFilter, langFilter, typeFilter])
+  }, [rows, search, brandFilter, langFilter, typeFilter, variantFilter])
 
   const summary = useMemo(() => ({
     totalSkus: filtered.length,
@@ -114,17 +127,18 @@ export default function JapanInventory() {
           colorClass="text-green-400" />
       </div>
 
-      {/* Filters */}
+      {/* Filters — search matches against name + short_code + aliases, so
+          typing "M2a" / "海贼王" / "OP15" / English name all work. */}
       <div className="bg-vault-surface border border-vault-border rounded-lg p-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
           <div className="md:col-span-2">
-            <label className="block text-xs text-gray-400 mb-1">Search by product name</label>
+            <label className="block text-xs text-gray-400 mb-1">Search (name / short code / 中文 / aliases)</label>
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="e.g. Prismatic, OP-13..."
+                placeholder="e.g. M2a, 海贼王, OP15..."
                 className="w-full pl-9 pr-3 py-2 bg-vault-darker border border-vault-border rounded-lg text-white text-sm focus:outline-none focus:border-vault-gold"
               />
             </div>
@@ -136,6 +150,7 @@ export default function JapanInventory() {
               <option value="">All brands</option>
               <option value="Pokemon">Pokemon</option>
               <option value="One Piece">One Piece</option>
+              <option value="Yu-Gi-Oh">Yu-Gi-Oh</option>
               <option value="Other">Other</option>
             </select>
           </div>
@@ -147,6 +162,16 @@ export default function JapanInventory() {
               <option value="JP">JP</option>
               <option value="EN">EN</option>
               <option value="CN">CN</option>
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-xs text-gray-400 mb-1">Variant 变体</label>
+            <select value={variantFilter} onChange={e => setVariantFilter(e.target.value)}
+              className="w-full px-3 py-2 bg-vault-darker border border-vault-border rounded-lg text-white text-sm">
+              <option value="">All variants</option>
+              {VARIANT_ORDER.map(v => (
+                <option key={v} value={v}>{VARIANT_META[v]?.zh} ({VARIANT_META[v]?.en})</option>
+              ))}
             </select>
           </div>
         </div>
@@ -175,10 +200,11 @@ export default function JapanInventory() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-400 text-xs border-b border-vault-border">
+                  <th className="pb-2">Code</th>
                   <th className="pb-2">Brand</th>
                   <th className="pb-2">Product</th>
+                  <th className="pb-2">变体</th>
                   <th className="pb-2">Lang</th>
-                  <th className="pb-2">Type</th>
                   <th className="pb-2 text-right">Qty</th>
                   <th className="pb-2 text-right">Avg cost (USD)</th>
                   <th className="pb-2 text-right">Value (USD)</th>
@@ -188,12 +214,20 @@ export default function JapanInventory() {
                 {filtered.map(r => {
                   const avg = parseFloat(r.avg_cost_basis || 0)
                   const value = (r.quantity || 0) * avg
+                  const v = r.product?.variant
                   return (
                     <tr key={r.id} className="border-b border-vault-border/50 hover:bg-vault-darker/30">
+                      <td className="py-2 text-gray-300 font-mono text-xs">{r.product?.short_code || '—'}</td>
                       <td className="py-2 text-vault-gold">{r.product?.brand || '—'}</td>
                       <td className="py-2 text-white">{extractLaunchName(r.product?.name, r.product?.category) || r.product?.name || '—'}</td>
+                      <td className="py-2">
+                        {v ? (
+                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${variantChipClasses(v)}`}>
+                            {variantLabel(v)}
+                          </span>
+                        ) : <span className="text-gray-600 text-xs">—</span>}
+                      </td>
                       <td className="py-2 text-blue-300">{r.product?.language || '—'}</td>
-                      <td className="py-2 text-gray-400">{r.product?.category || r.product?.type || '—'}</td>
                       <td className="py-2 text-right text-white font-semibold">{(r.quantity || 0).toLocaleString()}</td>
                       <td className="py-2 text-right text-gray-300">${avg.toFixed(2)}</td>
                       <td className="py-2 text-right text-green-400">${value.toFixed(2)}</td>
