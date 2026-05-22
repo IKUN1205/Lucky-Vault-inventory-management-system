@@ -32,6 +32,20 @@ import { updateProductBarcode } from '../lib/supabase'
 //                 in-memory products list without re-fetching.
 // ============================================================================
 
+// Compare a stored barcode against a scanned code, allowing UPC-A ↔ EAN-13
+// equivalence. Exported for use by other pages that want the same matching
+// semantics (e.g. lookupScannedCode candidates).
+export function barcodesEqual(stored, scanned) {
+  const a = String(stored || '').trim()
+  const b = String(scanned || '').trim()
+  if (!a || !b) return false
+  if (a === b) return true
+  // 12-digit UPC-A in one, 13-digit EAN-13 (0 + UPC-A) in the other.
+  if (a.length === 13 && a.startsWith('0') && a.slice(1) === b) return true
+  if (b.length === 13 && b.startsWith('0') && b.slice(1) === a) return true
+  return false
+}
+
 export default function BarcodeScanner({
   products = [],
   onMatched,
@@ -55,8 +69,14 @@ export default function BarcodeScanner({
     const code = value.trim()
     if (!code) { refocus(); return }
 
-    // Look up client-side. Exact match on `barcode`.
-    const match = products.find(p => (p.barcode || '').trim() === code)
+    // Match the scanned code against products. We can't just do a===b
+    // because the same physical barcode shows up in the DB inconsistently:
+    //  - some rows are 12-digit UPC-A:        "196214130456"
+    //  - some rows are 13-digit EAN-13:       "0196214130456"  (UPC-A + leading 0)
+    // Scanner gun output also varies by mode. Treat them as equivalent
+    // by also testing "0" prefix removal / addition between scanned and
+    // stored forms.
+    const match = products.find(p => barcodesEqual(p.barcode, code))
     if (match) {
       onMatched?.(match)
       setLastMatched({ product: match, ts: Date.now() })

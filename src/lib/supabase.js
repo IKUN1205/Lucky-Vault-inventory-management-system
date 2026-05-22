@@ -2000,14 +2000,21 @@ export const lookupScannedCode = async (code) => {
   const trimmed = String(code || '').trim()
   if (!trimmed) return { kind: 'empty' }
 
-  // 1. UPC → products.barcode (partial unique index ensures at most 1 row)
+  // 1. UPC → products.barcode. We try both the scanned form AND the
+  //    UPC-A↔EAN-13 alternate (12-digit ↔ 13-digit-with-leading-0), since
+  //    the DB has rows in both formats and scanner mode varies. .in()
+  //    over the candidate set is a single round-trip.
   {
-    const { data: product, error } = await supabase
+    const candidates = [trimmed]
+    if (trimmed.length === 12)                          candidates.push('0' + trimmed)
+    if (trimmed.length === 13 && trimmed.startsWith('0')) candidates.push(trimmed.slice(1))
+    const { data: matches, error } = await supabase
       .from('products')
       .select('id, brand, name, category, language, type, barcode, active')
-      .eq('barcode', trimmed)
-      .maybeSingle()
+      .in('barcode', candidates)
+      .limit(2)
     if (error) throw error
+    const product = matches?.[0] || null
     if (product) {
       const { data: inv, error: invErr } = await supabase
         .from('inventory')
