@@ -285,8 +285,13 @@ export default function JapanStreamSales() {
               const overStock = inv && q > inv.quantity
               return (
                 <div key={item.id} className="p-3 bg-vault-dark rounded-lg border border-vault-border">
-                  <div className="grid grid-cols-12 gap-2 items-end">
-                    <div className="col-span-12 md:col-span-6">
+                  {/* items-start so each column lays out label + control top-aligned
+                      consistently — the previous items-end was getting thrown off
+                      by the helper text below Qty (it pushed the input up while
+                      other columns aligned to the bottom, breaking horizontal
+                      alignment). Trash uses an invisible label as a spacer. */}
+                  <div className="grid grid-cols-12 gap-3 items-start">
+                    <div className="col-span-12 md:col-span-5">
                       <label className="block text-xs text-gray-400 mb-1">Product (in Japan stock)</label>
                       <SearchableSelect
                         options={inventory}
@@ -305,10 +310,10 @@ export default function JapanStreamSales() {
                         onChange={(e) => updateItem(item.id, 'quantity', e.target.value)}
                         min="1"
                         max={inv?.quantity || 999999}
-                        className={`text-sm ${overStock ? 'border-red-500' : ''}`}
+                        className={`text-sm w-full ${overStock ? 'border-red-500' : ''}`}
                       />
                       {inv && (
-                        <div className="text-[10px] text-gray-500 mt-0.5">
+                        <div className="text-[10px] text-gray-500 mt-1">
                           {inv.quantity} in stock
                         </div>
                       )}
@@ -322,18 +327,23 @@ export default function JapanStreamSales() {
                         min="0"
                         step="0.01"
                         placeholder="sale price"
-                        className="text-sm"
+                        className="text-sm w-full"
                       />
                     </div>
-                    <div className="col-span-3 md:col-span-1 text-right">
-                      <div className="text-[10px] text-gray-500">Line</div>
-                      <div className="text-sm text-vault-gold">¥{lineTotal.toLocaleString()}</div>
+                    <div className="col-span-3 md:col-span-2">
+                      <label className="block text-xs text-gray-400 mb-1">Line</label>
+                      <div className="text-sm text-vault-gold font-semibold py-2 px-3 bg-vault-darker/40 rounded-md border border-vault-border/40 text-right truncate">
+                        ¥{lineTotal.toLocaleString()}
+                      </div>
                     </div>
-                    <div className="col-span-1 text-right">
+                    <div className="col-span-1">
+                      {/* Invisible label keeps the trash button vertically aligned
+                          with the inputs above (matches label height + mb-1). */}
+                      <label className="block text-xs mb-1 invisible" aria-hidden="true">.</label>
                       <button type="button" onClick={() => removeItem(item.id)}
                         disabled={items.length <= 1}
-                        className="p-1 text-gray-500 hover:text-red-400 disabled:opacity-30"
-                        title="Remove">
+                        className="w-full h-9 flex items-center justify-center text-gray-500 hover:text-red-400 rounded-md hover:bg-red-500/10 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                        title="Remove line">
                         <Trash2 size={16} />
                       </button>
                     </div>

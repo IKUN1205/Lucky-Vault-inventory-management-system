@@ -383,8 +383,12 @@ export default function JapanAcquisitions() {
               const lineTotal = q * c
               return (
                 <div key={item.id} className="p-3 bg-vault-dark rounded-lg border border-vault-border">
-                  <div className="grid grid-cols-12 gap-2 items-end">
-                    <div className="col-span-12 md:col-span-6">
+                  {/* items-start + consistent label-then-control structure across all
+                      columns. The Line cell is rendered as a readonly box so it
+                      visually matches the inputs next to it. Trash uses an
+                      invisible label spacer to vertical-align with the inputs. */}
+                  <div className="grid grid-cols-12 gap-3 items-start">
+                    <div className="col-span-12 md:col-span-5">
                       <label className="block text-xs text-gray-400 mb-1">Product</label>
                       <SearchableSelect
                         options={products}
@@ -402,7 +406,7 @@ export default function JapanAcquisitions() {
                         value={item.quantity}
                         onChange={(e) => updateLineItem(item.id, 'quantity', e.target.value)}
                         min="1"
-                        className="text-sm"
+                        className="text-sm w-full"
                       />
                     </div>
                     <div className="col-span-4 md:col-span-2">
@@ -414,20 +418,23 @@ export default function JapanAcquisitions() {
                         min="0"
                         step="0.01"
                         placeholder="JPY"
-                        className="text-sm"
+                        className="text-sm w-full"
                       />
                     </div>
-                    <div className="col-span-3 md:col-span-1 text-right">
-                      <div className="text-[10px] text-gray-500">Line</div>
-                      <div className="text-sm text-vault-gold">¥{lineTotal.toLocaleString()}</div>
+                    <div className="col-span-3 md:col-span-2">
+                      <label className="block text-xs text-gray-400 mb-1">Line</label>
+                      <div className="text-sm text-vault-gold font-semibold py-2 px-3 bg-vault-darker/40 rounded-md border border-vault-border/40 text-right truncate">
+                        ¥{lineTotal.toLocaleString()}
+                      </div>
                     </div>
-                    <div className="col-span-1 text-right">
+                    <div className="col-span-1">
+                      <label className="block text-xs mb-1 invisible" aria-hidden="true">.</label>
                       <button
                         type="button"
                         onClick={() => removeLineItem(item.id)}
                         disabled={lineItems.length <= 1}
-                        className="p-1 text-gray-500 hover:text-red-400 disabled:opacity-30"
-                        title="Remove"
+                        className="w-full h-9 flex items-center justify-center text-gray-500 hover:text-red-400 rounded-md hover:bg-red-500/10 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                        title="Remove line"
                       >
                         <Trash2 size={16} />
                       </button>

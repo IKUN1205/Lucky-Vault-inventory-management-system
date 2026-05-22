@@ -345,7 +345,10 @@ export default function JapanShipments() {
               const sources = sourceOptionsFor(item.product_id)
               return (
                 <div key={item.id} className="p-3 bg-vault-dark rounded-lg border border-vault-border space-y-2">
-                  <div className="grid grid-cols-12 gap-2 items-end">
+                  {/* items-start so the "{n} in stock" helper text under Qty doesn't
+                      vertically shift the input relative to its neighbours. Trash
+                      uses an invisible label as a vertical-align spacer. */}
+                  <div className="grid grid-cols-12 gap-3 items-start">
                     <div className="col-span-12 md:col-span-6">
                       <label className="block text-xs text-gray-400 mb-1">Product (in Japan stock)</label>
                       <SearchableSelect
@@ -365,9 +368,9 @@ export default function JapanShipments() {
                         onChange={(e) => updateItem(item.id, 'quantity', e.target.value)}
                         min="1"
                         max={inv?.quantity || 999999}
-                        className={`text-sm ${overStock ? 'border-red-500' : ''}`}
+                        className={`text-sm w-full ${overStock ? 'border-red-500' : ''}`}
                       />
-                      {inv && <div className="text-[10px] text-gray-500 mt-0.5">{inv.quantity} in stock</div>}
+                      {inv && <div className="text-[10px] text-gray-500 mt-1">{inv.quantity} in stock</div>}
                     </div>
                     <div className="col-span-4 md:col-span-3">
                       <label className="block text-xs text-gray-400 mb-1">Unit cost ¥ (basis)</label>
@@ -378,13 +381,15 @@ export default function JapanShipments() {
                         min="0"
                         step="0.01"
                         placeholder="auto from avg"
-                        className="text-sm"
+                        className="text-sm w-full"
                       />
                     </div>
-                    <div className="col-span-1 text-right">
+                    <div className="col-span-1">
+                      <label className="block text-xs mb-1 invisible" aria-hidden="true">.</label>
                       <button type="button" onClick={() => removeItem(item.id)}
                         disabled={items.length <= 1}
-                        className="p-1 text-gray-500 hover:text-red-400 disabled:opacity-30">
+                        className="w-full h-9 flex items-center justify-center text-gray-500 hover:text-red-400 rounded-md hover:bg-red-500/10 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                        title="Remove line">
                         <Trash2 size={16} />
                       </button>
                     </div>
