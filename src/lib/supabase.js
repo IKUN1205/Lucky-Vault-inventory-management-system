@@ -1727,7 +1727,7 @@ export const createJapanAcquisition = async ({
   const acqRow = {
     date_purchased: date_purchased || new Date().toLocaleDateString('en-CA'),
     acquirer_id: acquirer_id || null,
-    source_country: 'JP',
+    source_country: 'Japan',  // region enum accepts 'Japan', not 'JP' (verified live)
     vendor_id: vendor_id || null,
     payment_method_id: payment_method_id || null,
     product_id,
@@ -1855,7 +1855,7 @@ export const createJapanToUSShipment = async ({
   const acqRow = {
     date_purchased: shipped_date || new Date().toLocaleDateString('en-CA'),
     acquirer_id: shipper_id || null,
-    source_country: 'JP',
+    source_country: 'Japan',  // region enum accepts 'Japan', not 'JP' (verified live)
     vendor_id: vendorId,
     payment_method_id: null,
     product_id,
