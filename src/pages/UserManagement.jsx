@@ -65,6 +65,7 @@ const PAGE_SECTIONS = [
     { path: '/jp/acquisitions', label: '日本进货 / Japan Acquisitions' },
     { path: '/jp/stream-sales', label: '日本直播售卖 / Japan Stream Sales' },
     { path: '/jp/shipments', label: '日本→美国发货 / Japan→US Shipment' },
+    { path: '/jp/log', label: '日本日志 / Japan Activity Log' },
   ]},
   { title: 'Admin', items: [
     { path: '/high-value', label: 'High Value' },

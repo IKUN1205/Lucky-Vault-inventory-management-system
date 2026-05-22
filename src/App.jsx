@@ -44,6 +44,7 @@ import JapanInventory from './pages/JapanInventory'
 import JapanAcquisitions from './pages/JapanAcquisitions'
 import JapanStreamSales from './pages/JapanStreamSales'
 import JapanShipments from './pages/JapanShipments'
+import JapanLog from './pages/JapanLog'
 
 // Components
 import Layout from './components/Layout'
@@ -203,6 +204,9 @@ function AppRoutes() {
       } />
       <Route path="/jp/shipments" element={
         <ProtectedRoute path="/jp/shipments"><Layout><JapanShipments /></Layout></ProtectedRoute>
+      } />
+      <Route path="/jp/log" element={
+        <ProtectedRoute path="/jp/log"><Layout><JapanLog /></Layout></ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
