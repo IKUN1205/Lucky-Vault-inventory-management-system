@@ -128,6 +128,7 @@ const navSections = [
       { path: '/jp/stream-sales',  label: '日本直播售卖',   icon: Tv2 },
       { path: '/jp/shipments',     label: '日本→美国发货',  icon: Truck },
       { path: '/jp/log',           label: '日本日志',       icon: HistoryIcon },
+      { path: '/jp/add-product',   label: '日本新增 SKU',   icon: Plus },
     ]
   },
   {

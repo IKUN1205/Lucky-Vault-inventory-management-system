@@ -1883,6 +1883,49 @@ export const createJapanToUSShipment = async ({
   return acq
 }
 
+// Batch-create / upsert Japan SKUs for a single set. Used by the Japan
+// Add Product page when the user fills out (series, short_code,
+// english_name, variants[]) — the page resolves all the metadata via
+// helpers in japanVariants.js and hands us an array of complete product
+// rows. We use upsert so re-running for a set that partially exists is a
+// no-op for existing rows + creates the missing ones.
+//
+// Returns: { created, updated } counts so the caller can tell the user
+// whether they just added 4 new SKUs or 3 already existed.
+export const upsertProducts = async (rows) => {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { created: 0, updated: 0, data: [] }
+  }
+  // Find the existing rows so we can split into created vs updated for the
+  // user-facing toast. The composite unique key is
+  // (brand, type, category, name, language).
+  const keys = rows.map(r => ({
+    brand: r.brand, type: r.type, category: r.category,
+    name: r.name, language: r.language,
+  }))
+  // Pull existing matches by name (cheap filter — name is the most
+  // distinctive field). Cross-check the other key fields client-side.
+  const names = [...new Set(rows.map(r => r.name))]
+  const { data: preexisting } = await supabase
+    .from('products')
+    .select('id, name, brand, type, category, language')
+    .in('name', names)
+  const existing = new Set(
+    (preexisting || []).map(p => `${p.brand}|${p.type}|${p.category}|${p.name}|${p.language}`)
+  )
+  const inputKeys = rows.map(r => `${r.brand}|${r.type}|${r.category}|${r.name}|${r.language}`)
+
+  const { data, error } = await supabase
+    .from('products')
+    .upsert(rows, { onConflict: 'brand,type,category,name,language' })
+    .select()
+  if (error) throw error
+
+  const created = inputKeys.filter(k => !existing.has(k)).length
+  const updated = inputKeys.length - created
+  return { created, updated, data: data || [] }
+}
+
 // All active Japan→US shipments (for the shipment page's recent list +
 // in-transit visibility). Filters out delivered/canceled by default;
 // pass { includeAll: true } to see everything.

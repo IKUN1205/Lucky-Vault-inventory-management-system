@@ -82,3 +82,79 @@ export const SERIES_TO_BRAND = {
   '龙珠':     'Other',     // brand enum doesn't include Dragon Ball
   '其他':     'Other',
 }
+
+export const SERIES_LIST = ['宝可梦', '海贼王', '游戏王', '龙珠', '其他']
+
+/** When the Japan Add Product page generates an English product.name from
+ *  an english_name + variant, this map provides the suffix.
+ *
+ *  Examples (english_name = "MEGA Dream ex"):
+ *    sealed       → "MEGA Dream ex Booster Box"
+ *    unsealed     → "MEGA Dream ex Booster Box (Unsealed)"
+ *    in_bag       → "MEGA Dream ex (In Bag)"
+ *    single_pack  → "MEGA Dream ex Single Pack"
+ *    cut_slice    → "MEGA Dream ex (Cut Slice)"
+ *    case         → "MEGA Dream ex (Case)"
+ *    other        → "MEGA Dream ex (Other)"
+ *
+ *  Single-card / black-box are intentionally absent — those don't live in
+ *  the sealed products table per user directive.
+ */
+const VARIANT_NAME_SUFFIX = {
+  sealed:       ' Booster Box',
+  unsealed:     ' Booster Box (Unsealed)',
+  in_bag:       ' (In Bag)',
+  single_pack:  ' Single Pack',
+  cut_slice:    ' (Cut Slice)',
+  case:         ' (Case)',
+  other:        ' (Other)',
+}
+
+/** Build the canonical English product.name for a Japan SKU. Same convention
+ *  used by the xlsx importer so manually-added SKUs blend with imported ones. */
+export function buildJapanProductName(english_name, variant) {
+  const base = (english_name || '').trim()
+  if (!base) return ''
+  const suffix = VARIANT_NAME_SUFFIX[variant] ?? ''
+  return base + suffix
+}
+
+/** xlsx "english_full" suffix style — used when generating aliases so that
+ *  searching for the xlsx-style label like "MEGA Dream ex--in bag" also hits.
+ *  Differs from VARIANT_NAME_SUFFIX (which is for the canonical product.name). */
+const VARIANT_ALIAS_SUFFIX = {
+  sealed:       '--Booster Box',
+  unsealed:     '--no seal',
+  in_bag:       '--in bag',
+  single_pack:  '--Single Pack',
+  cut_slice:    '--Slit',
+  case:         '--Box Case',
+  other:        '',
+}
+
+/** Build the aliases array for a Japan SKU. De-duplicated, empty values
+ *  filtered, order: short_code → series_zh → english_name → xlsx-style
+ *  english_full. The order matches the import script so search results
+ *  feel consistent. */
+export function buildJapanProductAliases({ short_code, series_zh, english_name, variant }) {
+  const aliasSuffix = VARIANT_ALIAS_SUFFIX[variant] ?? ''
+  const xlsxLabel = english_name && aliasSuffix ? english_name + aliasSuffix : null
+  const set = new Set()
+  if (short_code) set.add(short_code)
+  if (series_zh) set.add(series_zh)
+  if (english_name) set.add(english_name)
+  if (xlsxLabel) set.add(xlsxLabel)
+  return [...set].filter(Boolean)
+}
+
+/** Whether a variant lives in products.type='Sealed' or 'Pack'. Aligns with
+ *  the xlsx importer's classification. */
+export function variantToType(variant) {
+  const PACK_VARIANTS = new Set(['in_bag', 'single_pack'])
+  return PACK_VARIANTS.has(variant) ? 'Pack' : 'Sealed'
+}
+
+/** Default-pre-checked variants on the bulk Add Product form. Reflects the
+ *  most-common shape of an incoming Japan set (sealed box + open box + in
+ *  bag + single pack). The other variants are opt-in. */
+export const DEFAULT_VARIANTS_FOR_NEW_SET = ['sealed', 'unsealed', 'in_bag', 'single_pack']
