@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { fetchJapanInventory } from '../lib/supabase'
-import { Package, Search, RefreshCw, ShoppingCart, ArrowRight } from 'lucide-react'
+import { fetchJapanInventory, supabase } from '../lib/supabase'
+import { ToastContainer, useToast } from '../components/Toast'
+import { useAuth } from '../lib/AuthContext'
+import { Package, Search, RefreshCw, ShoppingCart, ArrowRight, Edit2, Save, X } from 'lucide-react'
 import { variantLabel, variantChipClasses, VARIANT_ORDER, VARIANT_META } from '../lib/japanVariants'
 
 // ============================================================================
@@ -20,6 +22,10 @@ const extractLaunchName = (fullName, category) => {
 }
 
 export default function JapanInventory() {
+  const { toasts, addToast, removeToast } = useToast()
+  const { isAdmin } = useAuth()
+  const admin = isAdmin()
+
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -29,7 +35,70 @@ export default function JapanInventory() {
   const [typeFilter, setTypeFilter] = useState('')
   const [variantFilter, setVariantFilter] = useState('')
 
+  // Inline edit state. editingId = the inventory row currently in edit mode.
+  // editForm holds the buffered values. Admin-only — the Actions column
+  // hides for non-admins so the button doesn't tease them.
+  const [editingId, setEditingId] = useState(null)
+  const [editForm, setEditForm] = useState({ name: '', quantity: '', avg_cost_basis: '' })
+  const [editSaving, setEditSaving] = useState(false)
+
   useEffect(() => { load() }, [])
+
+  const startEdit = (r) => {
+    setEditingId(r.id)
+    setEditForm({
+      name: r.product?.name || '',
+      quantity: String(r.quantity ?? 0),
+      avg_cost_basis: String(r.avg_cost_basis ?? 0),
+    })
+  }
+  const cancelEdit = () => {
+    setEditingId(null)
+    setEditForm({ name: '', quantity: '', avg_cost_basis: '' })
+  }
+
+  const saveEdit = async (r) => {
+    try {
+      setEditSaving(true)
+      const nextName = (editForm.name || '').trim()
+      const nextQty = parseInt(editForm.quantity, 10)
+      const nextCost = parseFloat(editForm.avg_cost_basis)
+      if (!nextName) { addToast('Product name cannot be empty', 'error'); return }
+      if (!Number.isFinite(nextQty)) { addToast('Quantity must be a number', 'error'); return }
+      if (!Number.isFinite(nextCost) || nextCost < 0) { addToast('Cost must be a non-negative number', 'error'); return }
+
+      // Two-table update: products.name (if changed) + inventory.quantity +
+      // inventory.avg_cost_basis. Skip the products update when name didn't
+      // change so we don't bump updated_at unnecessarily and so non-admin
+      // users (if we ever loosen the gate) can't pivot via this path.
+      if (nextName !== (r.product?.name || '')) {
+        const { error: pErr } = await supabase
+          .from('products')
+          .update({ name: nextName })
+          .eq('id', r.product_id)
+        if (pErr) throw pErr
+      }
+      const { error: iErr } = await supabase
+        .from('inventory')
+        .update({
+          quantity: nextQty,
+          avg_cost_basis: nextCost,
+          last_updated: new Date().toISOString(),
+        })
+        .eq('id', r.id)
+      if (iErr) throw iErr
+
+      addToast('✓ Saved', 'success')
+      setEditingId(null)
+      setEditForm({ name: '', quantity: '', avg_cost_basis: '' })
+      load()
+    } catch (err) {
+      console.error('[JapanInventory] saveEdit failed:', err)
+      addToast(`Save failed: ${err.message || err}`, 'error')
+    } finally {
+      setEditSaving(false)
+    }
+  }
 
   const load = async () => {
     try {
@@ -208,6 +277,7 @@ export default function JapanInventory() {
                   <th className="pb-2 text-right">Qty</th>
                   <th className="pb-2 text-right">Avg cost (USD)</th>
                   <th className="pb-2 text-right">Value (USD)</th>
+                  {admin && <th className="pb-2 text-right pr-2">Edit</th>}
                 </tr>
               </thead>
               <tbody>
@@ -215,22 +285,94 @@ export default function JapanInventory() {
                   const avg = parseFloat(r.avg_cost_basis || 0)
                   const value = (r.quantity || 0) * avg
                   const v = r.product?.variant
+                  const isEditing = editingId === r.id
                   return (
-                    <tr key={r.id} className="border-b border-vault-border/50 hover:bg-vault-darker/30">
-                      <td className="py-2 text-gray-300 font-mono text-xs">{r.product?.short_code || '—'}</td>
-                      <td className="py-2 text-vault-gold">{r.product?.brand || '—'}</td>
-                      <td className="py-2 text-white">{extractLaunchName(r.product?.name, r.product?.category) || r.product?.name || '—'}</td>
-                      <td className="py-2">
+                    <tr key={r.id} className={`border-b border-vault-border/50 ${isEditing ? 'bg-vault-gold/5' : 'hover:bg-vault-darker/30'}`}>
+                      <td className="py-2 text-gray-300 font-mono text-xs align-middle">{r.product?.short_code || '—'}</td>
+                      <td className="py-2 text-vault-gold align-middle">{r.product?.brand || '—'}</td>
+                      <td className="py-2 align-middle">
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editForm.name}
+                            onChange={(e) => setEditForm(f => ({ ...f, name: e.target.value }))}
+                            className="text-sm w-full max-w-xs"
+                            placeholder="Product name"
+                          />
+                        ) : (
+                          <span className="text-white">
+                            {extractLaunchName(r.product?.name, r.product?.category) || r.product?.name || '—'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 align-middle">
                         {v ? (
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${variantChipClasses(v)}`}>
                             {variantLabel(v)}
                           </span>
                         ) : <span className="text-gray-600 text-xs">—</span>}
                       </td>
-                      <td className="py-2 text-blue-300">{r.product?.language || '—'}</td>
-                      <td className="py-2 text-right text-white font-semibold">{(r.quantity || 0).toLocaleString()}</td>
-                      <td className="py-2 text-right text-gray-300">${avg.toFixed(2)}</td>
-                      <td className="py-2 text-right text-green-400">${value.toFixed(2)}</td>
+                      <td className="py-2 text-blue-300 align-middle">{r.product?.language || '—'}</td>
+                      <td className="py-2 text-right align-middle">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            value={editForm.quantity}
+                            onChange={(e) => setEditForm(f => ({ ...f, quantity: e.target.value }))}
+                            className="w-20 text-right text-sm"
+                            min="0"
+                          />
+                        ) : (
+                          <span className="text-white font-semibold">{(r.quantity || 0).toLocaleString()}</span>
+                        )}
+                      </td>
+                      <td className="py-2 text-right align-middle">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            value={editForm.avg_cost_basis}
+                            onChange={(e) => setEditForm(f => ({ ...f, avg_cost_basis: e.target.value }))}
+                            className="w-24 text-right text-sm"
+                            min="0"
+                            step="0.01"
+                          />
+                        ) : (
+                          <span className="text-gray-300">${avg.toFixed(2)}</span>
+                        )}
+                      </td>
+                      <td className="py-2 text-right text-green-400 align-middle">${value.toFixed(2)}</td>
+                      {admin && (
+                        <td className="py-2 pr-2 text-right align-middle">
+                          {isEditing ? (
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                onClick={() => saveEdit(r)}
+                                disabled={editSaving}
+                                className="p-1 text-green-400 hover:text-green-300 disabled:opacity-50"
+                                title="Save"
+                              >
+                                <Save size={16} />
+                              </button>
+                              <button
+                                onClick={cancelEdit}
+                                disabled={editSaving}
+                                className="p-1 text-gray-400 hover:text-white disabled:opacity-50"
+                                title="Cancel"
+                              >
+                                <X size={16} />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => startEdit(r)}
+                              className="p-1 text-gray-500 hover:text-vault-gold"
+                              title="Edit name / qty / cost"
+                            >
+                              <Edit2 size={16} />
+                            </button>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   )
                 })}
@@ -239,6 +381,8 @@ export default function JapanInventory() {
           </div>
         )}
       </div>
+
+      <ToastContainer toasts={toasts} removeToast={removeToast} />
     </div>
   )
 }
