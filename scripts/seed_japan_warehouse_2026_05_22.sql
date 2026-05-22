@@ -29,6 +29,10 @@ DECLARE
   v_vendor    UUID;
   v_today     DATE := '2026-05-22';
   v_jpy_to_usd NUMERIC := 0.0067;  -- matches src/lib/supabase.js exchangeRates
+  -- acquisitions.acquirer_id is NOT NULL. Attribute the baseline import to
+  -- Will (the admin running the import). If your install has a different
+  -- admin id, replace this UUID with theirs.
+  v_acquirer  UUID := '2208af66-d88f-49e1-ada9-68c7eedceb8d'; -- Will
 
   -- Existing product ids (looked up from products table once, then reused)
   v_op14      UUID := '1edcb956-9117-405c-bd9f-0a142ca10a4b'; -- OP-14 Booster Box
@@ -103,23 +107,23 @@ BEGIN
   --    cost_usd snapshotted at JPY→USD = 0.0067.
   -- ------------------------------------------------------------------------
   INSERT INTO acquisitions (
-    date_purchased, source_country, vendor_id, product_id,
+    date_purchased, acquirer_id, source_country, vendor_id, product_id,
     quantity_purchased, quantity_received,
     cost, currency, cost_usd,
     status, origin, notes
   ) VALUES
-    (v_today, 'Japan', v_vendor, v_op14,           1,  1,  11000,    'JPY',  11000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: OP-14 sealed'),
-    (v_today, 'Japan', v_vendor, v_op15,           1,  1,  11000,    'JPY',  11000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: OP-15 sealed'),
-    (v_today, 'Japan', v_vendor, v_mdream,        10, 10, 166500,    'JPY', 166500     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M2a Mega Dream sealed'),
-    (v_today, 'Japan', v_vendor, v_infx,          15, 15, 390000,    'JPY', 390000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M2 Inferno X sealed'),
-    (v_today, 'Japan', v_vendor, v_glory_id,       1,  1,  30000,    'JPY',  30000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: SV10 Glory of Team Rocket sealed'),
-    (v_today, 'Japan', v_vendor, v_abyss_id,      79, 79,      0,    'JPY',      0,                   'Received', 'jp_vendor', 'Initial baseline: M5 Abyss Eye sealed — COST TBD ("还没结账，价格不知道")'),
-    (v_today, 'Japan', v_vendor, v_mdream_open,    4,  4,  56000,    'JPY',  56000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M2a Mega Dream open / 垃圾袋'),
-    (v_today, 'Japan', v_vendor, v_terastal_open, 16, 16, 304000,    'JPY', 304000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: SV8a Terastal Festival ex open / 垃圾袋'),
-    (v_today, 'Japan', v_vendor, v_ninja_open,     4,  4,  34000,    'JPY',  34000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M4 Ninja Spinner open / 垃圾袋'),
-    (v_today, 'Japan', v_vendor, v_mbrave_pk,     16, 16,   3520,    'JPY',   3520     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M1L Mega Brave single pack'),
-    (v_today, 'Japan', v_vendor, v_msymph_pk,     44, 44,  11440,    'JPY',  11440     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M1S Mega Symphonia single pack'),
-    (v_today, 'Japan', v_vendor, v_ninja_pk,      46, 46,  12880,    'JPY',  12880     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M4 Ninja Spinner single pack');
+    (v_today, v_acquirer, 'Japan', v_vendor, v_op14,           1,  1,  11000,    'JPY',  11000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: OP-14 sealed'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_op15,           1,  1,  11000,    'JPY',  11000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: OP-15 sealed'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_mdream,        10, 10, 166500,    'JPY', 166500     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M2a Mega Dream sealed'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_infx,          15, 15, 390000,    'JPY', 390000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M2 Inferno X sealed'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_glory_id,       1,  1,  30000,    'JPY',  30000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: SV10 Glory of Team Rocket sealed'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_abyss_id,      79, 79,      0,    'JPY',      0,                   'Received', 'jp_vendor', 'Initial baseline: M5 Abyss Eye sealed — COST TBD ("还没结账，价格不知道")'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_mdream_open,    4,  4,  56000,    'JPY',  56000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M2a Mega Dream open / 垃圾袋'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_terastal_open, 16, 16, 304000,    'JPY', 304000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: SV8a Terastal Festival ex open / 垃圾袋'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_ninja_open,     4,  4,  34000,    'JPY',  34000     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M4 Ninja Spinner open / 垃圾袋'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_mbrave_pk,     16, 16,   3520,    'JPY',   3520     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M1L Mega Brave single pack'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_msymph_pk,     44, 44,  11440,    'JPY',  11440     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M1S Mega Symphonia single pack'),
+    (v_today, v_acquirer, 'Japan', v_vendor, v_ninja_pk,      46, 46,  12880,    'JPY',  12880     * v_jpy_to_usd, 'Received', 'jp_vendor', 'Initial baseline: M4 Ninja Spinner single pack');
 
   -- ------------------------------------------------------------------------
   -- 4. Inventory bump — UPSERT against the (product_id, location_id) unique
