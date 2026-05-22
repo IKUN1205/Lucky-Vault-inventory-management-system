@@ -134,8 +134,14 @@ for (const row of xlsxRows) {
   const baselineKey = `${row.short_code}|${row.variant_zh}`
   const baselineName = BASELINE_MATCHES[baselineKey]
   let match = null
+  // IMPORTANT: filter to language='JP' before matching. The DB has EN/JP
+  // duplicates with identical names (e.g. "OP-14 The Azure Seas Seven
+  // Booster Box" exists in both); without this filter we'd tag the EN
+  // version and miss the JP-stocked one. Discovered the hard way when
+  // OP-14 showed Code=— in the Japan Inventory table.
+  const jpProducts = existingProducts.filter(p => (p.language || '').toUpperCase() === 'JP')
   if (baselineName) {
-    match = existingProducts.find(p => p.name === baselineName)
+    match = jpProducts.find(p => p.name === baselineName)
   }
   if (!match) {
     // Fuzzy fallback. Tightened so it ONLY matches when both the core
@@ -144,7 +150,7 @@ for (const row of xlsxRows) {
     // pre-existing "X Booster Pack" SKUs when we wanted the sealed
     // "X Booster Box" variant.
     const coreLower = english_core.toLowerCase()
-    match = existingProducts.find(p => {
+    match = jpProducts.find(p => {
       const nLower = (p.name || '').toLowerCase()
       if (!nLower.includes(coreLower)) return false
       if (variant_en === 'sealed') {
