@@ -421,7 +421,7 @@ export default function JapanShipments() {
         </div>
 
         <div className="pt-4 border-t border-vault-border flex justify-end">
-          <button type="submit" disabled={submitting} className="btn-primary flex items-center gap-2">
+          <button type="submit" disabled={submitting} className="btn btn-primary flex items-center gap-2">
             <Save size={16} />
             {submitting ? 'Shipping…' : 'Record shipment (−Japan, +Pending US)'}
           </button>

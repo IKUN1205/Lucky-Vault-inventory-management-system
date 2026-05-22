@@ -312,7 +312,7 @@ export default function JapanAcquisitions() {
                   placeholder="New JP vendor name"
                   className="flex-1"
                 />
-                <button type="button" onClick={handleAddNewVendor} className="btn-primary text-sm">Add</button>
+                <button type="button" onClick={handleAddNewVendor} className="btn btn-primary text-sm py-1.5 px-3">Add</button>
               </div>
             ) : (
               <select name="vendor_id" value={header.vendor_id} onChange={handleHeaderChange}>
@@ -343,7 +343,7 @@ export default function JapanAcquisitions() {
                   placeholder="e.g. Cash, Bank Transfer"
                   className="flex-1"
                 />
-                <button type="button" onClick={handleAddNewPayment} className="btn-primary text-sm">Add</button>
+                <button type="button" onClick={handleAddNewPayment} className="btn btn-primary text-sm py-1.5 px-3">Add</button>
               </div>
             ) : (
               <select name="payment_method_id" value={header.payment_method_id} onChange={handleHeaderChange}>
@@ -458,7 +458,7 @@ export default function JapanAcquisitions() {
           <button
             type="submit"
             disabled={submitting}
-            className="btn-primary flex items-center gap-2"
+            className="btn btn-primary flex items-center gap-2"
           >
             <Save size={16} />
             {submitting ? 'Saving…' : 'Save → Japan Warehouse'}
