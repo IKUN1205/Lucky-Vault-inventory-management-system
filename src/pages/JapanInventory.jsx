@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchJapanInventory, supabase } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
-import { useAuth } from '../lib/AuthContext'
 import { Package, Search, RefreshCw, ShoppingCart, ArrowRight, Edit2, Save, X } from 'lucide-react'
 import { variantLabel, variantChipClasses, VARIANT_ORDER, VARIANT_META } from '../lib/japanVariants'
 
@@ -23,8 +22,13 @@ const extractLaunchName = (fullName, category) => {
 
 export default function JapanInventory() {
   const { toasts, addToast, removeToast } = useToast()
-  const { isAdmin } = useAuth()
-  const admin = isAdmin()
+
+  // Edit (name / qty / cost) is open to anyone with /jp/inventory access.
+  // Rationale: the Japan team needs to fix typos + cost basis as part of
+  // daily work; the previous admin-only gate (isAdmin via Team Management
+  // access) blocked legitimate users like hua. Page-level access is the
+  // right line — if you can view Japan stock, you can curate it.
+  const canEdit = true
 
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -277,7 +281,7 @@ export default function JapanInventory() {
                   <th className="pb-2 text-right">Qty</th>
                   <th className="pb-2 text-right">Avg cost (USD)</th>
                   <th className="pb-2 text-right">Value (USD)</th>
-                  {admin && <th className="pb-2 text-right pr-2">Edit</th>}
+                  {canEdit && <th className="pb-2 text-right pr-2">Edit</th>}
                 </tr>
               </thead>
               <tbody>
@@ -341,7 +345,7 @@ export default function JapanInventory() {
                         )}
                       </td>
                       <td className="py-2 text-right text-green-400 align-middle">${value.toFixed(2)}</td>
-                      {admin && (
+                      {canEdit && (
                         <td className="py-2 pr-2 text-right align-middle">
                           {isEditing ? (
                             <div className="flex items-center justify-end gap-1">
