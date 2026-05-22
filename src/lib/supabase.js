@@ -805,10 +805,36 @@ const summarizeCard = (s) => {
   return `${s.condition || 'Raw'} ${s.card_name} ${s.card_number || ''}${setName}`
 }
 
+// Lazily resolved Front Store location id. Singles intake (whether
+// QuickIntakeModal scan, manual Add Single, or Bulk Add) defaults to
+// Front Store when the caller doesn't pass an explicit location_id —
+// store policy 2026-05-21 is that all newly-tracked singles live in
+// Storefront Inventory until they're physically moved elsewhere.
+// Cached for the lifetime of the page so we don't re-hit locations
+// on every intake.
+let _frontStoreLocIdCache = null
+export const getFrontStoreLocationId = async () => {
+  if (_frontStoreLocIdCache) return _frontStoreLocIdCache
+  const { data, error } = await supabase
+    .from('locations')
+    .select('id')
+    .eq('name', 'Front Store')
+    .maybeSingle()
+  if (error) throw error
+  _frontStoreLocIdCache = data?.id || null
+  return _frontStoreLocIdCache
+}
+
 export const createSingle = async (single) => {
+  // Default to Front Store unless caller explicitly set location_id.
+  // Treat empty string as "unset" (the form modal sends '' for null).
+  const payload = { ...single }
+  if (!payload.location_id) {
+    payload.location_id = await getFrontStoreLocationId()
+  }
   const { data, error } = await supabase
     .from('singles')
-    .insert(single)
+    .insert(payload)
     .select(`
       *,
       set:card_sets(id, name, code)
@@ -833,9 +859,15 @@ export const createSingle = async (single) => {
 // remove the offending row before retrying.
 export const createSinglesBatch = async (singles) => {
   if (!Array.isArray(singles) || singles.length === 0) return []
+  // Same Front Store default as createSingle. Looked up once per batch.
+  const frontStoreId = await getFrontStoreLocationId()
+  const payload = singles.map(s => ({
+    ...s,
+    location_id: s.location_id || frontStoreId,
+  }))
   const { data, error } = await supabase
     .from('singles')
-    .insert(singles)
+    .insert(payload)
     .select(`
       *,
       set:card_sets(id, name, code)

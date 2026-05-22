@@ -226,7 +226,16 @@ export default async function handler(req, res) {
     //    auto-created. Empty set_name routes through the fallback bucket.
     const newRows = items.filter(it => !existingByTcg.has(it.tcg_id))
 
-    // 5a. Build set lookup (fetch + auto-create + add fallback).
+    // 5a. Build set lookup (fetch + auto-create + add fallback). Also
+    //     resolve Front Store id once so every new insert lands there
+    //     (storage policy 2026-05-21: all new singles default to
+    //     Storefront Inventory until physically moved).
+    const { data: frontStoreRow } = await supabase
+      .from('locations')
+      .select('id')
+      .eq('name', 'Front Store')
+      .maybeSingle()
+    const frontStoreId = frontStoreRow?.id || null
     const { data: sets } = await supabase
       .from('card_sets')
       .select('id, name, language')
@@ -280,6 +289,7 @@ export default async function handler(req, res) {
         acquisition_cost_usd: null,
         source_type: 'other',
         status: 'in_inventory',
+        location_id: frontStoreId,
         date_acquired: it.date_acquired || today,
         notes: `Imported from singles sheet on ${today} (auto-sync)`,
         deleted: false,

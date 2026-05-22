@@ -176,6 +176,11 @@ async function main() {
   console.log(`  ${items.length} unique TCG IDs (after dedupe)`)
   console.log(`  ${skipped.length} rows skipped (no TCG ID)`)
 
+  // Resolve Front Store id (all new singles default here per store policy).
+  const frontStoreRow = await sbGet('/locations?select=id&name=eq.Front%20Store')
+  const frontStoreId = frontStoreRow?.[0]?.id || null
+  if (!frontStoreId) console.warn('  WARNING: Front Store location not found — inserts will have null location_id')
+
   // Fetch card_sets for name → id lookup.
   console.log('Fetching card_sets for set lookup…')
   let sets = await sbGet('/card_sets?select=id,name,brand,language&active=eq.true')
@@ -326,6 +331,7 @@ async function main() {
       // 'other' is the closest fit for sheet-driven imports.
       source_type: 'other',
       status: 'in_inventory',
+      location_id: frontStoreId,
       date_acquired: item.date_acquired || TODAY,
       notes: `Imported from singles sheet on ${TODAY}`,
       deleted: false,
