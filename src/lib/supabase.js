@@ -1985,6 +1985,196 @@ export const lookupScannedCode = async (code) => {
   return { kind: 'unknown', code: trimmed }
 }
 
+// ----- Move singles/slabs between locations -----
+//
+// Sealed-product moves stay in the existing createMovement + updateInventory
+// flow (see MovedInventory.jsx). Singles and slabs don't ride that table —
+// their location is a column on the row itself. These two helpers handle
+// the row-level location flip plus the audit log entry.
+
+// Move N units of a single from its current location to a different one.
+// Mirrors the sale-split logic in _sellSingleLine: if the source row has
+// more units than we're moving, we don't migrate the whole row — we
+// decrement the source and INSERT a clone at the new location. That keeps
+// per-card cost basis + acquisition history intact on the source row.
+// Slab semantics are simpler since slabs are always qty=1 (see moveSlabToLocation).
+export const moveSingleToLocation = async ({
+  singleId,
+  fromLocationId,    // used for audit / sanity check (current value of single.location_id)
+  toLocationId,
+  quantity,
+  actorId,           // logs as acted_by_id; can be null
+}) => {
+  const moveQty = Math.max(1, Number(quantity) || 1)
+  // Fetch fresh: someone else may have sold/moved this between scan and submit.
+  const { data: source, error: fetchErr } = await supabase
+    .from('singles')
+    .select('*, set:card_sets(id, brand, name, code, language)')
+    .eq('id', singleId)
+    .single()
+  if (fetchErr) throw fetchErr
+  if (source.deleted) throw new Error(`Single is deleted — cannot move`)
+  if (source.status !== 'in_inventory' && source.status !== 'listed') {
+    throw new Error(`Status "${source.status}" — only in_inventory / listed can be moved`)
+  }
+  const sourceQty = Number(source.quantity) || 1
+  if (moveQty > sourceQty) {
+    throw new Error(`Only ${sourceQty} available — cannot move ${moveQty}`)
+  }
+  if (source.location_id === toLocationId) {
+    throw new Error('Already at destination location')
+  }
+
+  const auditCommon = {
+    summary: `Moved ${moveQty} × ${source.card_name || 'single'} (${source.card_number || '?'})`,
+    payload: {
+      single_id: singleId,
+      from_location_id: source.location_id,
+      to_location_id: toLocationId,
+      quantity: moveQty,
+      source_quantity_before: sourceQty,
+    },
+  }
+
+  // Whole-row move: just flip location_id, no row split needed.
+  if (moveQty === sourceQty) {
+    const { data: updated, error: updErr } = await supabase
+      .from('singles')
+      .update({ location_id: toLocationId })
+      .eq('id', singleId)
+      .select('*, set:card_sets(id, brand, name, code, language), location:locations(id, name)')
+      .single()
+    if (updErr) throw updErr
+    logSingleEvent({ single_id: singleId, event_type: 'moved', acted_by_id: actorId, ...auditCommon })
+    return { mode: 'whole', single: updated }
+  }
+
+  // Partial move: decrement source qty, insert a clone at the new location.
+  // Clone keeps all cost / acquisition fields so per-card analytics aren't
+  // distorted by the move.
+  const { error: decErr } = await supabase
+    .from('singles')
+    .update({ quantity: sourceQty - moveQty })
+    .eq('id', singleId)
+  if (decErr) throw decErr
+  const clone = {
+    card_name: source.card_name,
+    card_number: source.card_number,
+    set_id: source.set_id,
+    brand: source.brand,
+    language: source.language,
+    variant: source.variant,
+    form: source.form,
+    condition: source.condition,
+    quantity: moveQty,
+    tcg_id: source.tcg_id,
+    cert_number: source.cert_number,
+    grading_company: source.grading_company,
+    grade: source.grade,
+    acquisition_cost_usd: source.acquisition_cost_usd,
+    acquisition_cost_native: source.acquisition_cost_native,
+    acquisition_currency: source.acquisition_currency,
+    current_market_price_usd: source.current_market_price_usd,
+    market_price_source: source.market_price_source,
+    market_price_updated_at: source.market_price_updated_at,
+    source_type: source.source_type,
+    source_box_break_id: source.source_box_break_id,
+    source_acquisition_id: source.source_acquisition_id,
+    location_id: toLocationId,
+    acquirer_id: source.acquirer_id,
+    vendor_id: source.vendor_id,
+    date_acquired: source.date_acquired,
+    status: 'in_inventory',
+    parent_single_id: singleId,
+    notes: `Split from ${singleId} via Move Inventory (${moveQty} of ${sourceQty})`,
+  }
+  const { data: inserted, error: insErr } = await supabase
+    .from('singles')
+    .insert(clone)
+    .select('*, set:card_sets(id, brand, name, code, language), location:locations(id, name)')
+    .single()
+  if (insErr) {
+    // Best-effort revert of the qty decrement so we don't lose units
+    // if the INSERT fails for any reason.
+    await supabase.from('singles').update({ quantity: sourceQty }).eq('id', singleId)
+    throw insErr
+  }
+  logSingleEvent({ single_id: singleId,         event_type: 'moved', acted_by_id: actorId, ...auditCommon })
+  logSingleEvent({ single_id: inserted.id,      event_type: 'moved', acted_by_id: actorId,
+                   summary: `Created via move from ${source.card_name || 'single'} (${moveQty} units)`,
+                   payload: { ...auditCommon.payload, clone_of: singleId } })
+  return { mode: 'split', source_id: singleId, clone: inserted }
+}
+
+// Move a slab. Always qty=1 so it's just a location_id flip + audit row.
+export const moveSlabToLocation = async ({
+  slabId,
+  toLocationId,
+  actorId,
+}) => {
+  const { data: source, error: fetchErr } = await supabase
+    .from('slabs')
+    .select('id, item_name, cert_number, status, location_id, deleted')
+    .eq('id', slabId)
+    .single()
+  if (fetchErr) throw fetchErr
+  if (source.deleted) throw new Error('Slab is deleted — cannot move')
+  if (source.status !== 'in_inventory' && source.status !== 'listed') {
+    throw new Error(`Status "${source.status}" — only in_inventory / listed can be moved`)
+  }
+  if (source.location_id === toLocationId) {
+    throw new Error('Already at destination location')
+  }
+  const { data: updated, error: updErr } = await supabase
+    .from('slabs')
+    .update({ location_id: toLocationId })
+    .eq('id', slabId)
+    .select('*, location:locations(id, name)')
+    .single()
+  if (updErr) throw updErr
+  logSlabEvent({
+    slab_id: slabId,
+    event_type: 'moved',
+    summary: `Moved slab "${source.item_name}" cert #${source.cert_number}`,
+    payload: { from_location_id: source.location_id, to_location_id: toLocationId },
+    acted_by_id: actorId,
+  })
+  return updated
+}
+
+// Fetch singles + slabs currently at a given location — used by Move
+// Inventory to populate the manual-search "what's in this room" view.
+// Mirrors the constraints used by the storefront search (sellable rows
+// only: in_inventory / listed, qty > 0 for singles).
+export const fetchSinglesAtLocation = async (locationId) => {
+  if (!locationId) return []
+  const { data, error } = await supabase
+    .from('singles')
+    .select(`
+      id, card_name, card_number, condition, quantity, tcg_id, status, form,
+      set:card_sets(id, name)
+    `)
+    .eq('location_id', locationId)
+    .eq('deleted', false)
+    .in('status', ['in_inventory', 'listed'])
+    .gt('quantity', 0)
+    .order('card_name')
+  if (error) throw error
+  return data || []
+}
+export const fetchSlabsAtLocation = async (locationId) => {
+  if (!locationId) return []
+  const { data, error } = await supabase
+    .from('slabs')
+    .select('id, item_name, cert_number, grading_company, status, location_id')
+    .eq('location_id', locationId)
+    .eq('deleted', false)
+    .in('status', ['in_inventory', 'listed'])
+    .order('item_name')
+  if (error) throw error
+  return data || []
+}
+
 // ----- Manual search for Storefront POS (no-barcode fallback) -----
 // These three helpers back the "Manual entry" panel under the scan box:
 // cashier types a partial name / TCG ID / cert#, gets a short result list,

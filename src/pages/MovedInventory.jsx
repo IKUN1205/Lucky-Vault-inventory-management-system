@@ -1,31 +1,55 @@
-import React, { useState, useEffect, useMemo } from 'react'
-import { fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement, fetchUsers } from '../lib/supabase'
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import {
+  fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement,
+  fetchUsers, lookupScannedCode,
+  moveSingleToLocation, moveSlabToLocation,
+  fetchSinglesAtLocation, fetchSlabsAtLocation,
+  searchProductsForStorefront, searchSinglesForStorefront, searchSlabsForStorefront,
+} from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
-import SearchableSelect from '../components/SearchableSelect'
-import BarcodeScanner from '../components/BarcodeScanner'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
-import { ArrowRightLeft, ArrowRight, Save, Plus, X, Trash2 } from 'lucide-react'
+import {
+  ArrowRightLeft, ArrowRight, Save, Plus, X, Trash2, ScanLine, Loader2,
+  Package, Diamond, Layers, AlertTriangle, Search, ChevronDown, ChevronUp,
+} from 'lucide-react'
 
-// All valid physical locations for inventory movement
+// ============================================================================
+// MovedInventory — unified scan + cart for moving sealed / singles / slabs
+// ============================================================================
+// Pick FROM + TO locations, then load the cart from any combination of:
+//   1. Scan input (UPC → sealed, cert# → slab, TCG ID → single)
+//   2. Manual search by name (three tabs)
+// Each cart line carries its own kind; submit routes to the right backend:
+//   sealed → existing createMovement + updateInventory flow (unchanged)
+//   single → moveSingleToLocation (whole-row OR split if partial qty)
+//   slab   → moveSlabToLocation
+// One Lark message per batch — type='move' extended to render mixed kinds.
+// ============================================================================
+
+// All valid physical locations for inventory movement.
 const ALLOWED_LOCATION_NAMES = [
   'Master Inventory',
   'Front Store',
   'Slab Room',
-  // Stream Rooms (correctly named — TikTok and Whatnot are separate platforms)
   'Stream Room - eBay LuckyVaultUS',
   'Stream Room - eBay SlabbiePatty',
   'Stream Room - TikTok RocketsHQ',
   'Stream Room - TikTok Packheads',
-  'Stream Room - Whatnot'
+  'Stream Room - Whatnot',
 ]
 
-// Helper to extract Launch Name
+const KIND_META = {
+  sealed: { icon: Package, color: 'text-amber-300',   label: 'Sealed' },
+  single: { icon: Layers,  color: 'text-blue-300',    label: 'Single' },
+  slab:   { icon: Diamond, color: 'text-emerald-300', label: 'Slab'   },
+}
+
 const extractLaunchName = (fullName, category) => {
   if (!fullName) return ''
   if (!category) return fullName
-  const categoryPattern = new RegExp(`\\s*${category}\\s*$`, 'i')
-  return fullName.replace(categoryPattern, '').trim() || fullName
+  const re = new RegExp(`\\s*${category}\\s*$`, 'i')
+  return fullName.replace(re, '').trim() || fullName
 }
 
 export default function MovedInventory() {
@@ -33,217 +57,295 @@ export default function MovedInventory() {
   const { user } = useAuth()
 
   const [locations, setLocations] = useState([])
-  const [inventory, setInventory] = useState([])
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
 
-  const [form, setForm] = useState({
-    date: new Date().toLocaleDateString('en-CA'),
-    from_location_id: '',
-    to_location_id: '',
-    moved_by_id: '',
-    product_id: '',
-    quantity: 1,
-    notes: ''
-  })
+  const [date, setDate] = useState(new Date().toLocaleDateString('en-CA'))
+  const [fromLocationId, setFromLocationId] = useState('')
+  const [toLocationId, setToLocationId] = useState('')
+  const [movedById, setMovedById] = useState('')
+  const [notes, setNotes] = useState('')
 
-  // Cart of items to transfer in one batch
-  // Each item: { product_id, quantity, inventory: <full inventory row for display + cost> }
+  // Mixed-kind cart.
+  //   sealed: { kind:'sealed', key, product_id, product, inventory_row, quantity }
+  //   single: { kind:'single', key, single_id, single, available_qty, quantity }
+  //   slab:   { kind:'slab',   key, slab_id, slab }
   const [cart, setCart] = useState([])
 
-  const [productFilters, setProductFilters] = useState({ brand: '', type: '' })
+  // What's at the FROM location across all 3 kinds — used both for scan
+  // validation ("is this item even in this room?") and to feed the
+  // optional manual-search dropdown when there's no barcode.
+  const [sealedAtFrom, setSealedAtFrom] = useState([])
+  const [singlesAtFrom, setSinglesAtFrom] = useState([])
+  const [slabsAtFrom, setSlabsAtFrom] = useState([])
+  const [stockLoading, setStockLoading] = useState(false)
 
-  useEffect(() => { loadData() }, [])
+  const [scanValue, setScanValue] = useState('')
+  const [scanning, setScanning] = useState(false)
+  const [unknownCode, setUnknownCode] = useState(null)
 
+  const scanRef = useRef(null)
+
+  // ---------- load locations + users ----------
   useEffect(() => {
-    if (form.from_location_id) loadInventoryForLocation(form.from_location_id)
-  }, [form.from_location_id])
+    (async () => {
+      try {
+        const [locData, userData] = await Promise.all([fetchLocations(), fetchUsers()])
+        setLocations(locData)
+        setUsers(userData)
+        if (user?.id && userData.some(u => u.id === user.id)) {
+          setMovedById(user.id)
+        }
+      } catch (err) {
+        console.error('[MovedInventory] init load failed:', err)
+        addToast('Failed to load data', 'error')
+      } finally {
+        setLoading(false)
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  const loadData = async () => {
+  const loadStockAtFrom = useCallback(async (locationId) => {
+    if (!locationId) {
+      setSealedAtFrom([]); setSinglesAtFrom([]); setSlabsAtFrom([])
+      return
+    }
+    setStockLoading(true)
     try {
-      const [locData, userData] = await Promise.all([
-        fetchLocations(),
-        fetchUsers()
+      const [inv, singles, slabs] = await Promise.all([
+        fetchInventory(locationId),
+        fetchSinglesAtLocation(locationId),
+        fetchSlabsAtLocation(locationId),
       ])
-      setLocations(locData)
-      setUsers(userData)
-
-      // Default Moved By to the currently logged-in user (if they exist in the users list).
-      // Operator can always change it before submitting if someone else is doing the move.
-      if (user?.id && userData.some(u => u.id === user.id)) {
-        setForm(f => ({ ...f, moved_by_id: user.id }))
-      }
-    } catch (error) {
-      console.error('Error loading data:', error)
-      addToast('Failed to load data', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const loadInventoryForLocation = async (locationId) => {
-    try {
-      const invData = await fetchInventory(locationId)
-      // Filter to sealed products only
-      const sealedOnly = invData.filter(inv =>
-        inv.product?.type === 'Sealed' || inv.product?.type === 'Pack'
+      // Sealed: filter to Sealed/Pack products only (other product types
+      // shouldn't be moved through this UI).
+      const sealedOnly = (inv || []).filter(r =>
+        r.product?.type === 'Sealed' || r.product?.type === 'Pack'
       )
-      setInventory(sealedOnly)
-    } catch (error) {
-      console.error('Error loading inventory:', error)
+      setSealedAtFrom(sealedOnly)
+      setSinglesAtFrom(singles)
+      setSlabsAtFrom(slabs)
+    } catch (err) {
+      console.error('[MovedInventory] loadStockAtFrom failed:', err)
+      addToast('Failed to load stock at source location', 'error')
+    } finally {
+      setStockLoading(false)
     }
-  }
+  }, [addToast])
 
-  const handleChange = (e) => {
-    const { name, value } = e.target
-    setForm(f => ({ ...f, [name]: value }))
-    if (name === 'from_location_id') {
-      // Changing source invalidates the cart (different products available)
-      if (cart.length > 0) {
-        setCart([])
-        addToast('Cart cleared — source location changed', 'info')
-      }
-      setForm(f => ({ ...f, product_id: '', quantity: 1 }))
+  // Reload stock when FROM changes. Also clear the cart since the source
+  // changed (cart items are tied to the FROM location).
+  useEffect(() => {
+    loadStockAtFrom(fromLocationId)
+    if (cart.length > 0) {
+      setCart([])
+      addToast?.('Cart cleared — source location changed', 'info')
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromLocationId])
 
-  const handleFilterChange = (e) => {
-    const { name, value } = e.target
-    setProductFilters(f => ({ ...f, [name]: value }))
-    setForm(f => ({ ...f, product_id: '' }))
-  }
-
-  const filteredInventory = inventory.filter(inv => {
-    if (productFilters.brand && inv.product?.brand !== productFilters.brand) return false
-    if (productFilters.type && inv.product?.type !== productFilters.type) return false
-    return true
-  })
-
-  const selectedInventory = inventory.find(inv => inv.product_id === form.product_id)
-
-  // How much of this product is already reserved in the cart
-  const cartQtyForProduct = (productId) =>
-    cart.filter(c => c.product_id === productId).reduce((s, c) => s + c.quantity, 0)
-
-  // Available qty after subtracting what's already in cart
-  const availableQty = selectedInventory
-    ? Math.max(0, selectedInventory.quantity - cartQtyForProduct(form.product_id))
-    : 0
-
+  // ---------- derived ----------
   const allowedLocations = locations.filter(l => ALLOWED_LOCATION_NAMES.includes(l.name))
   const physicalLocations = allowedLocations.filter(l => l.type === 'Physical')
-  const allDestinations = allowedLocations.filter(l => l.id !== form.from_location_id)
+  const allDestinations = allowedLocations.filter(l => l.id !== fromLocationId)
 
-  // -------- Cart actions --------
-  const handleAddToCart = () => {
-    if (!form.from_location_id || !form.to_location_id) {
-      addToast('Pick From and To locations first', 'error')
-      return
-    }
-    if (!form.product_id) {
-      addToast('Pick a product first', 'error')
-      return
-    }
-    const qty = parseInt(form.quantity)
-    if (!qty || qty < 1) {
-      addToast('Quantity must be at least 1', 'error')
-      return
-    }
-    if (qty > availableQty) {
-      const inCart = cartQtyForProduct(form.product_id)
+  // How much of a sealed product is already reserved in cart
+  const cartSealedQtyForProduct = (productId) =>
+    cart.filter(c => c.kind === 'sealed' && c.product_id === productId)
+        .reduce((s, c) => s + c.quantity, 0)
+  const cartSingleQtyFor = (singleId) =>
+    cart.filter(c => c.kind === 'single' && c.single_id === singleId)
+        .reduce((s, c) => s + c.quantity, 0)
+  const cartHasSlab = (slabId) =>
+    cart.some(c => c.kind === 'slab' && c.slab_id === slabId)
+
+  // ---------- cart line builders ----------
+  const addSealedToCart = (productId, quantity) => {
+    const invRow = sealedAtFrom.find(r => r.product_id === productId)
+    if (!invRow) { addToast('Not in stock at source', 'error'); return }
+    const inCart = cartSealedQtyForProduct(productId)
+    const remaining = Math.max(0, (invRow.quantity || 0) - inCart)
+    const qty = Math.max(1, Number(quantity) || 1)
+    if (qty > remaining) {
       addToast(
-        inCart > 0
-          ? `Only ${availableQty} more available (${inCart} already in cart)`
-          : `Only ${availableQty} available`,
+        inCart > 0 ? `Only ${remaining} more available (${inCart} in cart)` : `Only ${remaining} available`,
         'error'
       )
       return
     }
-
-    // If product already in cart, merge by summing qty
-    const existing = cart.find(c => c.product_id === form.product_id)
-    if (existing) {
-      setCart(cart.map(c =>
-        c.product_id === form.product_id
-          ? { ...c, quantity: c.quantity + qty }
-          : c
-      ))
-      addToast(`Updated: ${qty} more added (total ${existing.quantity + qty})`)
-    } else {
-      setCart([...cart, {
-        product_id: form.product_id,
+    setCart(prev => {
+      const idx = prev.findIndex(c => c.kind === 'sealed' && c.product_id === productId)
+      if (idx >= 0) {
+        const next = [...prev]
+        next[idx] = { ...next[idx], quantity: next[idx].quantity + qty }
+        return next
+      }
+      return [...prev, {
+        kind: 'sealed',
+        key: `sealed-${productId}`,
+        product_id: productId,
+        product: invRow.product,
+        inventory_row: invRow,
         quantity: qty,
-        inventory: selectedInventory,
-      }])
-      addToast(`Added ${qty} × ${selectedInventory?.product?.name?.slice(0, 40)}`)
+      }]
+    })
+    addToast(`Added: ${invRow.product?.name} × ${qty}`, 'success')
+  }
+
+  const addSingleToCart = (single, quantity = 1) => {
+    if (!single) return
+    const stockRow = singlesAtFrom.find(s => s.id === single.id)
+    if (!stockRow) {
+      addToast(`${single.card_name} is not at the source location`, 'error')
+      return
     }
-
-    // Clear product + quantity, keep filters and locations
-    setForm(f => ({ ...f, product_id: '', quantity: 1 }))
+    const inCart = cartSingleQtyFor(single.id)
+    const remaining = Math.max(0, (stockRow.quantity || 1) - inCart)
+    const qty = Math.max(1, Number(quantity) || 1)
+    if (remaining <= 0) {
+      addToast('All units of this single are already in the cart', 'error')
+      return
+    }
+    if (qty > remaining) {
+      addToast(`Only ${remaining} more available`, 'error')
+      return
+    }
+    setCart(prev => {
+      const idx = prev.findIndex(c => c.kind === 'single' && c.single_id === single.id)
+      if (idx >= 0) {
+        const next = [...prev]
+        next[idx] = { ...next[idx], quantity: next[idx].quantity + qty }
+        return next
+      }
+      return [...prev, {
+        kind: 'single',
+        key: `single-${single.id}`,
+        single_id: single.id,
+        single: stockRow,
+        available_qty: stockRow.quantity || 1,
+        quantity: qty,
+      }]
+    })
+    addToast(`Added: ${single.card_name}`, 'success')
   }
 
-  const handleRemoveFromCart = (productId) => {
-    setCart(cart.filter(c => c.product_id !== productId))
+  const addSlabToCart = (slab) => {
+    if (!slab) return
+    const stockRow = slabsAtFrom.find(s => s.id === slab.id)
+    if (!stockRow) {
+      addToast(`${slab.item_name} is not at the source location`, 'error')
+      return
+    }
+    if (cartHasSlab(slab.id)) {
+      addToast('Slab already in cart', 'info')
+      return
+    }
+    setCart(prev => [...prev, {
+      kind: 'slab',
+      key: `slab-${slab.id}`,
+      slab_id: slab.id,
+      slab: stockRow,
+    }])
+    addToast(`Added: ${slab.item_name}`, 'success')
   }
 
-  const handleClearCart = () => {
+  // ---------- scan handler ----------
+  const handleScan = async (e) => {
+    e?.preventDefault?.()
+    const code = scanValue.trim()
+    if (!code) return
+    if (!fromLocationId) {
+      addToast('Pick FROM location first', 'error')
+      setScanValue('')
+      return
+    }
+    setScanning(true)
+    setUnknownCode(null)
+    try {
+      const result = await lookupScannedCode(code)
+      if (result.kind === 'sealed') {
+        addSealedToCart(result.product.id, 1)
+      } else if (result.kind === 'single') {
+        addSingleToCart(result.single, 1)
+      } else if (result.kind === 'slab') {
+        addSlabToCart(result.slab)
+      } else if (result.kind === 'unknown') {
+        setUnknownCode(code)
+      }
+    } catch (err) {
+      console.error('[MovedInventory] lookup failed:', err)
+      addToast(`Lookup failed: ${err.message || err}`, 'error')
+    } finally {
+      setScanning(false)
+      setScanValue('')
+      setTimeout(() => scanRef.current?.focus(), 0)
+    }
+  }
+
+  // ---------- cart editing ----------
+  const updateLineQty = (key, qty) => {
+    const newQty = Math.max(1, Number(qty) || 1)
+    setCart(prev => prev.map(c => {
+      if (c.key !== key) return c
+      if (c.kind === 'slab') return c   // slabs always qty=1
+      // Cap against available stock
+      let maxQty = Infinity
+      if (c.kind === 'sealed') {
+        const invRow = sealedAtFrom.find(r => r.product_id === c.product_id)
+        const otherInCart = cart
+          .filter(o => o.kind === 'sealed' && o.product_id === c.product_id && o.key !== key)
+          .reduce((s, o) => s + o.quantity, 0)
+        maxQty = (invRow?.quantity || 0) - otherInCart
+      } else if (c.kind === 'single') {
+        maxQty = c.available_qty
+      }
+      const capped = Math.min(newQty, maxQty)
+      if (capped !== newQty) addToast(`Capped to available: ${capped}`, 'info')
+      return { ...c, quantity: capped }
+    }))
+  }
+
+  const removeLine = (key) => setCart(prev => prev.filter(c => c.key !== key))
+  const clearCart = () => {
     if (cart.length === 0) return
-    if (!confirm(`Clear all ${cart.length} items from cart?`)) return
+    if (!confirm('Clear cart?')) return
     setCart([])
   }
 
+  // ---------- submit ----------
   const handleSubmit = async (e) => {
-    e.preventDefault()
-
-    if (!form.from_location_id || !form.to_location_id) {
-      addToast('Pick From and To locations first', 'error')
-      return
-    }
-    if (!form.moved_by_id) {
-      addToast('Pick who is moving the items', 'error')
-      return
-    }
-    if (cart.length === 0) {
-      addToast('Cart is empty — add at least one product', 'error')
-      return
-    }
+    e?.preventDefault?.()
+    if (!fromLocationId || !toLocationId) { addToast('Pick FROM and TO locations', 'error'); return }
+    if (fromLocationId === toLocationId) { addToast('FROM and TO must differ', 'error'); return }
+    if (!movedById) { addToast('Pick who is moving the items', 'error'); return }
+    if (cart.length === 0) { addToast('Cart is empty', 'error'); return }
 
     setSubmitting(true)
-
-    // Track what we created, so the Undo button can reverse it
-    const completedMoves = []
-    // Snapshot of the cart for the closure (state will be cleared on success)
-    const movedFromId = form.from_location_id
-    const movedToId = form.to_location_id
+    const completedSealed = []   // for undo
+    const completedSingles = []  // {single_id, mode, ...} so we can reverse
+    const completedSlabs = []    // {slab_id, prev_location_id}
 
     try {
-      // Create movements + update inventory for each cart item
-      for (const item of cart) {
-        const inv = item.inventory
+      // ---- 1. Sealed: existing createMovement + updateInventory flow ----
+      for (const item of cart.filter(c => c.kind === 'sealed')) {
+        const inv = item.inventory_row
         const cost = (inv?.avg_cost_basis || 0) * item.quantity
-
         const movement = await createMovement({
-          date: form.date,
+          date,
           product_id: item.product_id,
-          from_location_id: movedFromId,
-          to_location_id: movedToId,
+          from_location_id: fromLocationId,
+          to_location_id: toLocationId,
           quantity: item.quantity,
           cost_basis: cost,
           movement_type: 'Transfer',
-          notes: form.notes,
-          // moved_by_id: who PHYSICALLY moved the goods (selected in the UI,
-          // defaults to logged-in user but can be overridden). Distinct from
-          // created_by which Supabase fills with the logged-in account that
-          // submitted the record. They're often the same but can differ when
-          // e.g. an admin logs a movement on behalf of a warehouse worker.
-          moved_by_id: form.moved_by_id || null
+          notes,
+          moved_by_id: movedById || null,
         })
-
-        await updateInventory(item.product_id, movedFromId, -item.quantity)
-        await updateInventory(item.product_id, movedToId, item.quantity, inv?.avg_cost_basis)
-
-        completedMoves.push({
+        await updateInventory(item.product_id, fromLocationId, -item.quantity)
+        await updateInventory(item.product_id, toLocationId, item.quantity, inv?.avg_cost_basis)
+        completedSealed.push({
           movement_id: movement?.id,
           product_id: item.product_id,
           quantity: item.quantity,
@@ -251,18 +353,48 @@ export default function MovedInventory() {
         })
       }
 
-      const totalUnits = cart.reduce((s, c) => s + c.quantity, 0)
+      // ---- 2. Singles: per-row location flip (or split) ----
+      for (const item of cart.filter(c => c.kind === 'single')) {
+        const result = await moveSingleToLocation({
+          singleId: item.single_id,
+          fromLocationId,
+          toLocationId,
+          quantity: item.quantity,
+          actorId: movedById || null,
+        })
+        completedSingles.push({
+          single_id: item.single_id,
+          quantity: item.quantity,
+          ...result,   // {mode:'whole'|'split', clone?}
+        })
+      }
 
-      // Fire-and-forget Lark notification. Failures here MUST NOT bubble up
-      // (the move already succeeded — we don't want to roll it back if Lark is down).
+      // ---- 3. Slabs: per-row location flip ----
+      for (const item of cart.filter(c => c.kind === 'slab')) {
+        await moveSlabToLocation({
+          slabId: item.slab_id,
+          toLocationId,
+          actorId: movedById || null,
+        })
+        completedSlabs.push({ slab_id: item.slab_id, prev_location_id: fromLocationId })
+      }
+
+      // ---- Lark (fire-and-forget) ----
       try {
-        const fromLoc = locations.find(l => l.id === movedFromId)
-        const toLoc = locations.find(l => l.id === movedToId)
-        const movedByUser = users.find(u => u.id === form.moved_by_id)
-        const itemsForLark = cart.map(c => ({
-          name: c.inventory?.product?.name || 'Unknown product',
-          quantity: c.quantity
-        }))
+        const fromLoc = locations.find(l => l.id === fromLocationId)
+        const toLoc = locations.find(l => l.id === toLocationId)
+        const movedByUser = users.find(u => u.id === movedById)
+        const itemsForLark = cart.map(c => {
+          if (c.kind === 'sealed') {
+            return { name: c.product?.name || 'Unknown', quantity: c.quantity, kind: 'sealed' }
+          }
+          if (c.kind === 'single') {
+            const num = c.single?.card_number ? ` #${c.single.card_number}` : ''
+            return { name: `${c.single?.card_name || 'Single'}${num}`, quantity: c.quantity, kind: 'single' }
+          }
+          return { name: `${c.slab?.item_name || 'Slab'} cert#${c.slab?.cert_number}`, quantity: 1, kind: 'slab' }
+        })
+        const totalUnits = itemsForLark.reduce((s, it) => s + it.quantity, 0)
         fetch('/api/lark-notify', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -272,101 +404,97 @@ export default function MovedInventory() {
             toLocation: toLoc?.name || 'Unknown',
             items: itemsForLark,
             user: movedByUser?.name || 'Unknown',
-            totalUnits
-          })
-        }).catch(err => {
-          console.error('[lark-notify] request failed (move still succeeded):', err)
-        })
+            totalUnits,
+          }),
+        }).catch(err => console.error('[lark-notify] move failed:', err))
       } catch (err) {
-        console.error('[lark-notify] failed to build payload:', err)
+        console.error('[MovedInventory] build Lark payload failed:', err)
       }
 
-      // Build undo callback — reverses every movement we just created
+      // ---- Undo callback ----
       const undo = async () => {
         try {
-          for (const m of completedMoves) {
-            // Reverse inventory deltas
-            await updateInventory(m.product_id, movedFromId, m.quantity)
-            await updateInventory(m.product_id, movedToId, -m.quantity)
-            // Delete the movement record so the audit log is clean
-            if (m.movement_id) {
-              await deleteMovement(m.movement_id)
+          for (const m of completedSealed) {
+            await updateInventory(m.product_id, fromLocationId, m.quantity)
+            await updateInventory(m.product_id, toLocationId, -m.quantity)
+            if (m.movement_id) await deleteMovement(m.movement_id)
+          }
+          for (const m of completedSingles) {
+            // Reverse via move back. moveSingleToLocation is idempotent
+            // w.r.t. row identity for whole-row; for split moves we'd
+            // ideally collapse the clone back into the source — for now
+            // just move the clone (or whole row) back.
+            const targetId = m.mode === 'split' ? m.clone?.id : m.single_id
+            if (targetId) {
+              try {
+                await moveSingleToLocation({
+                  singleId: targetId,
+                  fromLocationId: toLocationId,
+                  toLocationId: fromLocationId,
+                  quantity: m.quantity,
+                  actorId: movedById || null,
+                })
+              } catch (err) {
+                console.warn('Undo single failed:', err)
+              }
             }
           }
-          addToast(`Undone — ${completedMoves.length} ${completedMoves.length === 1 ? 'transfer' : 'transfers'} reverted`, 'info')
-          // Refresh inventory view since balances changed
-          if (form.from_location_id) loadInventoryForLocation(form.from_location_id)
+          for (const m of completedSlabs) {
+            try {
+              await moveSlabToLocation({
+                slabId: m.slab_id,
+                toLocationId: m.prev_location_id,
+                actorId: movedById || null,
+              })
+            } catch (err) {
+              console.warn('Undo slab failed:', err)
+            }
+          }
+          addToast('Move undone', 'info')
+          loadStockAtFrom(fromLocationId)
         } catch (err) {
           console.error('Undo failed:', err)
           addToast('Undo failed — check console', 'error')
         }
       }
 
-      setCart([])
-      setForm(f => ({ ...f, product_id: '', quantity: 1, notes: '' }))
-      loadInventoryForLocation(movedFromId)
-
+      const totalUnits = cart.reduce((s, c) => s + (c.kind === 'slab' ? 1 : c.quantity), 0)
       addToast(
-        `Moved ${completedMoves.length} ${completedMoves.length === 1 ? 'product' : 'products'} (${totalUnits} units) successfully!`,
+        `Moved ${cart.length} ${cart.length === 1 ? 'item' : 'items'} (${totalUnits} units)`,
         'success',
         { action: { label: 'Undo', onClick: undo } }
       )
-    } catch (error) {
-      console.error('Error moving inventory:', error)
-      // Best-effort partial undo: reverse whatever already succeeded
-      if (completedMoves.length > 0) {
-        try {
-          for (const m of completedMoves) {
-            await updateInventory(m.product_id, movedFromId, m.quantity)
-            await updateInventory(m.product_id, movedToId, -m.quantity)
-            if (m.movement_id) await deleteMovement(m.movement_id)
-          }
-          addToast(`Move failed mid-way. Reverted ${completedMoves.length} completed transfers.`, 'error')
-        } catch (rollbackErr) {
-          console.error('Rollback also failed:', rollbackErr)
-          addToast('Move failed AND rollback failed — check console + DB!', 'error')
+      setCart([])
+      setNotes('')
+      loadStockAtFrom(fromLocationId)
+    } catch (err) {
+      console.error('[MovedInventory] submit failed:', err)
+      addToast(`Failed: ${err.message || err}`, 'error')
+      // Best-effort rollback of whatever already happened.
+      try {
+        for (const m of completedSealed) {
+          await updateInventory(m.product_id, fromLocationId, m.quantity)
+          await updateInventory(m.product_id, toLocationId, -m.quantity)
+          if (m.movement_id) await deleteMovement(m.movement_id)
         }
-      } else {
-        addToast('Failed to move inventory — check console', 'error')
+        // Singles/slabs partial rollback is awkward (we'd need to know exact
+        // source state). Log + warn rather than risk a broken state.
+        if (completedSingles.length || completedSlabs.length) {
+          addToast(`Singles/slabs partial-rollback may be needed — check audit log`, 'error')
+        }
+      } catch (rbErr) {
+        console.error('[MovedInventory] rollback failed:', rbErr)
       }
     } finally {
       setSubmitting(false)
     }
   }
 
-  // Format for SearchableSelect - new nomenclature
-  const formatProductOption = (inv) => {
-    const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
-    const inCart = cartQtyForProduct(inv.product_id)
-    const remaining = Math.max(0, inv.quantity - inCart)
-    return (
-      <div className="flex items-center gap-2">
-        <span className="text-vault-gold">{inv.product?.brand}</span>
-        <span className="text-gray-400">|</span>
-        <span className="text-white">{launchName}</span>
-        <span className="text-gray-400">|</span>
-        <span className="text-gray-300">{inv.product?.category}</span>
-        <span className="text-gray-400">|</span>
-        <span className="text-blue-400">{inv.product?.language}</span>
-        <span className={`ml-2 ${remaining > 0 ? 'text-green-400' : 'text-red-400'}`}>
-          • {remaining} avail{inCart > 0 ? ` (${inCart} in cart)` : ''}
-        </span>
-      </div>
-    )
-  }
-
-  const getProductLabel = (inv) => {
-    const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
-    const inCart = cartQtyForProduct(inv.product_id)
-    const remaining = Math.max(0, inv.quantity - inCart)
-    return `${inv.product?.brand} | ${launchName} | ${inv.product?.category} | ${inv.product?.language} - ${remaining} avail${inCart > 0 ? ` (${inCart} in cart)` : ''}`
-  }
-
+  // ---------- render ----------
   if (loading) {
     return <div className="flex items-center justify-center h-64"><div className="spinner"></div></div>
   }
-
-  const totalCartUnits = cart.reduce((s, c) => s + c.quantity, 0)
+  const totalCartUnits = cart.reduce((s, c) => s + (c.kind === 'slab' ? 1 : c.quantity), 0)
 
   return (
     <div className="fade-in">
@@ -377,225 +505,423 @@ export default function MovedInventory() {
           <ArrowRightLeft className="text-orange-400" />
           Move Inventory
         </h1>
-        <p className="text-gray-400 mt-1">Transfer one or many products between locations in a single batch</p>
+        <p className="text-gray-400 mt-1">
+          Transfer sealed products, singles, or slabs between locations — scan or search to add to the cart.
+        </p>
       </div>
 
       <Instructions>
-        <div className="space-y-3 text-gray-300">
-          <p className="font-medium text-white">Bulk transfer flow:</p>
-          <ol className="list-decimal list-inside space-y-2 ml-2">
-            <li>Select <span className="text-vault-gold">FROM location</span> (where it's coming from)</li>
-            <li>Select <span className="text-vault-gold">TO location</span> (where it's going)</li>
-            <li>Pick a <span className="text-vault-gold">product</span> + <span className="text-vault-gold">quantity</span> → click <span className="text-vault-gold">Add to Cart</span></li>
-            <li>Repeat for as many products as you need — they accumulate in the cart below</li>
-            <li>When done, click <span className="text-vault-gold">Move N Items</span> to transfer everything in one batch</li>
-          </ol>
-          <p className="text-orange-400 text-xs mt-3">💡 Changing FROM location clears the cart. Same product added twice merges quantities.</p>
+        <div className="space-y-2 text-gray-300 text-sm">
+          <p className="text-white font-medium">Three kinds of items, one flow:</p>
+          <ul className="list-disc list-inside space-y-1 ml-2">
+            <li>📦 Sealed (boxes/packs) → scan UPC barcode</li>
+            <li>🎴 Single → scan/type TCG ID</li>
+            <li>💎 Slab → scan/type cert#</li>
+          </ul>
+          <p className="text-xs text-gray-500">
+            Scanning auto-detects which kind it is. No barcode? Use "Manual entry" below
+            to search by name. Only items currently AT the FROM location can be added.
+          </p>
         </div>
       </Instructions>
 
-      <form onSubmit={handleSubmit} className="card max-w-3xl">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">Date *</label>
-            <input type="date" name="date" value={form.date} onChange={handleChange} required />
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Header — date / movedBy / from / to */}
+        <div className="card">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Date *</label>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Moved By *</label>
+              <select value={movedById} onChange={(e) => setMovedById(e.target.value)} required>
+                <option value="">Who is moving these items...</option>
+                {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">Moved By *</label>
-            <select
-              name="moved_by_id"
-              value={form.moved_by_id}
-              onChange={handleChange}
-              required
-            >
-              <option value="">Who is moving these items...</option>
-              {users.map(u => (
-                <option key={u.id} value={u.id}>{u.name}</option>
-              ))}
-            </select>
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-300 mb-2">From Location *</label>
+              <select value={fromLocationId} onChange={(e) => setFromLocationId(e.target.value)} required>
+                <option value="">Select source...</option>
+                {physicalLocations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+              </select>
+            </div>
+            <div className="flex justify-center">
+              <ArrowRight className="text-vault-gold" size={24} />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-300 mb-2">To Location *</label>
+              <select value={toLocationId} onChange={(e) => setToLocationId(e.target.value)} required>
+                <option value="">Select destination...</option>
+                {allDestinations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+              </select>
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end mb-6">
-          <div className="md:col-span-2">
-            <label className="block text-sm font-medium text-gray-300 mb-2">From Location *</label>
-            <select name="from_location_id" value={form.from_location_id} onChange={handleChange} required>
-              <option value="">Select source...</option>
-              {physicalLocations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
-            </select>
-          </div>
-
-          <div className="flex justify-center">
-            <ArrowRight className="text-vault-gold" size={24} />
-          </div>
-
-          <div className="md:col-span-2">
-            <label className="block text-sm font-medium text-gray-300 mb-2">To Location *</label>
-            <select name="to_location_id" value={form.to_location_id} onChange={handleChange} required>
-              <option value="">Select destination...</option>
-              {allDestinations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
-            </select>
-          </div>
-        </div>
-
-        {form.from_location_id && (
-          <div className="pt-6 border-t border-vault-border">
-            <h3 className="font-display text-lg font-semibold text-white mb-4">Add Products to Cart</h3>
-
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Brand</label>
-                <select name="brand" value={productFilters.brand} onChange={handleFilterChange}>
-                  <option value="">All</option>
-                  <option value="Pokemon">Pokemon</option>
-                  <option value="One Piece">One Piece</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Sealed/Unsealed</label>
-                <select name="type" value={productFilters.type} onChange={handleFilterChange}>
-                  <option value="">All</option>
-                  <option value="Sealed">Sealed</option>
-                  <option value="Pack">Pack</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Scan a UPC to auto-pick the product. Match pool is restricted
-                to what's in stock at the FROM location — scanning something
-                that isn't here yields a clear "not in this room" toast
-                instead of a silent broken state. Unknown-barcode modal is
-                NOT shown here (only Manual / Add Product associate barcodes
-                to fresh SKUs). */}
-            {form.from_location_id && (
-              <div className="mb-4">
-                <BarcodeScanner
-                  products={inventory.map(inv => inv.product).filter(Boolean)}
-                  onMatched={(p) => {
-                    const hit = inventory.find(inv => inv.product_id === p.id)
-                    if (!hit) {
-                      addToast?.(`${p.name} is not in stock at this room`, 'error')
-                      return
-                    }
-                    setForm(f => ({ ...f, product_id: hit.product_id, quantity: 1 }))
-                    addToast?.(`Selected: ${p.name} (${hit.quantity} available)`, 'success')
-                  }}
-                  addToast={addToast}
-                  hint="Scan a UPC. Only products currently in stock at the FROM location will match."
-                />
-              </div>
-            )}
-
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-300 mb-2">Product (in stock)</label>
-              <p className="text-xs text-gray-500 mb-2">Format: Brand | Launch Name | Product Type | Language</p>
-              <SearchableSelect
-                options={filteredInventory}
-                value={form.product_id}
-                onChange={(val) => setForm(f => ({ ...f, product_id: val, quantity: 1 }))}
-                placeholder="Search..."
-                getOptionValue={(inv) => inv.product_id}
-                getOptionLabel={getProductLabel}
-                renderOption={formatProductOption}
-              />
-            </div>
-
-            {form.product_id && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Quantity (max: {availableQty})
-                  </label>
+        {/* Scan + manual entry — both gated on FROM being picked */}
+        {fromLocationId && (
+          <>
+            <div className="card">
+              <div className="bg-vault-darker/40 border border-vault-border rounded-lg p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <ScanLine size={20} className="text-vault-gold flex-shrink-0" />
                   <input
-                    type="number"
-                    name="quantity"
-                    value={form.quantity}
-                    onChange={handleChange}
-                    min="1"
-                    max={availableQty}
+                    ref={scanRef}
+                    type="text"
+                    value={scanValue}
+                    onChange={(e) => setScanValue(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleScan(e) } }}
+                    disabled={scanning || submitting}
+                    placeholder="Scan UPC, slab cert#, or single TCG ID…"
+                    autoComplete="off"
+                    spellCheck={false}
+                    inputMode="numeric"
+                    className="flex-1 px-3 py-2 bg-vault-darker border border-vault-border rounded-md text-white text-base focus:outline-none focus:border-vault-gold disabled:opacity-50"
                   />
+                  <button
+                    type="button"
+                    onClick={handleScan}
+                    disabled={scanning || submitting || !scanValue.trim()}
+                    className="px-4 py-2 bg-vault-gold/20 border border-vault-gold/40 text-vault-gold rounded-md text-sm hover:bg-vault-gold/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {scanning ? <Loader2 size={14} className="animate-spin" /> : 'Add'}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleAddToCart}
-                  disabled={availableQty < 1}
-                  className="btn btn-secondary"
-                >
-                  <Plus size={18} /> Add to Cart
-                </button>
+                <div className="text-[11px] text-gray-500">
+                  Auto-detects: UPC → sealed, cert# → slab, TCG ID → single. Item must be at the FROM location.
+                </div>
               </div>
-            )}
-          </div>
+
+              {unknownCode && (
+                <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-start gap-3">
+                  <AlertTriangle size={18} className="text-amber-300 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1 text-sm">
+                    <div className="text-amber-200">
+                      <code className="bg-vault-darker px-1.5 py-0.5 rounded text-vault-gold">{unknownCode}</code> isn't mapped to any sealed UPC, slab cert#, or single TCG ID.
+                    </div>
+                  </div>
+                  <button onClick={() => setUnknownCode(null)} className="p-1 text-gray-400 hover:text-white">
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <ManualEntrySection
+              fromLocationId={fromLocationId}
+              sealedAtFrom={sealedAtFrom}
+              singlesAtFrom={singlesAtFrom}
+              slabsAtFrom={slabsAtFrom}
+              stockLoading={stockLoading}
+              onPickSealed={(productId) => addSealedToCart(productId, 1)}
+              onPickSingle={(single) => addSingleToCart(single, 1)}
+              onPickSlab={(slab) => addSlabToCart(slab)}
+              disabled={submitting}
+            />
+          </>
         )}
 
-        {/* Cart display */}
+        {/* Cart */}
         {cart.length > 0 && (
-          <div className="mt-6 p-4 bg-vault-bg/60 rounded-lg border border-vault-gold/30">
+          <div className="card">
             <div className="flex items-center justify-between mb-3">
               <h4 className="font-display text-sm uppercase tracking-wide text-vault-gold">
-                Cart — {cart.length} {cart.length === 1 ? 'product' : 'products'} · {totalCartUnits} units
+                Cart — {cart.length} {cart.length === 1 ? 'item' : 'items'} · {totalCartUnits} units
               </h4>
               <button
                 type="button"
-                onClick={handleClearCart}
+                onClick={clearCart}
                 className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"
               >
                 <Trash2 size={14} /> Clear all
               </button>
             </div>
             <div className="space-y-2">
-              {cart.map(item => {
-                const launchName = extractLaunchName(item.inventory?.product?.name, item.inventory?.product?.category)
-                return (
-                  <div key={item.product_id} className="flex items-center justify-between gap-3 p-3 bg-vault-card rounded border border-vault-border">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap text-sm">
-                        <span className="text-vault-gold font-medium">{item.inventory?.product?.brand}</span>
-                        <span className="text-gray-500">|</span>
-                        <span className="text-white">{launchName}</span>
-                        <span className="text-gray-500">|</span>
-                        <span className="text-gray-300">{item.inventory?.product?.category}</span>
-                        <span className="text-gray-500">|</span>
-                        <span className="text-blue-400">{item.inventory?.product?.language}</span>
-                      </div>
-                    </div>
-                    <span className="text-orange-400 font-bold whitespace-nowrap">× {item.quantity}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveFromCart(item.product_id)}
-                      className="text-gray-400 hover:text-red-400 p-1"
-                      aria-label="Remove from cart"
-                    >
-                      <X size={18} />
-                    </button>
-                  </div>
-                )
-              })}
+              {cart.map(item => (
+                <CartRow
+                  key={item.key}
+                  item={item}
+                  onQtyChange={(q) => updateLineQty(item.key, q)}
+                  onRemove={() => removeLine(item.key)}
+                  disabled={submitting}
+                />
+              ))}
             </div>
           </div>
         )}
 
-        <div className="mt-6">
-          <label className="block text-sm font-medium text-gray-300 mb-2">Notes (applied to all items)</label>
-          <input type="text" name="notes" value={form.notes} onChange={handleChange} placeholder="Optional" />
-        </div>
-
-        <div className="mt-6">
+        {/* Notes + Submit */}
+        <div className="card space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Notes (optional, applied to all)</label>
+            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
+          </div>
           <button
             type="submit"
             className="btn btn-primary w-full"
-            disabled={submitting || cart.length === 0}
+            disabled={submitting || cart.length === 0 || !fromLocationId || !toLocationId || !movedById}
           >
-            {submitting ? (
-              <div className="spinner w-5 h-5 border-2"></div>
-            ) : (
-              <>
-                <Save size={20} /> Move {cart.length || ''} {cart.length === 1 ? 'Item' : 'Items'}
-              </>
-            )}
+            {submitting
+              ? <div className="spinner w-5 h-5 border-2"></div>
+              : <><Save size={20} /> Move {cart.length || ''} {cart.length === 1 ? 'Item' : 'Items'}</>
+            }
           </button>
         </div>
       </form>
     </div>
+  )
+}
+
+// ============================================================================
+// CartRow — kind-aware row in the cart
+// ============================================================================
+function CartRow({ item, onQtyChange, onRemove, disabled }) {
+  const meta = KIND_META[item.kind]
+  const Icon = meta.icon
+  let title, sub, max, qtyEditable
+  if (item.kind === 'sealed') {
+    const inv = item.inventory_row
+    const launchName = extractLaunchName(item.product?.name, item.product?.category)
+    title = `${item.product?.brand} | ${launchName}`
+    sub = `${item.product?.category || ''} · ${item.product?.language || ''} · ${inv?.quantity || 0} at source`
+    max = inv?.quantity || 0
+    qtyEditable = true
+  } else if (item.kind === 'single') {
+    const num = item.single?.card_number ? ` #${item.single.card_number}` : ''
+    const setName = item.single?.set?.name ? ` · ${item.single.set.name}` : ''
+    title = `${item.single?.card_name || 'Single'}${num}`
+    sub = `${item.single?.condition || 'raw'}${setName} · TCG ${item.single?.tcg_id || '?'} · ${item.available_qty} at source`
+    max = item.available_qty
+    qtyEditable = true
+  } else {
+    title = item.slab?.item_name || 'Slab'
+    sub = `${item.slab?.grading_company || ''} · cert #${item.slab?.cert_number}`
+    max = 1
+    qtyEditable = false
+  }
+
+  return (
+    <div className="grid grid-cols-12 gap-3 items-center p-3 bg-vault-darker/40 border border-vault-border rounded-lg">
+      <div className={`col-span-7 md:col-span-8 flex items-center gap-3 min-w-0 ${meta.color}`}>
+        <Icon size={20} className="flex-shrink-0" />
+        <div className="min-w-0">
+          <div className="text-white font-medium truncate">{title}</div>
+          <div className="text-xs text-gray-500 truncate">{sub}</div>
+        </div>
+      </div>
+      <div className="col-span-3 md:col-span-3">
+        <label className="block text-[10px] uppercase tracking-wider text-gray-500">
+          Qty {max > 1 && <span className="text-gray-600 normal-case">/ {max}</span>}
+        </label>
+        {qtyEditable ? (
+          <input
+            type="number"
+            min="1"
+            max={max}
+            value={item.quantity}
+            onChange={(e) => onQtyChange(e.target.value)}
+            disabled={disabled}
+            className="w-full"
+          />
+        ) : (
+          <div className="text-white text-sm pt-1">1</div>
+        )}
+      </div>
+      <div className="col-span-2 md:col-span-1 flex justify-end">
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={disabled}
+          className="text-gray-400 hover:text-red-400 p-1"
+          aria-label="Remove"
+        >
+          <X size={18} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// ManualEntrySection — search by name when scanner can't find it
+// ============================================================================
+// Three tabs. Each searches the corresponding "at FROM location" list.
+// We do this CLIENT-SIDE (no Supabase query per keystroke) because the
+// FROM-location lists are already loaded, typically small (<500 rows), and
+// always need to be filtered by "is at this location" anyway.
+function ManualEntrySection({
+  fromLocationId,
+  sealedAtFrom, singlesAtFrom, slabsAtFrom,
+  stockLoading,
+  onPickSealed, onPickSingle, onPickSlab,
+  disabled,
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [tab, setTab] = useState('sealed')
+  const [query, setQuery] = useState('')
+
+  useEffect(() => { setQuery('') }, [tab, fromLocationId])
+
+  const q = query.trim().toLowerCase()
+  const filterByQ = (text) => !q || (text || '').toLowerCase().includes(q)
+
+  const sealedResults = useMemo(() => {
+    if (q.length < 1) return sealedAtFrom.slice(0, 20)
+    return sealedAtFrom
+      .filter(r => filterByQ(`${r.product?.brand} ${r.product?.name} ${r.product?.category}`))
+      .slice(0, 20)
+  }, [q, sealedAtFrom])
+  const singleResults = useMemo(() => {
+    if (q.length < 1) return singlesAtFrom.slice(0, 20)
+    return singlesAtFrom
+      .filter(r => filterByQ(`${r.card_name} ${r.card_number} ${r.tcg_id}`))
+      .slice(0, 20)
+  }, [q, singlesAtFrom])
+  const slabResults = useMemo(() => {
+    if (q.length < 1) return slabsAtFrom.slice(0, 20)
+    return slabsAtFrom
+      .filter(r => filterByQ(`${r.item_name} ${r.cert_number}`))
+      .slice(0, 20)
+  }, [q, slabsAtFrom])
+
+  const placeholder = tab === 'sealed' ? 'Type brand or product name…'
+    : tab === 'single' ? 'Type card name, number, or TCG ID…'
+    : 'Type slab name or cert#…'
+  const stockCount = tab === 'sealed' ? sealedAtFrom.length
+    : tab === 'single' ? singlesAtFrom.length : slabsAtFrom.length
+
+  return (
+    <div className="card">
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="flex items-center justify-between w-full text-left"
+      >
+        <div className="flex items-center gap-2">
+          <Search size={16} className="text-vault-gold" />
+          <span className="text-sm font-semibold text-white">Manual entry (no barcode)</span>
+          <span className="text-xs text-gray-500">
+            — search what's at the FROM location
+          </span>
+        </div>
+        {expanded ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+      </button>
+
+      {expanded && (
+        <div className="mt-3 space-y-3">
+          <div className="flex items-center gap-1 border-b border-vault-border/50 pb-2">
+            <ManualTab active={tab === 'sealed'} onClick={() => setTab('sealed')} icon={Package} label={`Sealed (${sealedAtFrom.length})`} color="text-amber-300" />
+            <ManualTab active={tab === 'single'} onClick={() => setTab('single')} icon={Layers}  label={`Single (${singlesAtFrom.length})`} color="text-blue-300" />
+            <ManualTab active={tab === 'slab'}   onClick={() => setTab('slab')}   icon={Diamond} label={`Slab (${slabsAtFrom.length})`}   color="text-emerald-300" />
+            {stockLoading && <Loader2 size={12} className="text-gray-500 animate-spin ml-2" />}
+          </div>
+
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              disabled={disabled}
+              placeholder={placeholder}
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full pl-9 pr-3 py-2 bg-vault-darker border border-vault-border rounded-md text-white text-sm focus:outline-none focus:border-vault-gold disabled:opacity-50"
+            />
+          </div>
+
+          {stockCount === 0 && !stockLoading && (
+            <div className="text-xs text-gray-500">Nothing of this kind is at the source location.</div>
+          )}
+
+          {tab === 'sealed' && sealedResults.length > 0 && (
+            <ul className="max-h-72 overflow-y-auto divide-y divide-vault-border/50 border border-vault-border rounded-md">
+              {sealedResults.map(r => (
+                <ResultRow
+                  key={r.product_id}
+                  icon={Package} color="text-amber-300"
+                  title={`${r.product?.brand} | ${extractLaunchName(r.product?.name, r.product?.category)}`}
+                  sub={`${r.product?.category || ''} · ${r.product?.language || ''} · ${r.quantity} in stock`}
+                  onAdd={() => onPickSealed(r.product_id)}
+                  disabled={disabled}
+                />
+              ))}
+            </ul>
+          )}
+          {tab === 'single' && singleResults.length > 0 && (
+            <ul className="max-h-72 overflow-y-auto divide-y divide-vault-border/50 border border-vault-border rounded-md">
+              {singleResults.map(r => {
+                const num = r.card_number ? ` #${r.card_number}` : ''
+                const setName = r.set?.name ? ` · ${r.set.name}` : ''
+                return (
+                  <ResultRow
+                    key={r.id}
+                    icon={Layers} color="text-blue-300"
+                    title={`${r.card_name || 'Single'}${num}`}
+                    sub={`${r.condition || 'raw'}${setName} · TCG ${r.tcg_id || '?'} · qty ${r.quantity}`}
+                    onAdd={() => onPickSingle(r)}
+                    disabled={disabled}
+                  />
+                )
+              })}
+            </ul>
+          )}
+          {tab === 'slab' && slabResults.length > 0 && (
+            <ul className="max-h-72 overflow-y-auto divide-y divide-vault-border/50 border border-vault-border rounded-md">
+              {slabResults.map(r => (
+                <ResultRow
+                  key={r.id}
+                  icon={Diamond} color="text-emerald-300"
+                  title={r.item_name}
+                  sub={`${r.grading_company || ''} · cert #${r.cert_number}`}
+                  onAdd={() => onPickSlab(r)}
+                  disabled={disabled}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ManualTab({ active, onClick, icon: Icon, label, color }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+        active ? `bg-vault-darker/60 ${color}` : 'text-gray-400 hover:text-white'
+      }`}
+    >
+      <Icon size={14} />
+      {label}
+    </button>
+  )
+}
+
+function ResultRow({ icon: Icon, color, title, sub, onAdd, disabled }) {
+  return (
+    <li className="flex items-center gap-3 px-3 py-2 bg-vault-darker/30 hover:bg-vault-darker/60 transition-colors">
+      <Icon size={16} className={`${color} flex-shrink-0`} />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-white truncate">{title}</div>
+        <div className="text-xs text-gray-500 truncate">{sub}</div>
+      </div>
+      <button
+        type="button"
+        onClick={onAdd}
+        disabled={disabled}
+        className="flex-shrink-0 inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-vault-gold/20 border border-vault-gold/40 text-vault-gold rounded-md hover:bg-vault-gold/30 disabled:opacity-50"
+      >
+        <Plus size={12} />
+        Add
+      </button>
+    </li>
   )
 }

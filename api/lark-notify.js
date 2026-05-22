@@ -512,16 +512,21 @@ function buildMessage(body) {
     if (!fromLocation || !toLocation || !Array.isArray(items) || items.length === 0) {
       throw new Error('move: missing fromLocation/toLocation/items')
     }
+    // Each item carries an optional kind (sealed / single / slab) so the
+    // reader can tell what kind of stock moved at a glance. Legacy callers
+    // that don't send kind default to sealed (matches prior behavior).
+    const KIND_ICON = { sealed: '📦', single: '🎴', slab: '💎' }
     const lines = []
     lines.push('📦 Inventory Move')
     lines.push(`By: ${user || 'Unknown'}`)
     lines.push(`Route: ${fromLocation} → ${toLocation}`)
     lines.push('')
     for (const item of items) {
-      lines.push(`• ${item.name || 'Unknown product'} × ${item.quantity ?? 0}`)
+      const icon = KIND_ICON[item.kind] || KIND_ICON.sealed
+      lines.push(`${icon} ${item.name || 'Unknown'} × ${item.quantity ?? 0}`)
     }
     lines.push('')
-    const skuLabel = items.length === 1 ? 'SKU' : 'SKUs'
+    const skuLabel = items.length === 1 ? 'item' : 'items'
     lines.push(`Total: ${items.length} ${skuLabel} / ${totalUnits ?? 0} units`)
     lines.push(`Time: ${nowUtcStamp()}`)
     return lines.join('\n')
