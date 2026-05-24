@@ -99,10 +99,18 @@ export default async function handler(req, res) {
   // (日本进货 reuses the existing 'purchased' type with sourceCountry='Japan'
   //  + currency='JPY' — buildMessage already handles those cases.)
   if (type === 'jp_stream_sale') {
-    return handleJapanEvent(body, res, buildJpStreamSale, /*alsoToAcquisitions=*/false)
+    return handleJapanEvent(body, res, buildJpStreamSale, {})
   }
   if (type === 'jp_to_us_shipment') {
-    return handleJapanEvent(body, res, buildJpToUSShipment, /*alsoToAcquisitions=*/true)
+    // 3 stakeholders for cross-border shipments:
+    //   japan group  — sender team's heads-up
+    //   acquisitions — US receive team's "incoming, prep Intake" alert
+    //   inventory_io — the company-wide inventory in/out audit channel,
+    //                  same group that gets every move/intake notification
+    return handleJapanEvent(body, res, buildJpToUSShipment, {
+      alsoToAcquisitions: true,
+      alsoToInventoryIo: true,
+    })
   }
 
   // ----- Singles in-and-out events --------------------------------------
@@ -1052,7 +1060,12 @@ function getJapanWebhook() {
   return process.env.LARK_WEBHOOK_JAPAN || process.env.LARK_WEBHOOK_URL || null
 }
 
-async function handleJapanEvent(body, res, builder, alsoToAcquisitions) {
+async function handleJapanEvent(body, res, builder, opts = {}) {
+  // Back-compat: third positional bool (used by older call sites) still
+  // works via opts = true → treat as { alsoToAcquisitions: true }.
+  if (typeof opts === 'boolean') opts = { alsoToAcquisitions: opts }
+  const { alsoToAcquisitions = false, alsoToInventoryIo = false } = opts
+
   let text
   try {
     text = builder(body)
@@ -1062,9 +1075,17 @@ async function handleJapanEvent(body, res, builder, alsoToAcquisitions) {
 
   const jpUrl = getJapanWebhook()
   const acqUrl = alsoToAcquisitions ? process.env.LARK_WEBHOOK_ACQUISITIONS : null
+  const ioUrl  = alsoToInventoryIo  ? process.env.LARK_WEBHOOK_INVENTORY_IO : null
+  // De-dup by URL so a shared webhook doesn't get the message N times.
+  const seen = new Set()
   const targets = []
-  if (jpUrl) targets.push({ name: 'japan', url: jpUrl })
-  if (acqUrl && acqUrl !== jpUrl) targets.push({ name: 'acquisitions', url: acqUrl })
+  const pushTarget = (name, url) => {
+    if (!url || seen.has(url)) return
+    seen.add(url); targets.push({ name, url })
+  }
+  pushTarget('japan', jpUrl)
+  pushTarget('acquisitions', acqUrl)
+  pushTarget('inventory_io', ioUrl)
   if (targets.length === 0) {
     console.error('[lark-notify] Japan event: no webhook configured')
     return res.status(500).json({ error: 'No webhook configured (set LARK_WEBHOOK_JAPAN or LARK_WEBHOOK_URL)' })

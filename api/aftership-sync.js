@@ -26,6 +26,11 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
   || process.env.VITE_SUPABASE_ANON_KEY
 const AFTERSHIP_KEY = process.env.AFTERSHIP_API_KEY
 const LARK_INTERNAL_URL = process.env.LARK_WEBHOOK_URL  // re-use direct call rather than self-fetch
+// The Inventory In&Out group lives behind this env var (same one used by
+// Singles event Lark routing). If set, the daily digest goes there in
+// addition to the main group so the inventory team sees package
+// arrivals + day-before previews alongside their other in/out events.
+const LARK_INVENTORY_IO_URL = process.env.LARK_WEBHOOK_INVENTORY_IO
 const CRON_SECRET = process.env.CRON_SECRET
 
 // Map our friendly carrier names → AfterShip slugs.
@@ -263,8 +268,17 @@ async function maybeSendDigest({ arrivingToday, arrivingTomorrow, justDelivered 
   if (arrivingToday.length === 0 && arrivingTomorrow.length === 0 && justDelivered.length === 0) {
     return false  // nothing to say
   }
-  if (!LARK_INTERNAL_URL) {
-    console.warn('[aftership-sync] LARK_WEBHOOK_URL not set — skipping digest')
+
+  // Targets: main URL (legacy) + Inventory In&Out (if configured). De-duped
+  // by URL so a shared webhook doesn't double-post. At least one must be
+  // set, otherwise we skip with a warning.
+  const seen = new Set()
+  const targets = []
+  for (const [name, url] of [['main', LARK_INTERNAL_URL], ['inventory_io', LARK_INVENTORY_IO_URL]]) {
+    if (url && !seen.has(url)) { seen.add(url); targets.push({ name, url }) }
+  }
+  if (targets.length === 0) {
+    console.warn('[aftership-sync] No Lark webhook configured (LARK_WEBHOOK_URL / LARK_WEBHOOK_INVENTORY_IO) — skipping digest')
     return false
   }
 
@@ -299,16 +313,26 @@ async function maybeSendDigest({ arrivingToday, arrivingTomorrow, justDelivered 
   }
 
   const text = lines.join('\n')
-  const r = await fetch(LARK_INTERNAL_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ msg_type: 'text', content: { text } })
-  })
-  if (!r.ok) {
-    console.error('[aftership-sync] Lark digest failed:', r.status, await r.text())
-    return false
-  }
-  return true
+  // Fan out concurrently. We log per-target failures but consider the
+  // digest sent if AT LEAST one target succeeded.
+  const results = await Promise.all(targets.map(async t => {
+    try {
+      const r = await fetch(t.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text } })
+      })
+      if (!r.ok) {
+        console.error(`[aftership-sync] Lark digest (${t.name}) failed:`, r.status, await r.text())
+        return false
+      }
+      return true
+    } catch (err) {
+      console.error(`[aftership-sync] Lark digest (${t.name}) threw:`, err)
+      return false
+    }
+  }))
+  return results.some(Boolean)
 }
 
 // --- utils ---
