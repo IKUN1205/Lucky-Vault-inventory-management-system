@@ -32,8 +32,21 @@ const LARK_INVENTORY_IO = process.env.LARK_WEBHOOK_INVENTORY_IO
   || process.env.LARK_WEBHOOK_URL
 
 const SHEET_ID = '14nuc6ckt5iPRAFkm7P6NAupbn_uXLwGyUsuVzQGFw80'
-const GID = '1153833478'
-const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${GID}`
+// Two tabs in the sheet, both with the same schema:
+//   - "Master Singles": consolidated/main list (459 rows as of 2026-05-25)
+//   - "New Singles ":   landing zone for fresh arrivals (boss adds here
+//                       first, eventually moves to Master). Trailing
+//                       space in the name is intentional — it's part of
+//                       the actual tab name in Google Sheets.
+// We fetch by name (?sheet=) instead of gid so adding/renaming tabs
+// later is a one-line change. If a TCG ID appears in BOTH tabs we
+// keep Master's values (it's the canonical source).
+const SHEET_TABS = [
+  { name: 'Master Singles', label: 'master' },
+  { name: 'New Singles ',   label: 'new'    },
+]
+const buildSheetUrl = (sheetName) =>
+  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`
 const BRAND = 'Pokemon'
 const FALLBACK_SET_NAME = 'Unknown Set (sheet import)'
 
@@ -140,30 +153,44 @@ export default async function handler(req, res) {
   const startedAt = Date.now()
 
   try {
-    // 1. Pull sheet.
-    const csvResp = await fetch(SHEET_URL)
-    if (!csvResp.ok) {
-      const msg = `Sheet fetch failed: HTTP ${csvResp.status}`
-      console.error('[sync-singles-sheet]', msg)
-      await postLark(`⚠️ Singles sheet sync FAILED — ${msg}`)
-      return res.status(502).json({ error: msg })
+    // 1. Pull both tabs. Iterate so adding/removing tabs is just a
+    //    SHEET_TABS array change. Process order matters for the dedupe
+    //    below — see comment on `parsed` map.
+    const tabFetchSummary = []
+    const allRows = []   // { tab, row[] }
+    for (const tab of SHEET_TABS) {
+      const url = buildSheetUrl(tab.name)
+      const csvResp = await fetch(url)
+      if (!csvResp.ok) {
+        const msg = `Sheet fetch failed for "${tab.name}": HTTP ${csvResp.status}`
+        console.error('[sync-singles-sheet]', msg)
+        await postLark(`⚠️ Singles sheet sync FAILED — ${msg}`)
+        return res.status(502).json({ error: msg })
+      }
+      const csv = await csvResp.text()
+      // gviz CSV is inconsistent about including the header row — sometimes
+      // present, sometimes Google strips it via auto-type detection. Don't
+      // blindly slice(1); instead validate every row by checking col 5 is
+      // a digit string. This caught a 2026-05-22 bug where the literal
+      // "TCG ID" header was imported as a card row.
+      const rows = parseCSV(csv)
+      for (const r of rows) allRows.push({ tab: tab.label, row: r })
+      tabFetchSummary.push({ tab: tab.label, rows: rows.length })
     }
-    const csv = await csvResp.text()
-    // gviz CSV is inconsistent about including the header row — sometimes
-    // it's there, sometimes Google's auto-typing strips it. Instead of
-    // blindly dropping row 0, validate every row: the TCG ID column (col
-    // 5) must look like a positive integer. Header row has literal
-    // "TCG ID" → fails. Empty rows fail. Junk like notes → fails. This
-    // is what caused a 2026-05-22 sync to import the header itself as a
-    // card row (card_name=' ', tcg_id='TCG ID').
-    const rows = parseCSV(csv)
 
-    // 2. Parse + dedupe by TCG ID (later occurrence wins).
+    // 2. Parse + dedupe by TCG ID. If a TCG ID appears in BOTH tabs we
+    //    prefer Master's values (Master is the canonical source; the
+    //    "New" tab is meant as a staging area before the boss moves
+    //    cards into Master). Because we iterate SHEET_TABS in order
+    //    (master then new), and `Map.set` is last-write-wins, we need
+    //    a small trick: skip the SET when an entry already exists for
+    //    this TCG ID and we're processing a non-master tab.
     const parsed = new Map()
     let skipped = 0
-    for (const r of rows) {
+    for (const { tab, row: r } of allRows) {
       const tcg_id = (r[5] || '').trim()
       if (!tcg_id || !/^\d+$/.test(tcg_id)) { skipped++; continue }
+      if (parsed.has(tcg_id) && tab !== 'master') continue   // master wins on conflict
       const { card_name, card_number, variant } = parseCardText(r[0] || '')
       parsed.set(tcg_id, {
         tcg_id,
@@ -173,9 +200,11 @@ export default async function handler(req, res) {
         qty: Math.max(1, parseInt((r[4] || '').trim()) || 1),
         date_acquired: parseDate(r[7]) || null,
         raw_text: r[0] || '',
+        source_tab: tab,   // for logging only
       })
     }
     const items = Array.from(parsed.values())
+    console.log('[sync-singles-sheet] tab fetch:', tabFetchSummary, '→ unique TCG IDs:', items.length)
 
     // 3. Existing singles in DB, by TCG ID. Pull current_market_price_usd
     //    too so we can skip rows that haven't actually changed (the typical
