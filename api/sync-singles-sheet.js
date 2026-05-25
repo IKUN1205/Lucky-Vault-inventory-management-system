@@ -149,14 +149,21 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: msg })
     }
     const csv = await csvResp.text()
-    const rows = parseCSV(csv).slice(1)   // drop header
+    // gviz CSV is inconsistent about including the header row — sometimes
+    // it's there, sometimes Google's auto-typing strips it. Instead of
+    // blindly dropping row 0, validate every row: the TCG ID column (col
+    // 5) must look like a positive integer. Header row has literal
+    // "TCG ID" → fails. Empty rows fail. Junk like notes → fails. This
+    // is what caused a 2026-05-22 sync to import the header itself as a
+    // card row (card_name=' ', tcg_id='TCG ID').
+    const rows = parseCSV(csv)
 
     // 2. Parse + dedupe by TCG ID (later occurrence wins).
     const parsed = new Map()
     let skipped = 0
     for (const r of rows) {
       const tcg_id = (r[5] || '').trim()
-      if (!tcg_id) { skipped++; continue }
+      if (!tcg_id || !/^\d+$/.test(tcg_id)) { skipped++; continue }
       const { card_name, card_number, variant } = parseCardText(r[0] || '')
       parsed.set(tcg_id, {
         tcg_id,

@@ -148,15 +148,23 @@ async function main() {
   console.log(`Fetching sheet ${GID}…`)
   const csv = await (await fetch(SHEET_URL)).text()
   const rows = parseCSV(csv)
-  const dataRows = rows.slice(1)   // drop header
-  console.log(`  ${dataRows.length} data rows in sheet`)
+  // gviz CSV is inconsistent about including the header — sometimes
+  // present, sometimes Google strips it via auto-type detection. Don't
+  // blindly slice(1); instead validate every row by checking col 5 (TCG
+  // ID) is a digit string. Header row's "TCG ID" literal fails the
+  // check and is skipped just like junk/empty rows.
+  const dataRows = rows
+  console.log(`  ${dataRows.length} rows in sheet (before TCG-ID filter)`)
 
-  // Build the parsed list. Skip rows with no TCG ID.
+  // Build the parsed list. Skip rows that don't have a numeric TCG ID.
   const parsed = []
   const skipped = []
   for (const r of dataRows) {
     const tcg_id = (r[5] || '').trim()
-    if (!tcg_id) { skipped.push({ reason: 'no TCG ID', row: r }); continue }
+    if (!tcg_id || !/^\d+$/.test(tcg_id)) {
+      skipped.push({ reason: 'non-numeric TCG ID', row: r })
+      continue
+    }
     const { card_name, card_number, variant } = parseCardText(r[0] || '')
     const set_name = (r[1] || '').trim() || null
     const market_price = parseDollar(r[2])
