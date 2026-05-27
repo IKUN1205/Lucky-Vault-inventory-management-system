@@ -11,19 +11,28 @@ import {
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import { useAuth } from '../lib/AuthContext'
-import { Tv2, Save, Plus, Trash2, Undo2 } from 'lucide-react'
+import { Store, Save, Plus, Trash2, Undo2 } from 'lucide-react'
 import { variantLabel, variantChipClasses } from '../lib/japanVariants'
 
 // ============================================================================
-// 日本直播售卖 — Japan livestream sale log
+// 🏪 日本当地售卖 — Japan Local Sales (in-store / off-platform)
 // ============================================================================
-// One stream room = the whole Japan Warehouse, no reconciliation needed
-// (per user directive). Streamers log what they sold + how much (JPY),
-// inventory decrements on submit. Each row is one SKU per submission;
-// multiple SKUs per stream = multiple rows.
+// Mirrors JapanStreamSales line-for-line except:
+//   - channel='local' on every insert (vs 'stream') — same table, same
+//     inventory math, same undo flow; the channel column is the discriminator
+//     so existing reports (e.g. JapanLog) can render them with different
+//     chips without us forking the helper.
+//   - "Salesperson" label instead of "Streamer" (reuses streamer_id field —
+//     the column name is legacy but the semantic field is "who made the sale").
+//   - Recent-sales table filters to channel='local' so each page only shows
+//     its own history (avoids confusion when two channels are running in
+//     parallel).
+//   - Lark payload uses type='jp_local_sale' which routes ONLY to the
+//     Inventory In&Out group (Q3 decision: Japan team doesn't need to see
+//     each over-the-counter sale, but US-side audit does).
 //
-// Sale rows are soft-deletable so an obvious typo can be reverted (refunds
-// inventory at the same time — uses undoJapanStreamSale helper).
+// Buyer / channel-detail fields intentionally omitted (Q2 decision — same
+// minimal fields as stream sales; we can always add later if needed).
 // ============================================================================
 
 const extractLaunchName = (fullName, category) => {
@@ -64,7 +73,7 @@ const renderProductOption = (inv) => {
   )
 }
 
-export default function JapanStreamSales() {
+export default function JapanLocalSales() {
   const { toasts, addToast, removeToast } = useToast()
   const { user } = useAuth()
 
@@ -75,10 +84,11 @@ export default function JapanStreamSales() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
 
-  // Header: who streamed, when. Items: one row each.
+  // Header: who made the sale, when. Items: one row each.
+  // Note: salesperson_id maps to streamer_id in the DB (legacy column name).
   const [header, setHeader] = useState({
     sale_date: new Date().toLocaleDateString('en-CA'),
-    streamer_id: '',
+    salesperson_id: '',
     notes: '',
   })
 
@@ -94,9 +104,10 @@ export default function JapanStreamSales() {
       const [inv, usersData, recent] = await Promise.all([
         fetchJapanInventory(),
         fetchUsers(),
-        fetchJapanStreamSales(20, { channel: 'stream' }),
+        // Recent-sales table is channel-scoped — only show local-channel rows
+        // so the operator isn't confused by livestream entries they didn't make.
+        fetchJapanStreamSales(20, { channel: 'local' }),
       ])
-      // Only show products with stock to sell from
       setInventory(inv.filter(r => (r.quantity || 0) > 0))
       setUsers(usersData)
       setRecentSales(recent)
@@ -120,7 +131,6 @@ export default function JapanStreamSales() {
     setItems(items => items.map(i => i.id === id ? { ...i, [field]: value } : i))
   }
 
-  // Totals
   const totalJpy = items.reduce((s, i) => {
     const q = parseInt(i.quantity) || 0
     const p = parseFloat(i.unit_price_jpy) || 0
@@ -135,11 +145,11 @@ export default function JapanStreamSales() {
       addToast('Add at least one item with product + quantity', 'error')
       return
     }
-    if (!header.streamer_id) {
-      addToast('Pick the streamer', 'error')
+    if (!header.salesperson_id) {
+      addToast('Pick the salesperson', 'error')
       return
     }
-    // Stock check
+    // Stock check (same as stream sales — both pull from the same warehouse).
     for (const item of valid) {
       const inv = inventory.find(r => r.product_id === item.product_id)
       const q = parseInt(item.quantity) || 0
@@ -166,13 +176,15 @@ export default function JapanStreamSales() {
             quantity: parseInt(item.quantity),
             unit_price_jpy: parseFloat(item.unit_price_jpy) || 0,
             sale_date: header.sale_date,
-            streamer_id: header.streamer_id,
+            // Reuse streamer_id as salesperson_id — column is legacy from
+            // when this table only held stream sales. Same column, same
+            // semantic meaning, just a different label in the UI.
+            streamer_id: header.salesperson_id,
             recorded_by_id: user?.id || null,
             notes: header.notes || null,
+            channel: 'local',
           })
           ok++
-          // Build Lark payload pieces from the form so one digest goes out
-          // after the whole submit completes.
           const inv = inventory.find(r => r.product_id === item.product_id)
           const p = inv?.product
           const launch = p ? extractLaunchName(p.name, p.category) : 'Unknown'
@@ -189,23 +201,23 @@ export default function JapanStreamSales() {
           totalJpyAccum += lineJpy
           totalUnitsAccum += qty
         } catch (err) {
-          console.error('[JapanStreamSale] line failed:', err)
+          console.error('[JapanLocalSale] line failed:', err)
           fail++
         }
       }
       if (ok > 0) {
         addToast(`✓ ${ok} sale${ok === 1 ? '' : 's'} recorded${fail ? ` (${fail} failed)` : ''}`, ok === valid.length ? 'success' : 'info')
 
-        // Fire-and-forget Lark — jp_stream_sale type, routes to Japan group
-        // (LARK_WEBHOOK_JAPAN env var, falls back to main URL).
+        // Fire-and-forget Lark — jp_local_sale routes to Inventory In&Out
+        // group only (LARK_WEBHOOK_INVENTORY_IO, falls back to main URL).
         try {
-          const streamer = users.find(u => u.id === header.streamer_id)
+          const sp = users.find(u => u.id === header.salesperson_id)
           fetch('/api/lark-notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              type: 'jp_stream_sale',
-              streamer: streamer?.name || 'Unknown',
+              type: 'jp_local_sale',
+              salesperson: sp?.name || 'Unknown',
               recordedBy: user?.name || null,
               saleDate: header.sale_date,
               notes: header.notes || null,
@@ -214,15 +226,15 @@ export default function JapanStreamSales() {
               totalJpy: totalJpyAccum,
               totalUsd: convertToUSD(totalJpyAccum, 'JPY'),
             }),
-          }).catch(err => console.error('[lark-notify] jp_stream_sale failed:', err))
+          }).catch(err => console.error('[lark-notify] jp_local_sale failed:', err))
         } catch (err) {
-          console.error('[lark-notify] jp_stream_sale payload build failed:', err)
+          console.error('[lark-notify] jp_local_sale payload build failed:', err)
         }
 
         setItems([{ id: 1, product_id: '', quantity: 1, unit_price_jpy: '' }])
         const [inv, recent] = await Promise.all([
           fetchJapanInventory(),
-          fetchJapanStreamSales(20, { channel: 'stream' }),
+          fetchJapanStreamSales(20, { channel: 'local' }),
         ])
         setInventory(inv.filter(r => (r.quantity || 0) > 0))
         setRecentSales(recent)
@@ -241,7 +253,7 @@ export default function JapanStreamSales() {
       addToast('Sale undone — inventory refunded', 'success')
       const [inv, recent] = await Promise.all([
         fetchJapanInventory(),
-        fetchJapanStreamSales(20, { channel: 'stream' }),
+        fetchJapanStreamSales(20, { channel: 'local' }),
       ])
       setInventory(inv.filter(r => (r.quantity || 0) > 0))
       setRecentSales(recent)
@@ -258,11 +270,11 @@ export default function JapanStreamSales() {
 
       <div>
         <h1 className="font-display text-2xl font-bold text-white flex items-center gap-3">
-          <Tv2 className="text-vault-gold" />
-          🇯🇵 日本直播售卖 / Japan Stream Sales
+          <Store className="text-vault-gold" />
+          🏪 日本当地售卖 / Japan Local Sales
         </h1>
         <p className="text-gray-400 mt-1">
-          Record direct livestream sales. Inventory at <Link to="/jp/inventory" className="text-vault-gold hover:underline">Japan Warehouse</Link> decrements on save.
+          Record in-store / off-platform sales. Inventory at <Link to="/jp/inventory" className="text-vault-gold hover:underline">Japan Warehouse</Link> decrements on save.
         </p>
       </div>
 
@@ -275,11 +287,11 @@ export default function JapanStreamSales() {
               required />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">Streamer *</label>
-            <select value={header.streamer_id}
-              onChange={(e) => setHeader(h => ({ ...h, streamer_id: e.target.value }))}
+            <label className="block text-sm font-medium text-gray-300 mb-2">Salesperson *</label>
+            <select value={header.salesperson_id}
+              onChange={(e) => setHeader(h => ({ ...h, salesperson_id: e.target.value }))}
               required>
-              <option value="">Who was streaming?</option>
+              <option value="">Who made the sale?</option>
               {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
           </div>
@@ -289,7 +301,7 @@ export default function JapanStreamSales() {
           <label className="block text-sm font-medium text-gray-300 mb-2">Notes (optional)</label>
           <input type="text" value={header.notes}
             onChange={(e) => setHeader(h => ({ ...h, notes: e.target.value }))}
-            placeholder="e.g. afternoon stream, special promo" />
+            placeholder="e.g. 朋友买的、店里促销、回头客" />
         </div>
 
         <div className="pt-4 border-t border-vault-border">
@@ -311,11 +323,6 @@ export default function JapanStreamSales() {
               const overStock = inv && q > inv.quantity
               return (
                 <div key={item.id} className="p-3 bg-vault-dark rounded-lg border border-vault-border">
-                  {/* items-start so each column lays out label + control top-aligned
-                      consistently — the previous items-end was getting thrown off
-                      by the helper text below Qty (it pushed the input up while
-                      other columns aligned to the bottom, breaking horizontal
-                      alignment). Trash uses an invisible label as a spacer. */}
                   <div className="grid grid-cols-12 gap-3 items-start">
                     <div className="col-span-12 md:col-span-5">
                       <label className="block text-xs text-gray-400 mb-1">Product (in Japan stock)</label>
@@ -365,8 +372,6 @@ export default function JapanStreamSales() {
                       </div>
                     </div>
                     <div className="col-span-1">
-                      {/* Invisible label keeps the trash button vertically aligned
-                          with the inputs above (matches label height + mb-1). */}
                       <label className="block text-xs mb-1 invisible" aria-hidden="true">.</label>
                       <button type="button" onClick={() => removeItem(item.id)}
                         disabled={items.length <= 1}
@@ -395,11 +400,11 @@ export default function JapanStreamSales() {
         </div>
       </form>
 
-      {/* Recent sales */}
+      {/* Recent local sales */}
       <div className="card max-w-4xl">
-        <h3 className="font-semibold text-white text-sm mb-3">Recent sales (last 20)</h3>
+        <h3 className="font-semibold text-white text-sm mb-3">Recent local sales (last 20)</h3>
         {recentSales.length === 0 ? (
-          <p className="text-gray-500 text-sm py-3">No sales recorded yet.</p>
+          <p className="text-gray-500 text-sm py-3">No local sales recorded yet.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -407,7 +412,7 @@ export default function JapanStreamSales() {
                 <tr className="text-left text-gray-400 text-xs border-b border-vault-border">
                   <th className="pb-2">Date</th>
                   <th className="pb-2">Product</th>
-                  <th className="pb-2">Streamer</th>
+                  <th className="pb-2">Salesperson</th>
                   <th className="pb-2 text-right">Qty</th>
                   <th className="pb-2 text-right">Unit ¥</th>
                   <th className="pb-2 text-right">Revenue ¥</th>

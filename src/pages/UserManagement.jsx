@@ -64,6 +64,7 @@ const PAGE_SECTIONS = [
     { path: '/jp/inventory', label: '日本库存 / Japan Inventory' },
     { path: '/jp/acquisitions', label: '日本进货 / Japan Acquisitions' },
     { path: '/jp/stream-sales', label: '日本直播售卖 / Japan Stream Sales' },
+    { path: '/jp/local-sales', label: '日本当地售卖 / Japan Local Sales' },
     { path: '/jp/shipments', label: '日本→美国发货 / Japan→US Shipment' },
     { path: '/jp/log', label: '日本日志 / Japan Activity Log' },
     { path: '/jp/add-product', label: '日本新增 SKU / Japan Add Product' },

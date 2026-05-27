@@ -126,6 +126,7 @@ const navSections = [
       { path: '/jp/inventory',     label: '日本库存',       icon: Package },
       { path: '/jp/acquisitions',  label: '日本进货',       icon: ShoppingCart },
       { path: '/jp/stream-sales',  label: '日本直播售卖',   icon: Tv2 },
+      { path: '/jp/local-sales',   label: '日本当地售卖',   icon: Store },
       { path: '/jp/shipments',     label: '日本→美国发货',  icon: Truck },
       { path: '/jp/log',           label: '日本日志',       icon: HistoryIcon },
       { path: '/jp/add-product',   label: '日本新增 SKU',   icon: Plus },

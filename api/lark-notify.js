@@ -92,14 +92,24 @@ export default async function handler(req, res) {
   }
 
   // ----- Japan-side events ----------------------------------------------
-  // Three flavors:
-  //   jp_stream_sale  — direct livestream sale out of Japan Warehouse
+  // Four flavors:
+  //   jp_stream_sale  — direct livestream sale out of Japan Warehouse;
+  //                     primarily a Japan-team event
+  //   jp_local_sale   — in-store / off-platform sale (日本当地售卖);
+  //                     routed ONLY to the Inventory In&Out group per
+  //                     William's call (it's a US-side audit concern,
+  //                     the Japan team already knows the stock left)
   //   jp_to_us_shipment — cross-border shipment; dual-target so US
   //                       Acquisitions team also gets a heads-up
   // (日本进货 reuses the existing 'purchased' type with sourceCountry='Japan'
   //  + currency='JPY' — buildMessage already handles those cases.)
   if (type === 'jp_stream_sale') {
     return handleJapanEvent(body, res, buildJpStreamSale, {})
+  }
+  if (type === 'jp_local_sale') {
+    // Inventory In&Out only — reuse the singles dispatcher which already
+    // points at LARK_WEBHOOK_INVENTORY_IO (falls back to main URL).
+    return handleSinglesEvent(body, res, buildJpLocalSale)
   }
   if (type === 'jp_to_us_shipment') {
     // 3 stakeholders for cross-border shipments:
@@ -1133,6 +1143,53 @@ function buildJpStreamSale(body) {
   lines.push('🎌 Japan Live Sale Recorded')
   if (streamer) lines.push(`Streamer: ${streamer}`)
   if (recordedBy && recordedBy !== streamer) lines.push(`Recorded by: ${recordedBy}`)
+  if (saleDate) lines.push(`Date: ${saleDate}`)
+  if (notes) lines.push(`Notes: ${notes}`)
+  lines.push('')
+  for (const it of items) {
+    const jpyStr = it.lineJpy != null ? `  ¥${Number(it.lineJpy).toLocaleString()}` : ''
+    const usdStr = it.lineUsd != null ? `  (≈ ${fmtUsd(it.lineUsd)})` : ''
+    lines.push(`• ${it.name || 'Unknown'} × ${it.quantity ?? 0}${jpyStr}${usdStr}`)
+  }
+  lines.push('')
+  const totals = []
+  if (totalUnits != null) totals.push(`${totalUnits} units`)
+  if (totalJpy != null) totals.push(`¥${Number(totalJpy).toLocaleString()}`)
+  if (totalUsd != null) totals.push(`≈ ${fmtUsd(totalUsd)}`)
+  if (totals.length) lines.push(`Total: ${totals.join(' / ')}`)
+  lines.push(`Time: ${nowUtcStamp()}`)
+  return lines.join('\n')
+}
+
+// 🏪 Japan Local Sale Recorded
+// Salesperson: Will
+// Date: 2026-05-27
+// • OP-13 Booster Box × 2  ¥20,000  (≈ $134 USD)
+// Total: 2 units / ¥20,000 (≈ $134 USD)
+// Time: 2026-05-27 14:32 PT
+//
+// Same shape as buildJpStreamSale, just different header and "Salesperson"
+// label. Kept separate so the wording is unambiguous in the In&Out channel
+// (the team needs to see at a glance whether a sale was a livestream or
+// counter sale — same SKU, different attribution).
+function buildJpLocalSale(body) {
+  const {
+    salesperson,               // who made the sale (reuses streamer_id field)
+    recordedBy,                // who entered the form (optional)
+    saleDate,
+    items = [],
+    totalUnits,
+    totalJpy,
+    totalUsd,
+    notes,
+  } = body
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('jp_local_sale: missing items')
+  }
+  const lines = []
+  lines.push('🏪 Japan Local Sale Recorded')
+  if (salesperson) lines.push(`Salesperson: ${salesperson}`)
+  if (recordedBy && recordedBy !== salesperson) lines.push(`Recorded by: ${recordedBy}`)
   if (saleDate) lines.push(`Date: ${saleDate}`)
   if (notes) lines.push(`Notes: ${notes}`)
   lines.push('')

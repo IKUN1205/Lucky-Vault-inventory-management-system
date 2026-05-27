@@ -1755,12 +1755,18 @@ export const createJapanAcquisition = async ({
   return acq
 }
 
-// Record a direct livestream sale out of Japan Warehouse. Decrements
-// inventory + inserts into japan_stream_sales (audit log). USD snapshot
-// uses the static exchange rate at sale time.
+// Record a sale out of Japan Warehouse. Decrements inventory + inserts into
+// japan_stream_sales (audit log). USD snapshot uses the static exchange rate
+// at sale time.
+//
+// `channel`: 'stream' (default — direct livestream sale) | 'local' (日本当地售卖
+// — in-store / off-platform sale). Both behave identically at the DB level;
+// the only difference is downstream Lark routing + how the Log timeline
+// renders them. `streamer_id` doubles as "salesperson" for local sales so we
+// don't need a separate column for the same semantic field.
 export const createJapanStreamSale = async ({
   product_id, quantity, unit_price_jpy, sale_date,
-  streamer_id, recorded_by_id, notes,
+  streamer_id, recorded_by_id, notes, channel,
 }) => {
   const locId = await fetchJapanWarehouseLocation()
   const qty = parseInt(quantity, 10)
@@ -1778,6 +1784,7 @@ export const createJapanStreamSale = async ({
     streamer_id: streamer_id || null,
     recorded_by_id: recorded_by_id || null,
     notes: notes || null,
+    channel: channel === 'local' ? 'local' : 'stream',
   }
   const { data: sale, error: saleErr } = await supabase
     .from('japan_stream_sales')
@@ -1791,12 +1798,15 @@ export const createJapanStreamSale = async ({
   return sale
 }
 
-export const fetchJapanStreamSales = async (limit = 50) => {
-  const { data, error } = await supabase
+// Fetch recent Japan sales. `channel` (optional) narrows to 'stream' or
+// 'local'; omitting it returns both (Activity Log uses that).
+export const fetchJapanStreamSales = async (limit = 50, opts = {}) => {
+  const { channel } = opts
+  let query = supabase
     .from('japan_stream_sales')
     .select(`
       *,
-      product:products(name, brand, language, type, category),
+      product:products(name, brand, language, type, category, short_code, aliases, variant),
       streamer:users!streamer_id(name),
       recorded_by:users!recorded_by_id(name)
     `)
@@ -1804,6 +1814,10 @@ export const fetchJapanStreamSales = async (limit = 50) => {
     .order('sale_date', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(limit)
+  if (channel === 'stream' || channel === 'local') {
+    query = query.eq('channel', channel)
+  }
+  const { data, error } = await query
   if (error) throw error
   return data || []
 }

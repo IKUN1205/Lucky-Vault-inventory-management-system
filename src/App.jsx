@@ -43,6 +43,7 @@ import CardsLog from './pages/CardsLog'
 import JapanInventory from './pages/JapanInventory'
 import JapanAcquisitions from './pages/JapanAcquisitions'
 import JapanStreamSales from './pages/JapanStreamSales'
+import JapanLocalSales from './pages/JapanLocalSales'
 import JapanShipments from './pages/JapanShipments'
 import JapanLog from './pages/JapanLog'
 import JapanAddProduct from './pages/JapanAddProduct'
@@ -202,6 +203,9 @@ function AppRoutes() {
       } />
       <Route path="/jp/stream-sales" element={
         <ProtectedRoute path="/jp/stream-sales"><Layout><JapanStreamSales /></Layout></ProtectedRoute>
+      } />
+      <Route path="/jp/local-sales" element={
+        <ProtectedRoute path="/jp/local-sales"><Layout><JapanLocalSales /></Layout></ProtectedRoute>
       } />
       <Route path="/jp/shipments" element={
         <ProtectedRoute path="/jp/shipments"><Layout><JapanShipments /></Layout></ProtectedRoute>

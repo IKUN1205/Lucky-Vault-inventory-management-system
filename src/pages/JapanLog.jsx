@@ -7,7 +7,7 @@ import {
   convertToUSD,
 } from '../lib/supabase'
 import {
-  History, ShoppingCart, Tv2, Truck, Filter, RefreshCw, Search, AlertCircle
+  History, ShoppingCart, Tv2, Truck, Filter, RefreshCw, Search, AlertCircle, Store
 } from 'lucide-react'
 import { variantLabel, variantChipClasses } from '../lib/japanVariants'
 
@@ -31,10 +31,16 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
+// `sale` and `local_sale` are two faces of the same japan_stream_sales table
+// (distinguished by the `channel` column). We render them as different rows
+// in the timeline so operators can spot at a glance whether revenue came
+// from a livestream vs an over-the-counter sale, even though the underlying
+// inventory math is identical.
 const TYPE_META = {
-  acquisition: { zh: '进货', en: 'Intake',  icon: ShoppingCart, color: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40', sign: '+' },
-  sale:        { zh: '售卖', en: 'Sale',    icon: Tv2,          color: 'bg-blue-500/15 text-blue-300 border-blue-500/40',         sign: '−' },
-  shipment:    { zh: '发货', en: 'Ship',    icon: Truck,        color: 'bg-orange-500/15 text-orange-300 border-orange-500/40',   sign: '−' },
+  acquisition: { zh: '进货',     en: 'Intake', icon: ShoppingCart, color: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40', sign: '+' },
+  sale:        { zh: '直播售卖', en: 'Stream', icon: Tv2,          color: 'bg-blue-500/15 text-blue-300 border-blue-500/40',         sign: '−' },
+  local_sale:  { zh: '当地售卖', en: 'Local',  icon: Store,        color: 'bg-purple-500/15 text-purple-300 border-purple-500/40',   sign: '−' },
+  shipment:    { zh: '发货',     en: 'Ship',   icon: Truck,        color: 'bg-orange-500/15 text-orange-300 border-orange-500/40',   sign: '−' },
 }
 
 export default function JapanLog() {
@@ -78,11 +84,14 @@ export default function JapanLog() {
         })
       }
 
-      // 直播售卖 normalization
+      // 售卖 normalization — both stream and local sales live in
+      // japan_stream_sales, distinguished by `channel`. Default to 'stream'
+      // for legacy rows written before the channel column existed.
       for (const s of sales) {
+        const isLocal = s.channel === 'local'
         timeline.push({
           id: 'sale-' + s.id,
-          type: 'sale',
+          type: isLocal ? 'local_sale' : 'sale',
           ts: s.created_at || s.sale_date,
           dateStr: s.sale_date,
           actor: s.streamer?.name || '—',
@@ -93,7 +102,7 @@ export default function JapanLog() {
           notes: s.notes,
           extraLabel: s.recorded_by?.name && s.recorded_by.name !== s.streamer?.name
             ? `recorded by: ${s.recorded_by.name}` : null,
-          link: '/jp/stream-sales',
+          link: isLocal ? '/jp/local-sales' : '/jp/stream-sales',
         })
       }
 
@@ -149,16 +158,17 @@ export default function JapanLog() {
   }, [rows, typeFilter, search])
 
   const summary = useMemo(() => {
-    const groups = { acquisition: 0, sale: 0, shipment: 0 }
-    let inflow = 0, outflow = 0, jpyAcq = 0, jpySale = 0, jpyShip = 0
+    const groups = { acquisition: 0, sale: 0, local_sale: 0, shipment: 0 }
+    let inflow = 0, outflow = 0, jpyAcq = 0, jpySale = 0, jpyLocalSale = 0, jpyShip = 0
     for (const r of filtered) {
       groups[r.type] = (groups[r.type] || 0) + 1
       if (r.type === 'acquisition') { inflow += r.quantity; jpyAcq += r.jpy }
       else { outflow += r.quantity }
       if (r.type === 'sale') jpySale += r.jpy
+      if (r.type === 'local_sale') jpyLocalSale += r.jpy
       if (r.type === 'shipment') jpyShip += r.jpy
     }
-    return { groups, inflow, outflow, jpyAcq, jpySale, jpyShip }
+    return { groups, inflow, outflow, jpyAcq, jpySale, jpyLocalSale, jpyShip }
   }, [filtered])
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="spinner" /></div>
@@ -192,7 +202,7 @@ export default function JapanLog() {
       )}
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <StatCard
           label="进货 Intake"
           value={summary.groups.acquisition}
@@ -200,10 +210,16 @@ export default function JapanLog() {
           colorClass="text-emerald-400"
         />
         <StatCard
-          label="售卖 Sales"
+          label="直播售卖 Stream"
           value={summary.groups.sale}
           subtext={`¥${summary.jpySale.toLocaleString()} revenue`}
           colorClass="text-blue-400"
+        />
+        <StatCard
+          label="当地售卖 Local"
+          value={summary.groups.local_sale}
+          subtext={`¥${summary.jpyLocalSale.toLocaleString()} revenue`}
+          colorClass="text-purple-400"
         />
         <StatCard
           label="发货 Ship"
@@ -241,10 +257,11 @@ export default function JapanLog() {
           </div>
           <div className="md:col-span-2">
             <label className="block text-xs text-gray-400 mb-1">Type</label>
-            <div className="flex gap-1">
+            <div className="flex flex-wrap gap-1">
               <TypeChip active={typeFilter === ''} onClick={() => setTypeFilter('')}>All</TypeChip>
               <TypeChip active={typeFilter === 'acquisition'} onClick={() => setTypeFilter('acquisition')} color="bg-emerald-500/20 border-emerald-500/40 text-emerald-300">进货</TypeChip>
-              <TypeChip active={typeFilter === 'sale'} onClick={() => setTypeFilter('sale')} color="bg-blue-500/20 border-blue-500/40 text-blue-300">售卖</TypeChip>
+              <TypeChip active={typeFilter === 'sale'} onClick={() => setTypeFilter('sale')} color="bg-blue-500/20 border-blue-500/40 text-blue-300">直播</TypeChip>
+              <TypeChip active={typeFilter === 'local_sale'} onClick={() => setTypeFilter('local_sale')} color="bg-purple-500/20 border-purple-500/40 text-purple-300">当地</TypeChip>
               <TypeChip active={typeFilter === 'shipment'} onClick={() => setTypeFilter('shipment')} color="bg-orange-500/20 border-orange-500/40 text-orange-300">发货</TypeChip>
             </div>
           </div>
