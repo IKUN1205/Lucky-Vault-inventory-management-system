@@ -346,7 +346,8 @@ export default async function handler(req, res) {
     const durationMs = Date.now() - startedAt
     const summary = {
       ok: true,
-      sheet_rows: rows.length,
+      sheet_rows: allRows.length,
+      tabs: tabFetchSummary,
       unique_tcg_ids: items.length,
       skipped_no_tcg_id: skipped,
       existing_in_db: existingByTcg.size,
