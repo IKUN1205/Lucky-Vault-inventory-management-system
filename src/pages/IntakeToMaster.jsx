@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 
 import {
   fetchAcquisitions,
@@ -23,11 +23,62 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
+// A pending acquisition still needs receiving. Fully-received ones drop off.
+const PENDING_STATUSES = ['Purchased', 'Partially Received']
+const isPending = (a) => PENDING_STATUSES.includes(a.status)
+
+// Group acquisitions into batches for the Intake list. A "batch" = all line
+// items from one Purchased Items submission (shared batch_id). Items with no
+// batch_id (legacy rows) become their own solo group. Only groups that still
+// have something to receive are returned; a batch where everything arrived
+// drops off the page. Within a batch, pending items sort first so the
+// staffer's actions sit at the top, with received items shown below (greyed,
+// ✓) so they can see the whole batch and tell if it's complete.
+function buildBatchGroups(allAcq) {
+  const byKey = new Map()
+  for (const a of allAcq) {
+    const key = a.batch_id ? `batch:${a.batch_id}` : `solo:${a.id}`
+    if (!byKey.has(key)) byKey.set(key, [])
+    byKey.get(key).push(a)
+  }
+  const groups = []
+  for (const [key, items] of byKey) {
+    const pendingItems = items.filter(isPending)
+    if (pendingItems.length === 0) continue   // whole batch received → hide
+    const sorted = [...items].sort((x, y) => {
+      const xp = isPending(x) ? 0 : 1
+      const yp = isPending(y) ? 0 : 1
+      if (xp !== yp) return xp - yp
+      return (x.created_at || '').localeCompare(y.created_at || '')
+    })
+    const first = items[0]
+    groups.push({
+      key,
+      isBatch: key.startsWith('batch:'),
+      vendor: first.vendor?.name || null,
+      date: first.date_purchased || null,
+      tracking: first.tracking_number || null,
+      carrier: first.carrier || null,
+      acquirer: first.acquirer?.name || null,
+      items: sorted,
+      totalCount: items.length,
+      receivedCount: items.filter(a => !isPending(a)).length,
+      pendingCount: pendingItems.length,
+    })
+  }
+  // Most recent purchase first.
+  groups.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+  return groups
+}
+
 export default function IntakeToMaster() {
   
   const { toasts, addToast, removeToast } = useToast()
   
-  const [acquisitions, setAcquisitions] = useState([])
+  // allAcquisitions holds EVERYTHING (incl. already-received) so a batch can
+  // show its full roster + completeness. The pending list and the grouped
+  // view are derived from it below.
+  const [allAcquisitions, setAllAcquisitions] = useState([])
   const [products, setProducts] = useState([])           // for BarcodeScanner lookup
   const [masterLocation, setMasterLocation] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -53,11 +104,10 @@ export default function IntakeToMaster() {
         fetchProducts(),
       ])
 
-      // Filter to show only pending items
-      const pending = acqData.filter(a =>
-        a.status === 'Purchased' || a.status === 'Partially Received'
-      )
-      setAcquisitions(pending)
+      // Keep everything — grouping + completeness need received siblings too.
+      // We still only RENDER batches that have something pending (see
+      // buildBatchGroups), so fully-received history doesn't clutter the page.
+      setAllAcquisitions(acqData)
       setProducts(prodData)
 
       // Find master inventory location
@@ -77,8 +127,18 @@ export default function IntakeToMaster() {
   //   - No pending acquisition → toast and don't highlight
   //   - Multiple pending acquisitions (same SKU ordered twice) → highlight
   //     the first one; user can scroll if they meant the other
+  // Derived: pending items (for scan matching) + grouped view (for render).
+  const pendingAcquisitions = useMemo(
+    () => allAcquisitions.filter(isPending),
+    [allAcquisitions]
+  )
+  const batchGroups = useMemo(
+    () => buildBatchGroups(allAcquisitions),
+    [allAcquisitions]
+  )
+
   const handleScanMatch = (product) => {
-    const matchingAcqs = acquisitions.filter(a => a.product_id === product.id)
+    const matchingAcqs = pendingAcquisitions.filter(a => a.product_id === product.id)
     if (matchingAcqs.length === 0) {
       addToast(`${product.name} has no pending order to receive`, 'error')
       return
@@ -233,7 +293,7 @@ export default function IntakeToMaster() {
           empty-state). The unknown-barcode modal lets warehouse staff
           associate a freshly-arrived box's UPC with the matching product
           on the fly. */}
-      {acquisitions.length > 0 && (
+      {pendingAcquisitions.length > 0 && (
         <div className="mb-4">
           <BarcodeScanner
             products={products}
@@ -249,30 +309,120 @@ export default function IntakeToMaster() {
         </div>
       )}
 
-      {acquisitions.length === 0 ? (
+      {pendingAcquisitions.length === 0 ? (
         <div className="card text-center py-12">
           <Package className="mx-auto text-gray-600 mb-4" size={48} />
           <p className="text-gray-400">No pending items to receive</p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {acquisitions.map(acq => (
-            <div
-              key={acq.id}
-              ref={(el) => { cardRefs.current[acq.id] = el }}
-              className={`transition-all duration-300 rounded-xl ${
-                highlightedAcqId === acq.id ? 'ring-2 ring-vault-gold ring-offset-2 ring-offset-vault-dark' : ''
-              }`}
-            >
-              <IntakeCard
-                acquisition={acq}
+        <div className="space-y-5">
+          {batchGroups.map(group => (
+            group.isBatch ? (
+              <BatchGroup
+                key={group.key}
+                group={group}
                 onReceive={handleReceive}
-                processing={processingId === acq.id}
+                processingId={processingId}
+                highlightedAcqId={highlightedAcqId}
+                cardRefs={cardRefs}
               />
-            </div>
+            ) : (
+              // Legacy solo row (no batch_id) — render the bare card like before.
+              group.items.filter(isPending).map(acq => (
+                <div
+                  key={acq.id}
+                  ref={(el) => { cardRefs.current[acq.id] = el }}
+                  className={`transition-all duration-300 rounded-xl ${
+                    highlightedAcqId === acq.id ? 'ring-2 ring-vault-gold ring-offset-2 ring-offset-vault-dark' : ''
+                  }`}
+                >
+                  <IntakeCard
+                    acquisition={acq}
+                    onReceive={handleReceive}
+                    processing={processingId === acq.id}
+                  />
+                </div>
+              ))
+            )
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// A batch = all items from one purchase order (shared batch_id). Header shows
+// who/when + an X/Y received completeness badge so staff can tell at a glance
+// whether the whole shipment has landed. Pending items get the full IntakeCard
+// (with Receive); already-received items show as a greyed ✓ row so the batch
+// roster stays complete.
+function BatchGroup({ group, onReceive, processingId, highlightedAcqId, cardRefs }) {
+  const complete = group.receivedCount === group.totalCount
+  return (
+    <div className="card border-cyan-500/20">
+      {/* Batch header */}
+      <div className="flex items-start justify-between gap-3 mb-4 pb-3 border-b border-vault-border">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Package size={16} className="text-cyan-400 flex-shrink-0" />
+            <span className="font-semibold text-white">{group.vendor || 'Purchase'}</span>
+            {group.date && <span className="text-gray-500 text-sm">{new Date(group.date).toLocaleDateString()}</span>}
+            {group.acquirer && <span className="text-gray-500 text-sm">· {group.acquirer}</span>}
+          </div>
+          {group.tracking && (
+            <div className="text-xs text-gray-500 mt-1">
+              {group.carrier ? `${group.carrier} · ` : ''}{group.tracking}
+            </div>
+          )}
+        </div>
+        <span className={`badge flex-shrink-0 ${complete ? 'badge-success' : 'badge-warning'}`}>
+          {group.receivedCount}/{group.totalCount} received
+        </span>
+      </div>
+
+      {/* Items */}
+      <div className="space-y-3">
+        {group.items.map(item => (
+          isPending(item) ? (
+            <div
+              key={item.id}
+              ref={(el) => { cardRefs.current[item.id] = el }}
+              className={`transition-all duration-300 rounded-xl ${
+                highlightedAcqId === item.id ? 'ring-2 ring-vault-gold ring-offset-2 ring-offset-vault-dark' : ''
+              }`}
+            >
+              <IntakeCard
+                acquisition={item}
+                onReceive={onReceive}
+                processing={processingId === item.id}
+              />
+            </div>
+          ) : (
+            <ReceivedRow key={item.id} acquisition={item} />
+          )
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Greyed, non-actionable row for an already-received item inside a batch.
+function ReceivedRow({ acquisition }) {
+  const p = acquisition.product || {}
+  const launchName = extractLaunchName(p.name, p.category)
+  return (
+    <div className="flex items-center justify-between gap-3 px-4 py-2 bg-vault-darker/30 border border-vault-border/50 rounded-lg opacity-70">
+      <div className="flex items-center gap-2 min-w-0">
+        <Check size={16} className="text-emerald-400 flex-shrink-0" />
+        <span className="text-sm text-gray-300 truncate">
+          <span className="text-vault-gold">{p.brand}</span>
+          {' | '}{launchName}
+          {p.category ? ` | ${p.category}` : ''}
+        </span>
+      </div>
+      <span className="text-xs text-emerald-400 flex-shrink-0 whitespace-nowrap">
+        {acquisition.quantity_received}/{acquisition.quantity_purchased} ✓
+      </span>
     </div>
   )
 }

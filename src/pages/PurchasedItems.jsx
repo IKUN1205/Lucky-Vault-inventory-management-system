@@ -192,6 +192,13 @@ export default function PurchasedItems() {
 
     setSubmitting(true)
     const createdIds = []
+    // One batch_id per submission — every line item from this purchase order
+    // shares it so the Intake to Master page can group them and show whether
+    // the whole batch has arrived. crypto.randomUUID is available in all
+    // modern browsers; fall back to a timestamp-random string just in case.
+    const batchId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `batch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     // Track everything we'll need for the Lark notification + cost totals
     let totalCostOriginal = 0
     let totalCostUSD = 0
@@ -204,6 +211,7 @@ export default function PurchasedItems() {
         const costUSD = convertToUSD(costNum, header.currency)
 
         const acq = await createAcquisition({
+          batch_id: batchId,
           date_purchased: header.date_purchased,
           acquirer_id: header.acquirer_id,
           source_country: header.source_country,
