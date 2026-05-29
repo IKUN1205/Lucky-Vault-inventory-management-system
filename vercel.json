@@ -14,6 +14,14 @@
     {
       "path": "/api/sync-singles-sheet",
       "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/sync-slabs-sheet",
+      "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/sync-slabs-sheet",
+      "schedule": "0 1 * * *"
     }
   ]
 }
