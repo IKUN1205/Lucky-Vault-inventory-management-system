@@ -18,8 +18,13 @@
 import fs from 'fs'
 
 const SHEET_ID = '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI'
-const GID = '104854122'
-const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${GID}`
+// Which tab to import. Both "Pokemon Slabs" and "One Piece Slabs" share the
+// exact same column layout (Cert / Grade / Item Name / Pop / CL / MP / LS /
+// List / LV / Note / Days / Status / Listed Date / Last Alert / Cost Basis /
+// Location / Intake Date), so the same parser handles either. Override with
+// SHEET_TAB env var; defaults to Pokemon Slabs.
+const SHEET_TAB = process.env.SHEET_TAB || 'Pokemon Slabs'
+const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SHEET_TAB)}`
 const TODAY = new Date().toISOString().slice(0, 10)
 const DRY_RUN = process.env.DRY_RUN === '1'
 
@@ -72,7 +77,7 @@ async function sb(method, path, body) {
 }
 
 async function main() {
-  console.log(`Fetching slabs sheet ${GID}…`)
+  console.log(`Fetching slabs tab "${SHEET_TAB}"…`)
   const csv = await (await fetch(SHEET_URL)).text()
   const rows = parseCSV(csv)
   console.log(`  ${rows.length} rows (incl. header)`)
@@ -84,8 +89,10 @@ async function main() {
   for (const r of rows) {
     const cert = (r[0] || '').trim()
     let itemName = (r[2] || '').trim()
-    // Skip the header row and rows with no cert (can't track those).
-    if (!cert || cert.toLowerCase() === 'cert') { skipped++; continue }
+    // Cert numbers are always digit strings. This skips the header row
+    // (whatever it's labelled — "Cert", "Cert #", "CERT") and any junk /
+    // empty rows in one robust check.
+    if (!/^\d+$/.test(cert)) { skipped++; continue }
     // A cert with no name is still a real slab — import with a placeholder
     // name (item_name is NOT NULL) so it's scannable; staff fills the name
     // later. Don't drop it.
