@@ -18,12 +18,16 @@
 import fs from 'fs'
 
 const SHEET_ID = '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI'
-// Which tab to import. Both "Pokemon Slabs" and "One Piece Slabs" share the
-// exact same column layout (Cert / Grade / Item Name / Pop / CL / MP / LS /
-// List / LV / Note / Days / Status / Listed Date / Last Alert / Cost Basis /
-// Location / Intake Date), so the same parser handles either. Override with
-// SHEET_TAB env var; defaults to Pokemon Slabs.
-const SHEET_TAB = process.env.SHEET_TAB || 'Pokemon Slabs'
+// Which tab to import. Tabs the user maintains:
+//   "Pokemon Master"   — main Pokemon slab inventory (was "Pokemon Slabs")
+//   "One Piece Master" — main OP slab inventory   (was "One Piece Slabs")
+//   "New Slabs"        — staging zone for fresh arrivals (fewer columns,
+//                        but the first 9 (Cert/Grade/Item Name/Pop/CL/
+//                        MP/LS/List/LV) match, so the same parser works
+//                        — Cost Basis / Intake Date come back null which
+//                        falls through to defaults).
+// Override with SHEET_TAB env var; defaults to Pokemon Master.
+const SHEET_TAB = process.env.SHEET_TAB || 'Pokemon Master'
 const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SHEET_TAB)}`
 const TODAY = new Date().toISOString().slice(0, 10)
 const DRY_RUN = process.env.DRY_RUN === '1'

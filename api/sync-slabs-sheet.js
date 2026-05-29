@@ -32,7 +32,12 @@ const LARK_INVENTORY_IO = process.env.LARK_WEBHOOK_INVENTORY_IO
   || process.env.LARK_WEBHOOK_URL
 
 const SHEET_ID = '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI'
-const SHEET_TABS = ['Pokemon Slabs', 'One Piece Slabs']
+// Tab names per directive 2026-05-29 — boss renamed them:
+//   "Pokemon Master" / "One Piece Master" = main inventory (was "* Slabs")
+//   "New Slabs" = staging zone for fresh arrivals (smaller column set; the
+//                 parser tolerates missing trailing cols via index lookups
+//                 that return undefined → null/default).
+const SHEET_TABS = ['Pokemon Master', 'One Piece Master', 'New Slabs']
 const buildSheetUrl = (tab) =>
   `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tab)}`
 

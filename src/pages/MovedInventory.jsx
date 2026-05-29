@@ -525,7 +525,13 @@ export default function MovedInventory() {
         </div>
       </Instructions>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      {/* Switched from a wrapping <form onSubmit={handleSubmit}> to a plain
+          <div> to fix a scanner-gun bug: some scanners send Enter via a
+          path that bypasses input-level onKeyDown handlers, which then
+          fell through to the form and triggered handleSubmit prematurely
+          (looked like an auto-refresh / phantom save). The Submit button
+          now calls handleSubmit directly via onClick. */}
+      <div className="space-y-4">
         {/* Header — date / movedBy / from / to */}
         <div className="card">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -661,7 +667,8 @@ export default function MovedInventory() {
             <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
           </div>
           <button
-            type="submit"
+            type="button"
+            onClick={handleSubmit}
             className="btn btn-primary w-full"
             disabled={submitting || cart.length === 0 || !fromLocationId || !toLocationId || !movedById}
           >
@@ -671,7 +678,7 @@ export default function MovedInventory() {
             }
           </button>
         </div>
-      </form>
+      </div>
     </div>
   )
 }
