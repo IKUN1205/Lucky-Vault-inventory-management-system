@@ -3191,3 +3191,308 @@ export const fetchStorefrontDailySummary = async (date) => {
     by_payment: byPayment,
   }
 }
+
+// ============================================================================
+// PLATFORM SALES — scan/cart checkout for online channels
+// ============================================================================
+// Mirrors submitStorefrontTransaction but writes to platform_sales instead of
+// storefront_sales and uses sale_channel = platform (lower-cased) instead of
+// 'in_person'. One transaction_id stamps every line so a cart submit is
+// reassembleable. Inventory effects per kind:
+//   sealed → deduct from Front Store (auto-Move from Master if needed),
+//            same logic as the Storefront sealed path so the cost-basis
+//            accounting stays consistent.
+//   single → markSingleAsSold full-row OR fungible-split (decrement source
+//            qty + clone a sold row), tagged with the platform channel.
+//   slab   → markSlabAsSold (status flip + sale fields).
+//
+// Caller passes cart lines shaped the same as Storefront's, except no
+// payment_method / trade-in:
+//   { kind: 'sealed', product, inventory, quantity, price, our_price? }
+//   { kind: 'single', single,  quantity, price, our_price? }
+//   { kind: 'slab',   slab,    price, our_price? }
+// `price` is what the customer actually paid (streamer-entered); `our_price`
+// is the reference market price we showed, stored for analytics.
+// ============================================================================
+
+export const submitPlatformTransaction = async ({
+  cart,
+  platform,         // 'eBay' | 'TikTok' | 'Whatnot'
+  channel,          // e.g. 'SlabbiePatty', 'LuckyVaultUS', 'PackHeadsTCG', 'RocketsHQ', 'Whatnot'
+  streamerId,
+  saleDate,         // 'YYYY-MM-DD'
+}) => {
+  if (!Array.isArray(cart) || cart.length === 0) throw new Error('Cart is empty')
+  if (!platform) throw new Error('Platform is required')
+  if (!channel)  throw new Error('Channel is required')
+
+  // Resolve Front Store + Master ids once (sealed path needs both).
+  const { data: locs, error: locsErr } = await supabase
+    .from('locations').select('id, name').in('name', [FRONT_STORE_NAME, MASTER_NAME])
+  if (locsErr) throw locsErr
+  const frontStoreId = locs.find(l => l.name === FRONT_STORE_NAME)?.id
+  const masterId     = locs.find(l => l.name === MASTER_NAME)?.id
+  if (!frontStoreId) throw new Error(`Location "${FRONT_STORE_NAME}" not configured`)
+
+  const transactionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `ptx-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+
+  // sale_channel value stored on singles/slabs rows. Use lowercase platform
+  // so existing reports (which already key off 'ebay'/'tiktok'/'whatnot')
+  // keep working. Tweak per channel later if anyone wants finer granularity.
+  const saleChannel = String(platform).toLowerCase()
+
+  const ok = []
+  const failed = []
+
+  for (const line of cart) {
+    try {
+      if (line.kind === 'sealed') {
+        const result = await _sellSealedLinePlatform({
+          product: line.product,
+          quantity: Number(line.quantity) || 1,
+          salePrice: line.price,
+          ourPrice: line.our_price,
+          sourceCandidates: line.inventory || [],
+          platform, channel, streamerId, transactionId,
+          locationIds: { frontStore: frontStoreId, master: masterId },
+          saleDate,
+        })
+        ok.push({ line, result })
+      } else if (line.kind === 'slab') {
+        const result = await _sellSlabLinePlatform({
+          slab: line.slab,
+          salePrice: line.price,
+          ourPrice: line.our_price,
+          platform, channel, streamerId, transactionId, saleDate,
+          saleChannel,
+        })
+        ok.push({ line, result })
+      } else if (line.kind === 'single') {
+        const result = await _sellSingleLinePlatform({
+          single: line.single,
+          quantity: Number(line.quantity) || 1,
+          salePrice: line.price,
+          ourPrice: line.our_price,
+          platform, channel, streamerId, transactionId, saleDate,
+          saleChannel,
+        })
+        ok.push({ line, result })
+      } else {
+        throw new Error(`Unknown line kind: ${line.kind}`)
+      }
+    } catch (err) {
+      console.error('[submitPlatformTransaction] line failed:', line, err)
+      failed.push({ line, error: err.message || String(err) })
+    }
+  }
+
+  return { transaction_id: transactionId, ok, failed }
+}
+
+// ---- sealed: deduct + write platform_sales row -----------------------------
+
+const _sellSealedLinePlatform = async ({
+  product, quantity, salePrice, ourPrice,
+  sourceCandidates, platform, channel, streamerId, transactionId,
+  locationIds, saleDate,
+}) => {
+  const frontStoreId = locationIds.frontStore
+  const masterId    = locationIds.master
+
+  // Auto-Move from Master if Front Store is short. Same shape as the
+  // Storefront path so cost-basis math stays consistent.
+  const sortedSources = (sourceCandidates || [])
+    .slice()
+    .sort((a, b) => (a.location_name === FRONT_STORE_NAME ? -1 : b.location_name === FRONT_STORE_NAME ? 1 : 0))
+  const frontStoreSrc = sortedSources.find(s => s.location_name === FRONT_STORE_NAME)
+  const frontStoreQty = frontStoreSrc?.quantity || 0
+  if (frontStoreQty < quantity) {
+    if (!masterId) throw new Error('Insufficient Front Store stock and no Master Inventory to pull from')
+    const need = quantity - frontStoreQty
+    const masterSrc = sortedSources.find(s => s.location_name === MASTER_NAME)
+    if (!masterSrc || masterSrc.quantity < need) {
+      throw new Error(`Insufficient stock — need ${quantity}, Front Store has ${frontStoreQty}, Master has ${masterSrc?.quantity || 0}`)
+    }
+    const newAvgCost = masterSrc.avg_cost_basis ?? frontStoreSrc?.avg_cost_basis ?? 0
+    await createMovement({
+      product_id: product.id,
+      from_location_id: masterId,
+      to_location_id: frontStoreId,
+      quantity: need,
+      notes: `Auto-move for platform sale (${platform}/${channel})`,
+    })
+    await updateInventory(product.id, masterId, -need)
+    await updateInventory(product.id, frontStoreId, +need, newAvgCost)
+  }
+
+  const { data: frontInv } = await supabase
+    .from('inventory')
+    .select('avg_cost_basis')
+    .eq('product_id', product.id)
+    .eq('location_id', frontStoreId)
+    .maybeSingle()
+  const unitCost = frontInv?.avg_cost_basis ?? 0
+  const lineNet = (Number(salePrice) || 0) * quantity
+  const cost    = unitCost * quantity
+  const profit  = lineNet - cost
+
+  // Write the sale row. net_sales = streamer's sold price (line total);
+  // gross_sales mirrors net for now (we don't track fees per-line here).
+  const { data: inserted, error } = await supabase
+    .from('platform_sales')
+    .insert({
+      kind: 'sealed',
+      platform, channel,
+      date: saleDate,
+      streamer_id: streamerId || null,
+      product_id: product.id,
+      quantity,
+      gross_sales: lineNet,
+      net_sales:   lineNet,
+      cost,
+      profit,
+      margin_percent: lineNet > 0 ? +((profit / lineNet) * 100).toFixed(2) : null,
+      our_price_usd: ourPrice ?? null,
+      transaction_id: transactionId,
+    })
+    .select()
+    .single()
+  if (error) throw error
+
+  await updateInventory(product.id, frontStoreId, -quantity)
+  return { sale: inserted }
+}
+
+// ---- slab: flip status to sold + write platform_sales row ------------------
+
+const _sellSlabLinePlatform = async ({
+  slab, salePrice, ourPrice,
+  platform, channel, streamerId, transactionId, saleDate, saleChannel,
+}) => {
+  const { data: fresh, error: fetchErr } = await supabase
+    .from('slabs').select('id, status').eq('id', slab.id).single()
+  if (fetchErr) throw fetchErr
+  if (fresh.status !== 'in_inventory' && fresh.status !== 'listed') {
+    throw new Error(`Slab status is "${fresh.status}" — can only sell from in_inventory or listed`)
+  }
+
+  const updatedSlab = await markSlabAsSold(slab.id, {
+    sale_price_usd: Number(salePrice) || 0,
+    sale_channel: saleChannel,
+    sale_date: saleDate,
+    sale_fees_usd: null,
+    buyer_name: null,
+    sale_notes: `Platform sale via ${channel}`,
+    sold_by_id: streamerId || null,
+    payment_method_id: null,
+    transaction_id: transactionId,
+    transaction_type: 'sale',
+  })
+
+  const lineNet = Number(salePrice) || 0
+  const cost = slab.acquisition_cost_usd != null ? Number(slab.acquisition_cost_usd) : null
+  const profit = cost != null ? lineNet - cost : null
+  const { error } = await supabase.from('platform_sales').insert({
+    kind: 'slab',
+    platform, channel,
+    date: saleDate,
+    streamer_id: streamerId || null,
+    slab_id: slab.id,
+    external_product_name: slab.item_name || null,
+    quantity: 1,
+    gross_sales: lineNet,
+    net_sales:   lineNet,
+    cost,
+    profit,
+    margin_percent: (lineNet > 0 && profit != null) ? +((profit / lineNet) * 100).toFixed(2) : null,
+    our_price_usd: ourPrice ?? null,
+    transaction_id: transactionId,
+  })
+  if (error) throw error
+  return { slab: updatedSlab }
+}
+
+// ---- single: full-row sold OR fungible split, then platform_sales row ------
+
+const _sellSingleLinePlatform = async ({
+  single, quantity, salePrice, ourPrice,
+  platform, channel, streamerId, transactionId, saleDate, saleChannel,
+}) => {
+  const isFungibleRaw = single.form === 'raw' && (single.quantity || 1) > 1
+  const sourceQty = single.quantity || 1
+  const sellQty   = Math.max(1, Number(quantity) || 1)
+  if (sellQty > sourceQty) throw new Error(`Only ${sourceQty} available — cannot sell ${sellQty}`)
+
+  const lineNet = (Number(salePrice) || 0) * sellQty
+  const cost    = single.acquisition_cost_usd != null
+    ? Number(single.acquisition_cost_usd) * sellQty / sourceQty   // proportional share
+    : null
+  const profit  = cost != null ? lineNet - cost : null
+  const saleData = {
+    sale_price_usd: Number(salePrice) || 0,
+    sale_channel: saleChannel,
+    sale_date: saleDate,
+    sale_fees_usd: null,
+    buyer_name: null,
+    sale_notes: `Platform sale via ${channel}`,
+    sold_by_id: streamerId || null,
+    payment_method_id: null,
+    transaction_id: transactionId,
+    transaction_type: 'sale',
+  }
+
+  let soldRow
+  if (!isFungibleRaw || sellQty === sourceQty) {
+    soldRow = await markSingleAsSold(single.id, saleData)
+  } else {
+    // Fungible split — decrement source qty + insert a sold clone.
+    const remainingQty = sourceQty - sellQty
+    const { error: updErr } = await supabase
+      .from('singles').update({ quantity: remainingQty }).eq('id', single.id)
+    if (updErr) throw updErr
+    const clone = {
+      card_name: single.card_name, card_number: single.card_number,
+      set_id: single.set_id, brand: single.brand, language: single.language,
+      variant: single.variant, form: single.form, condition: single.condition,
+      quantity: sellQty, tcg_id: single.tcg_id,
+      acquisition_cost_usd: single.acquisition_cost_usd,
+      acquisition_cost_native: single.acquisition_cost_native,
+      acquisition_currency: single.acquisition_currency,
+      source_type: single.source_type,
+      source_box_break_id: single.source_box_break_id,
+      source_acquisition_id: single.source_acquisition_id,
+      location_id: single.location_id,
+      acquirer_id: single.acquirer_id, vendor_id: single.vendor_id,
+      date_acquired: single.date_acquired,
+      notes: `Split from ${single.id} (platform sale of ${sellQty} of ${sourceQty})`,
+      status: 'sold',
+      parent_single_id: single.id,
+      ...saleData,
+    }
+    const { data: inserted, error: insErr } = await supabase
+      .from('singles').insert(clone).select().single()
+    if (insErr) throw insErr
+    soldRow = inserted
+  }
+
+  const { error } = await supabase.from('platform_sales').insert({
+    kind: 'single',
+    platform, channel,
+    date: saleDate,
+    streamer_id: streamerId || null,
+    single_id: soldRow.id,
+    external_product_name: `${single.card_name || ''}${single.card_number ? ` ${single.card_number}` : ''}`.trim() || null,
+    quantity: sellQty,
+    gross_sales: lineNet,
+    net_sales:   lineNet,
+    cost,
+    profit,
+    margin_percent: (lineNet > 0 && profit != null) ? +((profit / lineNet) * 100).toFixed(2) : null,
+    our_price_usd: ourPrice ?? null,
+    transaction_id: transactionId,
+  })
+  if (error) throw error
+  return { single: soldRow }
+}
