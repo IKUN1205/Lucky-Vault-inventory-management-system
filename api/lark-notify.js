@@ -142,6 +142,13 @@ export default async function handler(req, res) {
     return handleStorefrontTransaction(body, res)
   }
 
+  // Cash-drawer threshold alert — fires from submitStorefrontTransaction
+  // the moment today's net cash crosses a configured amount. Routes to
+  // the Storefront group same as transactions.
+  if (type === 'storefront_cash_alert') {
+    return handleStorefrontTransaction(body, res)
+  }
+
   // Platform sales fan out to the per-channel stream-room group: every
   // cart submit on Platform Sales fires one message into the matching
   // Lark room (SlabbiePatty / LuckyVaultUS / PackHeadsTCG / RocketsHQ /
@@ -926,6 +933,21 @@ function buildMessage(body) {
     }
 
     lines.push(nowUtcStamp())
+    return lines.join('\n')
+  }
+
+  if (type === 'storefront_cash_alert') {
+    // Fires once when today's running cash drawer crosses the threshold.
+    // Intentionally short — the cashier needs to act, not read.
+    const { cash_today, threshold, date } = body
+    const amount = Number(cash_today) || 0
+    const cutoff = Number(threshold) || 1000
+    const lines = [
+      `💰 Cash drawer over $${cutoff.toLocaleString()}`,
+      `Today's cash: $${amount.toFixed(2)}${date ? ` (${date})` : ''}`,
+      `@Mr. Vault — please come pick it up 🏃`,
+      nowUtcStamp(),
+    ]
     return lines.join('\n')
   }
 

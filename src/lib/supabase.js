@@ -2924,6 +2924,21 @@ export const submitStorefrontTransaction = async ({
     }
   }
 
+  // Cash-drawer threshold alert (directive 2026-05-29): the moment today's
+  // signed cash net crosses STOREFRONT_CASH_THRESHOLD, ping Mr. Vault in the
+  // Storefront group. Idempotent without DB state because we compute the
+  // "before" total by subtracting this txn's own cash contribution — only
+  // the cross-threshold transaction fires. Buys / refunds that drop cash
+  // below and then a later sale that lifts it back up will re-fire, which
+  // is fine (the drawer hit the threshold again).
+  //
+  // Fire-and-forget — never throw out of this function for a notification.
+  if (ok.length > 0) {
+    _checkStorefrontCashAlert({ saleDate, transactionId }).catch(err => {
+      console.error('[submitStorefrontTransaction] cash alert check failed:', err)
+    })
+  }
+
   return {
     transaction_id: transactionId,
     transaction_type: txMeta.transactionType,
@@ -2932,6 +2947,44 @@ export const submitStorefrontTransaction = async ({
     net_cash: txMeta.netCash,
     payments: normalizedPayments,
     ok, failed,
+  }
+}
+
+// Threshold for the cash-drawer alert. Override per environment if you
+// ever want a different cutoff per store.
+const STOREFRONT_CASH_THRESHOLD = 1000
+
+// Helper for the cash-drawer alert. Pulled out so submitStorefrontTransaction
+// stays readable. Fetches today's daily summary (includes the txn we just
+// inserted) and fires the alert only when this specific txn pushed cash
+// over STOREFRONT_CASH_THRESHOLD for the first time today.
+async function _checkStorefrontCashAlert({ saleDate, transactionId }) {
+  const summary = await fetchStorefrontDailySummary(saleDate)
+  const cashAfter = Number(summary?.by_payment?.Cash?.total_net_cash || 0)
+  // Find this txn so we know its contribution to the Cash pool.
+  const ourTxn = (summary?.transactions || []).find(t => t.transaction_id === transactionId)
+  if (!ourTxn) return  // summary stale or row not visible yet — skip silently
+  const sign = (Number(ourTxn.net_cash) || 0) >= 0 ? 1 : -1
+  let thisTxnCash = 0
+  if (Array.isArray(ourTxn.payments) && ourTxn.payments.length > 0) {
+    const cashEntry = ourTxn.payments.find(p => /^cash$/i.test(p.method_name || ''))
+    if (cashEntry) thisTxnCash = sign * (Number(cashEntry.amount) || 0)
+  } else if (/^cash$/i.test(ourTxn.payment_method || '')) {
+    // Legacy single-method txn (no split-payment ledger row)
+    thisTxnCash = Number(ourTxn.net_cash) || 0
+  }
+  const cashBefore = cashAfter - thisTxnCash
+  if (cashBefore < STOREFRONT_CASH_THRESHOLD && cashAfter >= STOREFRONT_CASH_THRESHOLD) {
+    await fetch('/api/lark-notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'storefront_cash_alert',
+        cash_today: cashAfter,
+        threshold: STOREFRONT_CASH_THRESHOLD,
+        date: summary.date,
+      }),
+    })
   }
 }
 
