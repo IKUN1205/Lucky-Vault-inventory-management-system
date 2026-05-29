@@ -735,10 +735,11 @@ export default function StorefrontSale() {
             <AlertTriangle size={18} className="text-amber-300 flex-shrink-0 mt-0.5" />
             <div className="flex-1 text-sm">
               <div className="text-amber-200">
-                <code className="bg-vault-darker px-1.5 py-0.5 rounded text-vault-gold">{unknownCode}</code> isn't mapped to any sealed UPC, slab cert#, or single TCG ID.
+                <code className="bg-vault-darker px-1.5 py-0.5 rounded text-vault-gold">{unknownCode}</code> — not in system.
               </div>
-              <div className="text-xs text-gray-400 mt-1">
-                Open <a href="/product-barcodes" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Product Barcodes</a> to associate it with a sealed SKU, or intake the slab/single first via Cards Scan, then come back.
+              <div className="text-xs text-gray-300 mt-1">
+                📦 Sealed → register UPC on <a href="/product-barcodes" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Product Barcodes</a>.
+                {' '}💎 Slab / 🎴 Single → ask the storefront team to intake it first.
               </div>
             </div>
             <button onClick={() => setUnknownCode(null)} className="p-1 text-gray-400 hover:text-white">
