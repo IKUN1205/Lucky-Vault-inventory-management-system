@@ -2049,11 +2049,13 @@ export const lookupScannedCode = async (code) => {
     }
   }
 
-  // 2. Slab cert# → slabs.cert_number (no unique constraint but should be unique)
+  // 2. Slab cert# → slabs.cert_number (no unique constraint but should be unique).
+  //    Join location so Platform Sales can show a "not at this stream room"
+  //    warning without an extra round-trip.
   {
     const { data: slab, error } = await supabase
       .from('slabs')
-      .select('*')
+      .select('*, location:locations(id, name)')
       .eq('cert_number', trimmed)
       .eq('deleted', false)
       .maybeSingle()
@@ -2358,7 +2360,7 @@ export const searchSlabsForStorefront = async (q, limit = 20) => {
   const pattern = `%${term}%`
   const { data, error } = await supabase
     .from('slabs')
-    .select('*')
+    .select('*, location:locations(id, name)')
     .eq('deleted', false)
     .in('status', ['in_inventory', 'listed'])
     .or(`item_name.ilike.${pattern},cert_number.ilike.${pattern}`)

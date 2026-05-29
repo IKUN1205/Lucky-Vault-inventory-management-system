@@ -32,12 +32,16 @@ import {
 // the dropdown.
 const STREAMER_NAMES = ['Yaz', 'JV', 'Trey', 'Mario', 'Frank', 'Nerses', 'Brandon', 'Rob', 'Vahe']
 
+// Each channel maps to a physical Stream Room location. When the cashier
+// scans an item whose current location ISN'T this room, we show a yellow
+// warning on that cart line ("this isn't at SlabbiePatty's room") — but
+// the sale still goes through. Soft enforcement per directive 2026-05-29.
 const CHANNELS = [
-  { id: 'ebay-slabbiepatty', label: 'eBay · SlabbiePatty',   platform: 'eBay',    channel: 'SlabbiePatty'   },
-  { id: 'ebay-luckyvaultus', label: 'eBay · LuckyVaultUS',   platform: 'eBay',    channel: 'LuckyVaultUS'   },
-  { id: 'tiktok-packheads',  label: 'TikTok · PackHeadsTCG', platform: 'TikTok',  channel: 'PackHeadsTCG'   },
-  { id: 'tiktok-rocketshq',  label: 'TikTok · RocketsHQ',    platform: 'TikTok',  channel: 'RocketsHQ'      },
-  { id: 'whatnot',           label: 'Whatnot',               platform: 'Whatnot', channel: 'Whatnot'        },
+  { id: 'ebay-slabbiepatty', label: 'eBay · SlabbiePatty',   platform: 'eBay',    channel: 'SlabbiePatty',   streamRoom: 'Stream Room - eBay SlabbiePatty' },
+  { id: 'ebay-luckyvaultus', label: 'eBay · LuckyVaultUS',   platform: 'eBay',    channel: 'LuckyVaultUS',   streamRoom: 'Stream Room - eBay LuckyVaultUS' },
+  { id: 'tiktok-packheads',  label: 'TikTok · PackHeadsTCG', platform: 'TikTok',  channel: 'PackHeadsTCG',   streamRoom: 'Stream Room - TikTok Packheads'  },
+  { id: 'tiktok-rocketshq',  label: 'TikTok · RocketsHQ',    platform: 'TikTok',  channel: 'RocketsHQ',      streamRoom: 'Stream Room - TikTok RocketsHQ'  },
+  { id: 'whatnot',           label: 'Whatnot',               platform: 'Whatnot', channel: 'Whatnot',        streamRoom: 'Stream Room - Whatnot'           },
 ]
 
 const KIND_META = {
@@ -88,6 +92,19 @@ export default function PlatformSales() {
 
   // ---------- cart builders ----------
 
+  // Look up the channel's stream room here so add-cart can stamp each new
+  // line with the "is this at the right room?" answer once. The result
+  // doesn't gate the sale (per directive — just warn) but the CartRow
+  // shows a yellow ⚠ when there's a mismatch.
+  const expectedRoomName = selectedChannel?.streamRoom || null
+  const itemNotAtRoomLabel = (itemLocationName) => {
+    if (!expectedRoomName) return null
+    if (itemLocationName === expectedRoomName) return null
+    return itemLocationName
+      ? `at ${itemLocationName}, not ${expectedRoomName}`
+      : `no location set (expected ${expectedRoomName})`
+  }
+
   const addOrIncrementSealed = useCallback((lookup) => {
     const { product, inventory } = lookup
     const totalAvailable = (inventory || []).reduce((s, i) => s + (i.quantity || 0), 0)
@@ -95,6 +112,14 @@ export default function PlatformSales() {
       addToast(`${product.name} — no stock anywhere`, 'error')
       return
     }
+    // Sealed lives at multiple locations — pick a representative for the
+    // mismatch warning. Prefer the stream room if any stock is there;
+    // otherwise show whichever location has the most stock.
+    const atRoomEntry = (inventory || []).find(r => r.location_name === expectedRoomName && (r.quantity || 0) > 0)
+    const repLocationName = atRoomEntry?.location_name
+      ?? (inventory || []).slice().sort((a, b) => (b.quantity || 0) - (a.quantity || 0))[0]?.location_name
+      ?? null
+    const mismatchLabel = itemNotAtRoomLabel(repLocationName)
     setCart(prev => {
       const idx = prev.findIndex(l => l.kind === 'sealed' && l.product.id === product.id)
       if (idx >= 0) {
@@ -115,16 +140,18 @@ export default function PlatformSales() {
         quantity: 1,
         price: '',
         our_price: null,
+        location_warning: mismatchLabel,
       }]
     })
     addToast(`Added: ${product.name}`, 'success')
-  }, [addToast])
+  }, [addToast, expectedRoomName])
 
   const addSlab = useCallback((slab) => {
     if (slab.status === 'sold') { addToast('Already sold', 'error'); return }
     if (slab.status !== 'in_inventory' && slab.status !== 'listed') {
       addToast(`Status "${slab.status}" — can't sell from here`, 'error'); return
     }
+    const mismatchLabel = itemNotAtRoomLabel(slab.location?.name || null)
     setCart(prev => {
       if (prev.some(l => l.kind === 'slab' && l.slab.id === slab.id)) {
         addToast('Slab already in cart', 'info'); return prev
@@ -139,10 +166,11 @@ export default function PlatformSales() {
         quantity: 1,
         price: '',
         our_price: ourPrice,
+        location_warning: mismatchLabel,
       }]
     })
     addToast(`Added: ${slab.item_name}`, 'success')
-  }, [addToast])
+  }, [addToast, expectedRoomName])
 
   const addOrIncrementSingle = useCallback((single) => {
     if (single.status === 'sold') { addToast('Already sold', 'error'); return }
@@ -150,6 +178,7 @@ export default function PlatformSales() {
       addToast(`Status "${single.status}" — can't sell from here`, 'error'); return
     }
     const available = single.quantity || 1
+    const mismatchLabel = itemNotAtRoomLabel(single.location?.name || null)
     setCart(prev => {
       const idx = prev.findIndex(l => l.kind === 'single' && l.single.id === single.id)
       if (idx >= 0) {
@@ -171,10 +200,11 @@ export default function PlatformSales() {
         quantity: 1,
         price: '',
         our_price: ourPrice,
+        location_warning: mismatchLabel,
       }]
     })
     addToast(`Added: ${single.card_name}`, 'success')
-  }, [addToast])
+  }, [addToast, expectedRoomName])
 
   // ---------- scan ----------
 
@@ -538,6 +568,11 @@ function CartRow({ line, onUpdate, onRemove, disabled }) {
         <div className="min-w-0">
           <div className="text-white font-medium truncate">{title}</div>
           <div className="text-xs text-gray-500 truncate">{sub}</div>
+          {line.location_warning && (
+            <div className="text-[11px] text-amber-300 mt-0.5 truncate">
+              ⚠ {line.location_warning} — selling anyway
+            </div>
+          )}
         </div>
       </div>
 
