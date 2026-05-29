@@ -26,6 +26,12 @@ import {
 // transaction_id so a cart submit is reassembleable.
 // ============================================================================
 
+// Whitelist of users who actually stream — keeps the streamer dropdown
+// short instead of dumping every staff/admin row. Match by name (case-
+// insensitive) so the order here also controls the display order in
+// the dropdown.
+const STREAMER_NAMES = ['Yaz', 'JV', 'Trey', 'Mario', 'Frank', 'Nerses', 'Brandon', 'Rob', 'Vahe']
+
 const CHANNELS = [
   { id: 'ebay-slabbiepatty', label: 'eBay · SlabbiePatty',   platform: 'eBay',    channel: 'SlabbiePatty'   },
   { id: 'ebay-luckyvaultus', label: 'eBay · LuckyVaultUS',   platform: 'eBay',    channel: 'LuckyVaultUS'   },
@@ -65,7 +71,15 @@ export default function PlatformSales() {
   const selectedChannel = CHANNELS.find(c => c.id === channelId) || null
 
   useEffect(() => {
-    supabase.from('users').select('*').eq('active', true).order('name').then(({ data }) => setUsers(data || []))
+    supabase.from('users').select('*').eq('active', true).order('name').then(({ data }) => {
+      // Filter to the streamer whitelist + sort by the whitelist's order
+      // (Yaz first, etc.) so the dropdown isn't alphabetical noise.
+      const byName = new Map((data || []).map(u => [u.name?.toLowerCase(), u]))
+      const streamers = STREAMER_NAMES
+        .map(n => byName.get(n.toLowerCase()))
+        .filter(Boolean)
+      setUsers(streamers)
+    })
   }, [])
 
   useEffect(() => {
