@@ -3221,6 +3221,9 @@ export const submitPlatformTransaction = async ({
   cart,
   platform,         // 'eBay' | 'TikTok' | 'Whatnot'
   channel,          // e.g. 'SlabbiePatty', 'LuckyVaultUS', 'PackHeadsTCG', 'RocketsHQ', 'Whatnot'
+  streamRoomName,   // e.g. 'Stream Room - eBay SlabbiePatty' — sealed must
+                    // already be at this location (no auto-Move per
+                    // directive 2026-05-29). Required for sealed lines.
   streamerId,
   saleDate,         // 'YYYY-MM-DD'
 }) => {
@@ -3228,13 +3231,18 @@ export const submitPlatformTransaction = async ({
   if (!platform) throw new Error('Platform is required')
   if (!channel)  throw new Error('Channel is required')
 
-  // Resolve Front Store + Master ids once (sealed path needs both).
-  const { data: locs, error: locsErr } = await supabase
-    .from('locations').select('id, name').in('name', [FRONT_STORE_NAME, MASTER_NAME])
-  if (locsErr) throw locsErr
-  const frontStoreId = locs.find(l => l.name === FRONT_STORE_NAME)?.id
-  const masterId     = locs.find(l => l.name === MASTER_NAME)?.id
-  if (!frontStoreId) throw new Error(`Location "${FRONT_STORE_NAME}" not configured`)
+  // Resolve the channel's Stream Room location id (sealed deducts directly
+  // from here — no auto-Move). Singles/slabs don't need a location id since
+  // their sale is just a status flip.
+  let streamRoomId = null
+  if (streamRoomName) {
+    const { data: roomRow } = await supabase
+      .from('locations').select('id').eq('name', streamRoomName).maybeSingle()
+    streamRoomId = roomRow?.id || null
+    if (!streamRoomId) {
+      throw new Error(`Stream room location "${streamRoomName}" not found`)
+    }
+  }
 
   const transactionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
     ? crypto.randomUUID()
@@ -3251,6 +3259,9 @@ export const submitPlatformTransaction = async ({
   for (const line of cart) {
     try {
       if (line.kind === 'sealed') {
+        if (!streamRoomId) {
+          throw new Error('Sealed sales require streamRoomName — Stream Room must be configured for this channel')
+        }
         const result = await _sellSealedLinePlatform({
           product: line.product,
           quantity: Number(line.quantity) || 1,
@@ -3258,7 +3269,7 @@ export const submitPlatformTransaction = async ({
           ourPrice: line.our_price,
           sourceCandidates: line.inventory || [],
           platform, channel, streamerId, transactionId,
-          locationIds: { frontStore: frontStoreId, master: masterId },
+          streamRoomId, streamRoomName,
           saleDate,
         })
         ok.push({ line, result })
@@ -3298,50 +3309,34 @@ export const submitPlatformTransaction = async ({
 const _sellSealedLinePlatform = async ({
   product, quantity, salePrice, ourPrice,
   sourceCandidates, platform, channel, streamerId, transactionId,
-  locationIds, saleDate,
+  streamRoomId, streamRoomName, saleDate,
 }) => {
-  const frontStoreId = locationIds.frontStore
-  const masterId    = locationIds.master
-
-  // Auto-Move from Master if Front Store is short. Same shape as the
-  // Storefront path so cost-basis math stays consistent.
-  const sortedSources = (sourceCandidates || [])
-    .slice()
-    .sort((a, b) => (a.location_name === FRONT_STORE_NAME ? -1 : b.location_name === FRONT_STORE_NAME ? 1 : 0))
-  const frontStoreSrc = sortedSources.find(s => s.location_name === FRONT_STORE_NAME)
-  const frontStoreQty = frontStoreSrc?.quantity || 0
-  if (frontStoreQty < quantity) {
-    if (!masterId) throw new Error('Insufficient Front Store stock and no Master Inventory to pull from')
-    const need = quantity - frontStoreQty
-    const masterSrc = sortedSources.find(s => s.location_name === MASTER_NAME)
-    if (!masterSrc || masterSrc.quantity < need) {
-      throw new Error(`Insufficient stock — need ${quantity}, Front Store has ${frontStoreQty}, Master has ${masterSrc?.quantity || 0}`)
-    }
-    const newAvgCost = masterSrc.avg_cost_basis ?? frontStoreSrc?.avg_cost_basis ?? 0
-    await createMovement({
-      product_id: product.id,
-      from_location_id: masterId,
-      to_location_id: frontStoreId,
-      quantity: need,
-      notes: `Auto-move for platform sale (${platform}/${channel})`,
-    })
-    await updateInventory(product.id, masterId, -need)
-    await updateInventory(product.id, frontStoreId, +need, newAvgCost)
+  // HARD enforcement (directive 2026-05-29): sealed must already be at the
+  // channel's Stream Room. No auto-Move. If the stream room is short, fail
+  // with a clear message telling staff to use Move Inventory first.
+  const roomSrc = (sourceCandidates || []).find(s => s.location_id === streamRoomId)
+  const roomQty = roomSrc?.quantity || 0
+  if (roomQty < quantity) {
+    throw new Error(
+      `Not enough at ${streamRoomName} — have ${roomQty}, need ${quantity}. ` +
+      `Move ${quantity - roomQty} more there before selling.`
+    )
   }
 
-  const { data: frontInv } = await supabase
+  // Cost basis: prefer the stream room's own avg_cost_basis (reflects what
+  // was paid for the units that were Moved there). Fetched directly from
+  // inventory in case sourceCandidates is stale.
+  const { data: roomInv } = await supabase
     .from('inventory')
     .select('avg_cost_basis')
     .eq('product_id', product.id)
-    .eq('location_id', frontStoreId)
+    .eq('location_id', streamRoomId)
     .maybeSingle()
-  const unitCost = frontInv?.avg_cost_basis ?? 0
+  const unitCost = roomInv?.avg_cost_basis ?? roomSrc?.avg_cost_basis ?? 0
   const lineNet = (Number(salePrice) || 0) * quantity
   const cost    = unitCost * quantity
   const profit  = lineNet - cost
 
-  // Write the sale row. net_sales = streamer's sold price (line total);
-  // gross_sales mirrors net for now (we don't track fees per-line here).
   const { data: inserted, error } = await supabase
     .from('platform_sales')
     .insert({
@@ -3363,7 +3358,7 @@ const _sellSealedLinePlatform = async ({
     .single()
   if (error) throw error
 
-  await updateInventory(product.id, frontStoreId, -quantity)
+  await updateInventory(product.id, streamRoomId, -quantity)
   return { sale: inserted }
 }
 

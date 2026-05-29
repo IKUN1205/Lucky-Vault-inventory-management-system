@@ -107,25 +107,29 @@ export default function PlatformSales() {
 
   const addOrIncrementSealed = useCallback((lookup) => {
     const { product, inventory } = lookup
-    const totalAvailable = (inventory || []).reduce((s, i) => s + (i.quantity || 0), 0)
-    if (totalAvailable <= 0) {
-      addToast(`${product.name} — no stock anywhere`, 'error')
+    // HARD enforcement for sealed: must already be at the channel's Stream
+    // Room (no auto-Move per directive). availableAtRoom = stock at THIS
+    // room only; everything else (Master, Front Store, other stream rooms)
+    // doesn't count.
+    const atRoomEntry = (inventory || []).find(r => r.location_name === expectedRoomName)
+    const availableAtRoom = atRoomEntry?.quantity || 0
+    if (availableAtRoom <= 0) {
+      const elsewhere = (inventory || []).filter(r => (r.quantity || 0) > 0)
+      const elsewhereLabel = elsewhere.length > 0
+        ? elsewhere.map(r => `${r.quantity} @ ${r.location_name}`).join(', ')
+        : 'no stock anywhere'
+      addToast(
+        `${product.name} not at ${expectedRoomName} — Move some there first (${elsewhereLabel})`,
+        'error'
+      )
       return
     }
-    // Sealed lives at multiple locations — pick a representative for the
-    // mismatch warning. Prefer the stream room if any stock is there;
-    // otherwise show whichever location has the most stock.
-    const atRoomEntry = (inventory || []).find(r => r.location_name === expectedRoomName && (r.quantity || 0) > 0)
-    const repLocationName = atRoomEntry?.location_name
-      ?? (inventory || []).slice().sort((a, b) => (b.quantity || 0) - (a.quantity || 0))[0]?.location_name
-      ?? null
-    const mismatchLabel = itemNotAtRoomLabel(repLocationName)
     setCart(prev => {
       const idx = prev.findIndex(l => l.kind === 'sealed' && l.product.id === product.id)
       if (idx >= 0) {
         const existing = prev[idx]
-        if ((existing.quantity || 1) + 1 > totalAvailable) {
-          addToast(`Only ${totalAvailable} available — cart already has ${existing.quantity}`, 'error')
+        if ((existing.quantity || 1) + 1 > availableAtRoom) {
+          addToast(`Only ${availableAtRoom} at ${expectedRoomName} — cart already has ${existing.quantity}`, 'error')
           return prev
         }
         const next = [...prev]
@@ -136,11 +140,10 @@ export default function PlatformSales() {
         kind: 'sealed',
         key: `sealed-${product.id}-${Date.now()}`,
         product, inventory,
-        available: totalAvailable,
+        available: availableAtRoom,
         quantity: 1,
         price: '',
         our_price: null,
-        location_warning: mismatchLabel,
       }]
     })
     addToast(`Added: ${product.name}`, 'success')
@@ -274,6 +277,7 @@ export default function PlatformSales() {
         cart,
         platform: selectedChannel.platform,
         channel:  selectedChannel.channel,
+        streamRoomName: selectedChannel.streamRoom,
         streamerId: streamerId || null,
         saleDate,
       })
