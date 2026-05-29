@@ -142,6 +142,15 @@ export default async function handler(req, res) {
     return handleStorefrontTransaction(body, res)
   }
 
+  // Platform sales fan out to the per-channel stream-room group: every
+  // cart submit on Platform Sales fires one message into the matching
+  // Lark room (SlabbiePatty / LuckyVaultUS / PackHeadsTCG / RocketsHQ /
+  // Whatnot). Falls back to the main URL if the room webhook env isn't
+  // configured yet so messages don't silently drop during rollout.
+  if (type === 'platform_sale') {
+    return handlePlatformSale(body, res)
+  }
+
   // Per-stream reconciliation should land in the room's own group, not the
   // main "all activity" channel. Fall back to main URL if no room webhook
   // is configured for the room (so messages aren't silently dropped).
@@ -343,6 +352,47 @@ async function handleStorefrontTransaction(body, res) {
   }
 }
 
+// ---- platform_sale: route to per-channel stream-room group --------------
+//
+// Resolves the channel (SlabbiePatty / LuckyVaultUS / PackHeadsTCG /
+// RocketsHQ / Whatnot) to its LARK_WEBHOOK_STREAM_* env var via getRoomWebhook.
+// Falls back to LARK_WEBHOOK_URL if the room webhook isn't set so messages
+// don't silently drop during rollout.
+async function handlePlatformSale(body, res) {
+  let text
+  try { text = buildMessage(body) }
+  catch (err) {
+    console.error('[lark-notify] platform_sale: bad payload:', err)
+    return res.status(400).json({ error: err.message || 'Invalid payload' })
+  }
+  const channel = body.channel || ''
+  const roomUrl = getRoomWebhook(channel)
+  const url = roomUrl || process.env.LARK_WEBHOOK_URL
+  if (!url) {
+    console.error('[lark-notify] platform_sale: no webhook configured for channel', channel)
+    return res.status(500).json({ error: `No webhook configured (LARK_WEBHOOK_STREAM_* / LARK_WEBHOOK_URL) for channel ${channel}` })
+  }
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ msg_type: 'text', content: { text } }),
+    })
+    const txt = await r.text()
+    if (!r.ok) {
+      console.error('[lark-notify] platform_sale: Lark non-OK:', r.status, txt)
+      return res.status(502).json({ error: 'Lark webhook failed', status: r.status, details: txt })
+    }
+    return res.status(200).json({
+      ok: true, lark: txt,
+      target: roomUrl ? `room:${channel}` : 'main_fallback',
+    })
+  } catch (err) {
+    console.error('[lark-notify] platform_sale: send failed:', err)
+    return res.status(500).json({ error: 'Failed to call Lark webhook', message: String(err?.message || err) })
+  }
+}
+
 // Routed to LARK_WEBHOOK_ACQUISITIONS; falls back to LARK_WEBHOOK_URL if the
 // squad webhook isn't configured so messages aren't silently dropped during
 // rollout.
@@ -467,11 +517,15 @@ function buildStreamCountUndone(body) {
 // like "Stream Room — " (em dash) vs "Stream Room - " (hyphen).
 function getRoomWebhook(roomName) {
   if (!roomName) return null
-  const n = String(roomName)
-  if (n.includes('RocketsHQ'))    return process.env.LARK_WEBHOOK_STREAM_ROCKETSHQ    || null
-  if (n.includes('Packheads'))    return process.env.LARK_WEBHOOK_STREAM_PACKHEADS    || null
-  if (n.includes('LuckyVaultUS')) return process.env.LARK_WEBHOOK_STREAM_LUCKYVAULTUS || null
-  if (n.includes('SlabbiePatty')) return process.env.LARK_WEBHOOK_STREAM_SLABBIEPATTY || null
+  // Lower-case once so we tolerate every casing the front-end might pass:
+  // "Packheads" (from Stream Count), "PackHeadsTCG" (from Platform Sales),
+  // "PACKHEADS" etc. all resolve the same way.
+  const n = String(roomName).toLowerCase()
+  if (n.includes('rocketshq') || n.includes('rockethq')) return process.env.LARK_WEBHOOK_STREAM_ROCKETSHQ    || null
+  if (n.includes('packheads'))                            return process.env.LARK_WEBHOOK_STREAM_PACKHEADS    || null
+  if (n.includes('luckyvault'))                           return process.env.LARK_WEBHOOK_STREAM_LUCKYVAULTUS || null
+  if (n.includes('slabbiepatty') || n.includes('slabbypatty')) return process.env.LARK_WEBHOOK_STREAM_SLABBIEPATTY || null
+  if (n.includes('whatnot'))                              return process.env.LARK_WEBHOOK_STREAM_WHATNOT     || null
   return null
 }
 
@@ -871,6 +925,44 @@ function buildMessage(body) {
       lines.push(`Customer brought $${ti.toFixed(2)} in trade-in`)
     }
 
+    lines.push(nowUtcStamp())
+    return lines.join('\n')
+  }
+
+  if (type === 'platform_sale') {
+    // One message per cart submit on Platform Sales. Routed to the
+    // matching stream room's group via getRoomWebhook(channel). Format
+    // is intentionally tight — streamers read these on phone screens
+    // between auctions.
+    const {
+      platform, channel, streamer,
+      items = [], total, total_units,
+    } = body
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error('platform_sale: missing items')
+    }
+    const KIND_ICON = { sealed: '📦', slab: '💎', single: '🎴' }
+    const tot = Number(total) || 0
+    const units = Number(total_units) || items.length
+
+    const lines = []
+    lines.push(`🛍️ Sale on ${channel}${platform ? ` (${platform})` : ''} · $${tot.toFixed(2)}`)
+    if (streamer) lines.push(`By ${streamer}`)
+    lines.push('')
+    for (const it of items) {
+      const icon = KIND_ICON[it.kind] || '•'
+      const qty = Number(it.quantity) || 1
+      const sub = (Number(it.price) || 0) * qty
+      const qtyStr = qty > 1 ? ` ×${qty}` : ''
+      const name = it.name || 'Unknown'
+      lines.push(`${icon} ${name}${qtyStr} — $${sub.toFixed(2)}`)
+    }
+    lines.push('')
+    if (units !== items.length) {
+      lines.push(`${items.length} line${items.length === 1 ? '' : 's'} · ${units} unit${units === 1 ? '' : 's'}`)
+    } else {
+      lines.push(`${items.length} item${items.length === 1 ? '' : 's'}`)
+    }
     lines.push(nowUtcStamp())
     return lines.join('\n')
   }

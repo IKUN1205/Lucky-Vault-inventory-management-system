@@ -255,6 +255,54 @@ export default function PlatformSales() {
           `${ok.length} sale${ok.length === 1 ? '' : 's'} recorded on ${selectedChannel.label}${failed.length > 0 ? `, ${failed.length} failed` : ''}`,
           failed.length > 0 ? 'info' : 'success'
         )
+        // Fire-and-forget Lark — routes to the channel's stream-room group.
+        // Build a flat items list matching the lark-notify message builder.
+        try {
+          const streamerName = users.find(u => u.id === streamerId)?.name || null
+          const items = ok.map(({ line }) => {
+            if (line.kind === 'sealed') {
+              return {
+                kind: 'sealed',
+                name: `${line.product.brand} | ${line.product.name}`,
+                quantity: Number(line.quantity) || 1,
+                price: Number(line.price) || 0,
+              }
+            }
+            if (line.kind === 'slab') {
+              return {
+                kind: 'slab',
+                name: line.slab.item_name,
+                quantity: 1,
+                price: Number(line.price) || 0,
+              }
+            }
+            const setLabel = line.single.set?.name ? ` (${line.single.set.name})` : ''
+            return {
+              kind: 'single',
+              name: `${line.single.card_name}${line.single.card_number ? ` #${line.single.card_number}` : ''}${setLabel}`,
+              quantity: Number(line.quantity) || 1,
+              price: Number(line.price) || 0,
+            }
+          })
+          const total = items.reduce((s, it) => s + (it.price * it.quantity), 0)
+          const totalUnits = items.reduce((s, it) => s + it.quantity, 0)
+          fetch('/api/lark-notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'platform_sale',
+              platform: selectedChannel.platform,
+              channel:  selectedChannel.channel,
+              streamer: streamerName,
+              date: saleDate,
+              items,
+              total,
+              total_units: totalUnits,
+            }),
+          }).catch(err => console.error('[lark-notify] platform_sale failed:', err))
+        } catch (err) {
+          console.error('[PlatformSales] failed to build Lark payload:', err)
+        }
       }
       if (failed.length > 0) for (const f of failed) addToast(`Line failed: ${f.error}`, 'error')
     } catch (err) {
