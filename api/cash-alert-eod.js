@@ -24,6 +24,9 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 const CRON_SECRET = process.env.CRON_SECRET
 const LARK_STOREFRONT = process.env.LARK_WEBHOOK_STOREFRONT
   || process.env.LARK_WEBHOOK_URL
+// Optional: Mr. Vault's Lark open_id (the 'ou_xxxxx...' string). If set,
+// the cash alert pings him specifically. If not set, falls back to @all.
+const MR_VAULT_OPEN_ID = process.env.LARK_USER_MR_VAULT
 
 const THRESHOLD = 1000
 
@@ -149,14 +152,17 @@ export default async function handler(req, res) {
     console.log('[cash-alert-eod]', summary)
 
     if (fired) {
-      // Mention everyone in the group. Lark custom-bot text supports the
-      // inline <at user_id="all">@all</at> syntax for @all notifications.
-      // Switch to a real <at user_id="ou_xxx">Mr. Vault</at> later once
-      // we have his open_id from the Lark admin console.
+      // Mention strategy (Lark custom-bot text supports inline <at> tags):
+      //   - LARK_USER_MR_VAULT env var set → ping Mr. Vault specifically
+      //     ('ou_xxxxx...' format from Lark admin / decoded contact card)
+      //   - Else fall back to @all so SOMEONE in the group gets a push
+      const mention = MR_VAULT_OPEN_ID
+        ? `<at user_id="${MR_VAULT_OPEN_ID}">Mr. Vault</at>`
+        : `<at user_id="all">@all</at> — Mr. Vault`
       const text = [
         `💰 Cash drawer over $${THRESHOLD.toLocaleString()}`,
         `Today's cash: $${cashNet.toFixed(2)} (${ptDate})`,
-        `<at user_id="all">@all</at> — Mr. Vault, please come pick it up 🏃`,
+        `${mention}, please come pick it up 🏃`,
         nowPtStamp(),
       ].join('\n')
       const r = await fetch(LARK_STOREFRONT, {
