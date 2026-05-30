@@ -149,10 +149,14 @@ export default async function handler(req, res) {
     console.log('[cash-alert-eod]', summary)
 
     if (fired) {
+      // Mention everyone in the group. Lark custom-bot text supports the
+      // inline <at user_id="all">@all</at> syntax for @all notifications.
+      // Switch to a real <at user_id="ou_xxx">Mr. Vault</at> later once
+      // we have his open_id from the Lark admin console.
       const text = [
         `💰 Cash drawer over $${THRESHOLD.toLocaleString()}`,
         `Today's cash: $${cashNet.toFixed(2)} (${ptDate})`,
-        `@Mr. Vault — please come pick it up 🏃`,
+        `<at user_id="all">@all</at> — Mr. Vault, please come pick it up 🏃`,
         nowPtStamp(),
       ].join('\n')
       const r = await fetch(LARK_STOREFRONT, {
