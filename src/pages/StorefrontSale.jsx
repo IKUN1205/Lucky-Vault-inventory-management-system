@@ -54,6 +54,36 @@ const fmtUsd = (n) => {
   return v < 0 ? `-$${abs}` : `$${abs}`
 }
 
+// Distribute a single cart total across cart lines so per-line writers
+// can stamp a sale_price each. Strategy:
+//   - If EVERY line has our_price > 0 → reference-weighted (our_price × qty).
+//     Mixed values stay proportional ($200 box + $10 pack sold for $215 →
+//     box gets ~\$195, pack ~\$20).
+//   - Otherwise → equal-per-unit (qty-weighted). Simple, deterministic.
+// Returns a new cart array (doesn't mutate input). line.price is per-unit.
+function distributeCartTotal(cart, total) {
+  if (!Array.isArray(cart) || cart.length === 0) return cart
+  const t = Number(total) || 0
+  if (t <= 0) return cart.map(l => ({ ...l, price: 0 }))
+  const totalUnits = cart.reduce((s, l) => s + (Number(l.quantity ?? 1) || 1), 0)
+  if (totalUnits === 0) return cart.map(l => ({ ...l, price: 0 }))
+  const allHaveRef = cart.every(l => Number(l.our_price) > 0)
+  const weights = allHaveRef
+    ? cart.map(l => Number(l.our_price) * (Number(l.quantity ?? 1) || 1))
+    : cart.map(l => Number(l.quantity ?? 1) || 1)
+  const sumW = weights.reduce((s, w) => s + w, 0)
+  if (sumW === 0) {
+    // degenerate — split equally per unit
+    const perUnit = t / totalUnits
+    return cart.map(l => ({ ...l, price: perUnit }))
+  }
+  return cart.map((l, i) => {
+    const lineShare = t * (weights[i] / sumW)
+    const qty = Number(l.quantity ?? 1) || 1
+    return { ...l, price: lineShare / qty }
+  })
+}
+
 export default function StorefrontSale() {
   const { toasts, addToast, removeToast } = useToast()
   const { user } = useAuth()
@@ -82,6 +112,12 @@ export default function StorefrontSale() {
   //             scan, slabs/singles via Manual Line button). net cash = -gross.
   const [transactionType, setTransactionType] = useState('sale')
   const [tradeInValue, setTradeInValue] = useState('')   // string so the input stays controlled
+  // One required input for the WHOLE cart (directive 2026-05-29). Reference
+  // prices per line still show as a small hint, but the cashier types the
+  // grand total once instead of per-item. Distribution to per-line
+  // sale_price happens at submit by reference-weighted share, with
+  // equal-per-unit fallback when references are missing.
+  const [cartTotal, setCartTotal] = useState('')
   const [manualLineDraft, setManualLineDraft] = useState(null)  // open modal state
 
   // Daily summary state. Re-fetched after each successful submit so the
@@ -122,16 +158,23 @@ export default function StorefrontSale() {
     loadSummary(saleDate)
   }, [saleDate, loadSummary])
 
-  const cartGross = useMemo(() => {
-    return cart.reduce((sum, line) => {
-      const qty = Number(line.quantity ?? 1) || 0
-      const price = Number(line.price) || 0
-      return sum + price * qty
-    }, 0)
-  }, [cart])
+  // Cart gross = the SINGLE total the cashier types (no more per-line
+  // prices). Reference prices ("Our: $X") still show on each row as a
+  // hint, but they aren't summed; the cashier owns the total.
+  const cartGross = Number(cartTotal) || 0
 
   const cartTotalUnits = useMemo(() => {
     return cart.reduce((sum, line) => sum + (Number(line.quantity ?? 1) || 0), 0)
+  }, [cart])
+
+  // Sum of (our_price × qty) across the cart, for the dim hint shown
+  // next to the total input. Lines without a reference don't contribute.
+  const cartReferenceTotal = useMemo(() => {
+    return cart.reduce((sum, line) => {
+      const op = Number(line.our_price) || 0
+      const qty = Number(line.quantity ?? 1) || 0
+      return op > 0 ? sum + op * qty : sum
+    }, 0)
   }, [cart])
 
   // Net cash direction by transaction type:
@@ -204,7 +247,7 @@ export default function StorefrontSale() {
           product, inventory,
           available: totalAvailable,
           quantity: 1,
-          price: '',
+          our_price: null,   // sealed has no stored reference price
           scanned_code: product.barcode,
         },
       ]
@@ -226,18 +269,19 @@ export default function StorefrontSale() {
         addToast(`Slab #${slab.cert_number} already in cart`, 'info')
         return prev
       }
-      const suggested =
-        slab.lv_price_usd != null ? slab.lv_price_usd
-          : slab.list_price_usd != null ? slab.list_price_usd
-          : slab.market_price_usd != null ? slab.market_price_usd
-          : ''
+      const ourPrice =
+        slab.market_price_usd != null ? Number(slab.market_price_usd)
+          : slab.lv_price_usd != null ? Number(slab.lv_price_usd)
+          : slab.list_price_usd != null ? Number(slab.list_price_usd)
+          : null
       return [
         ...prev,
         {
           kind: 'slab',
           key: `slab-${slab.id}`,
           slab,
-          price: suggested === '' ? '' : String(suggested),
+          quantity: 1,
+          our_price: ourPrice,
           scanned_code: slab.cert_number,
         },
       ]
@@ -267,9 +311,8 @@ export default function StorefrontSale() {
         next[idx] = { ...existing, quantity: (existing.quantity || 1) + 1 }
         return next
       }
-      const suggested = single.current_market_price_usd != null
-        ? String(single.current_market_price_usd)
-        : ''
+      const ourPrice = single.current_market_price_usd != null
+        ? Number(single.current_market_price_usd) : null
       return [
         ...prev,
         {
@@ -277,7 +320,7 @@ export default function StorefrontSale() {
           key: `single-${single.id}`,
           single, available,
           quantity: 1,
-          price: suggested,
+          our_price: ourPrice,
           scanned_code: single.tcg_id,
         },
       ]
@@ -331,7 +374,7 @@ export default function StorefrontSale() {
   // line. The `stayOpen` option lets the cashier rapid-fire several items
   // in one customer visit without closing/reopening the modal each time.
   const openManualLine = (subKind /* 'slab' | 'single' */) => {
-    setManualLineDraft({ subKind, description: '', quantity: 1, price: '' })
+    setManualLineDraft({ subKind, description: '', quantity: 1 })
   }
   const saveManualLine = ({ stayOpen = false } = {}) => {
     const draft = manualLineDraft
@@ -339,13 +382,14 @@ export default function StorefrontSale() {
     const desc = (draft.description || '').trim()
     if (!desc) { addToast('Description is required', 'error'); return }
     const qty = Math.max(1, parseInt(draft.quantity) || 1)
-    const price = parseFloat(draft.price)
-    if (isNaN(price) || price < 0) { addToast('Price required', 'error'); return }
     const kind = draft.subKind === 'slab' ? 'slab_manual' : 'single_manual'
     const key = `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    // Buy-mode manual lines don't carry a per-line price now; the cashier
+    // enters one cart total at the bottom. our_price=null so the
+    // distribution helper falls back to equal-per-unit for these.
     setCart(prev => [
       ...prev,
-      { kind, key, description: desc, quantity: draft.subKind === 'slab' ? 1 : qty, price: String(price) },
+      { kind, key, description: desc, quantity: draft.subKind === 'slab' ? 1 : qty, our_price: null },
     ])
     addToast(`Added: ${draft.subKind} — ${desc}`, 'success')
     if (stayOpen) {
@@ -387,23 +431,22 @@ export default function StorefrontSale() {
         return `Payment split ($${splitSum.toFixed(2)}) doesn't match amount due ($${amountDueFromCustomer.toFixed(2)})`
       }
     }
+    // Per-line price is no longer entered; the cashier types ONE total
+    // at the bottom of the cart. Still validate qty + manual-line
+    // description.
+    const totalNum = Number(cartTotal)
+    if (cartTotal === '' || cartTotal == null || isNaN(totalNum) || totalNum <= 0) {
+      const label =
+        transactionType === 'buy'   ? 'Total we pay'
+        : transactionType === 'trade' ? 'Cart value'
+        :                              'Customer pays'
+      return `Enter ${label} (must be > 0)`
+    }
     for (const line of cart) {
-      const price = Number(line.price)
-      if (line.price === '' || line.price == null || isNaN(price) || price < 0) {
-        const label =
-          line.kind === 'sealed' ? line.product.name
-          : line.kind === 'slab' ? line.slab.item_name
-          : line.kind === 'single' ? line.single.card_name
-          : line.kind === 'slab_manual' || line.kind === 'single_manual' ? (line.description || '(no description)')
-          : 'unknown'
-        return `Missing price for: ${label}`
-      }
       const qty = Number(line.quantity ?? 1)
       if (line.kind !== 'slab' && (!qty || qty < 1)) {
         return 'Quantity must be at least 1'
       }
-      // In buy mode, manual lines require a description (already enforced in
-      // the modal save path, but double-check here).
       if ((line.kind === 'slab_manual' || line.kind === 'single_manual') && !(line.description || '').trim()) {
         return 'Manual line missing description'
       }
@@ -421,8 +464,13 @@ export default function StorefrontSale() {
     const validationErr = validateCart()
     if (validationErr) { addToast(validationErr, 'error'); return }
     setSubmitting(true)
+    // Distribute the single cart total across lines so per-line writers
+    // (sealed deduct / slab sold / single sold) can stamp a sensible
+    // sale_price each. Reference-weighted when all lines have an our_price,
+    // equal-per-unit otherwise.
+    const distributedCart = distributeCartTotal(cart, Number(cartTotal) || 0)
     // Build the payments array. Single-method: [{ method, amount: due }].
-     // Split: [{ method1, amount1 }, { method2, amount2 }].
+    // Split: [{ method1, amount1 }, { method2, amount2 }].
     const submittedPayments = (() => {
       if (splitPayment && splitEligible) {
         return [
@@ -434,7 +482,7 @@ export default function StorefrontSale() {
     })()
     try {
       const result = await submitStorefrontTransaction({
-        cart,
+        cart: distributedCart,
         paymentMethodId,
         payments: submittedPayments,
         cashierId: user?.id || null,
@@ -526,6 +574,7 @@ export default function StorefrontSale() {
         // Reset trade-in input + split-payment state when the cart fully cleared
         if (cart.length === ok.length) {
           setTradeInValue('')
+          setCartTotal('')
           setSplitPayment(false)
           setPaymentMethodId2('')
           setSplitAmount2('')
@@ -867,15 +916,37 @@ export default function StorefrontSale() {
               />
             ))}
 
-            {/* Subtotal / trade math */}
+            {/* Cart total (single required input) + trade-in / net cash math */}
             <div className="pt-3 mt-3 border-t border-vault-border space-y-2">
-              <div className="flex justify-between items-center text-sm text-gray-300">
-                <span>
-                  {transactionType === 'buy'
-                    ? 'Cart total (items we are buying from customer)'
-                    : 'Cart total (items going to customer)'}
-                </span>
-                <span className="text-white font-semibold">{fmtUsd(cartGross)}</span>
+              <div className="flex justify-between items-center gap-3">
+                <label className="flex flex-col text-sm text-gray-300">
+                  <span className="flex items-center gap-2">
+                    {transactionType === 'buy' ? 'Total we pay' :
+                     transactionType === 'trade' ? 'Cart value (items going to customer)' :
+                     'Customer pays'}
+                    {' '}<span className="text-red-400">*</span>
+                  </span>
+                  {cartReferenceTotal > 0 && (
+                    <span className="text-[11px] text-gray-500 mt-0.5">
+                      Reference (sum of our prices): {fmtUsd(cartReferenceTotal)}
+                    </span>
+                  )}
+                </label>
+                <div className="relative">
+                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={cartTotal}
+                    onChange={(e) => setCartTotal(e.target.value)}
+                    placeholder="0.00"
+                    disabled={submitting}
+                    className={`w-36 text-right pl-5 font-mono ${
+                      cartTotal === '' || cartTotal == null || Number(cartTotal) <= 0 ? 'border-red-500/50' : ''
+                    }`}
+                  />
+                </div>
               </div>
 
               {transactionType === 'trade' && (
@@ -885,18 +956,21 @@ export default function StorefrontSale() {
                       Trade-in value <span className="text-red-400">*</span>
                       <span className="text-xs text-gray-500">(value of what customer brought)</span>
                     </label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={tradeInValue}
-                      onChange={(e) => setTradeInValue(e.target.value)}
-                      placeholder="0.00"
-                      disabled={submitting}
-                      className={`w-32 text-right ${
-                        tradeInValue === '' || tradeInValue == null ? 'border-red-500/50' : ''
-                      }`}
-                    />
+                    <div className="relative">
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">$</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={tradeInValue}
+                        onChange={(e) => setTradeInValue(e.target.value)}
+                        placeholder="0.00"
+                        disabled={submitting}
+                        className={`w-36 text-right pl-5 font-mono ${
+                          tradeInValue === '' || tradeInValue == null ? 'border-red-500/50' : ''
+                        }`}
+                      />
+                    </div>
                   </div>
                   <div className="flex justify-between items-center pt-2 border-t border-vault-border/50">
                     <span className="text-sm text-gray-300">Net cash</span>
@@ -910,24 +984,6 @@ export default function StorefrontSale() {
                     </span>
                   </div>
                 </>
-              )}
-
-              {transactionType === 'sale' && (
-                <div className="flex justify-end">
-                  <div className="text-right">
-                    <div className="text-xs uppercase tracking-wider text-gray-500">Customer pays</div>
-                    <div className="text-2xl font-bold text-vault-gold">{fmtUsd(cartGross)}</div>
-                  </div>
-                </div>
-              )}
-
-              {transactionType === 'buy' && (
-                <div className="flex justify-end">
-                  <div className="text-right">
-                    <div className="text-xs uppercase tracking-wider text-gray-500">We pay customer</div>
-                    <div className="text-2xl font-bold text-red-300">{fmtUsd(cartGross)}</div>
-                  </div>
-                </div>
               )}
             </div>
           </div>
@@ -943,6 +999,7 @@ export default function StorefrontSale() {
             submitting
             || cart.length === 0
             || !paymentMethodId
+            || Number(cartTotal) <= 0
             || (splitPayment && splitEligible && (splitMismatch || splitMethodsClash || !paymentMethodId2))
           }
           className="btn btn-primary px-6 py-3 text-base"
@@ -1013,34 +1070,19 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
           className="w-full mb-3"
         />
 
-        <div className="grid grid-cols-2 gap-3 mb-3">
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">
-              Qty {isSlab && <span className="text-gray-600">(slab = 1)</span>}
-            </label>
-            <input
-              type="number"
-              min="1"
-              value={draft.quantity}
-              onChange={(e) => onChange({ quantity: parseInt(e.target.value) || 1 })}
-              disabled={isSlab}
-              className="w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">
-              Price (USD, per unit) <span className="text-red-400">*</span>
-            </label>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={draft.price}
-              onChange={(e) => onChange({ price: e.target.value })}
-              placeholder="0.00"
-              className="w-full"
-            />
-          </div>
+        <div className="mb-3">
+          <label className="block text-xs text-gray-400 mb-1">
+            Qty {isSlab && <span className="text-gray-600">(slab = 1)</span>}
+          </label>
+          <input
+            type="number"
+            min="1"
+            value={draft.quantity}
+            onChange={(e) => onChange({ quantity: parseInt(e.target.value) || 1 })}
+            disabled={isSlab}
+            className="w-full max-w-[8rem]"
+          />
+          {/* Per-line price removed — cashier types one cart total below. */}
         </div>
 
         <div className="flex justify-between items-center gap-2 mt-4">
@@ -1622,17 +1664,18 @@ function CartRow({ line, onUpdate, onRemove, disabled }) {
   }
 
   const qty = Number(line.quantity ?? 1) || 1
-  const price = Number(line.price) || 0
-  const subtotal = price * qty
-  const priceMissing = line.price === '' || line.price == null
+  const ourPrice = Number(line.our_price) || 0
 
   return (
     <div className="grid grid-cols-12 gap-3 items-center p-3 bg-vault-darker/40 border border-vault-border rounded-lg">
-      <div className={`col-span-6 flex items-center gap-3 min-w-0 ${meta.color}`}>
+      <div className={`col-span-9 flex items-center gap-3 min-w-0 ${meta.color}`}>
         <Icon size={20} className="flex-shrink-0" />
         <div className="min-w-0">
           <div className="text-white font-medium truncate">{title}</div>
-          <div className="text-xs text-gray-500 truncate">{sub}</div>
+          <div className="text-xs text-gray-500 truncate">
+            {ourPrice > 0 && <span className="text-gray-400">Our: ${ourPrice.toFixed(2)} · </span>}
+            {sub}
+          </div>
         </div>
       </div>
 
@@ -1656,26 +1699,6 @@ function CartRow({ line, onUpdate, onRemove, disabled }) {
         ) : (
           <div className="px-2 py-1 text-sm text-gray-400">1</div>
         )}
-      </div>
-
-      <div className="col-span-2">
-        <label className="block text-[10px] uppercase tracking-wider text-gray-500">
-          Price (USD) <span className="text-red-400">*</span>
-        </label>
-        <input
-          type="number"
-          min="0"
-          step="0.01"
-          value={line.price}
-          onChange={(e) => onUpdate({ price: e.target.value })}
-          disabled={disabled}
-          placeholder="0.00"
-          className={`w-full px-2 py-1 text-sm ${priceMissing ? 'border-red-500/50 bg-red-500/5' : ''}`}
-        />
-      </div>
-
-      <div className="col-span-1 text-right text-sm text-vault-gold font-semibold">
-        {fmtUsd(subtotal)}
       </div>
 
       <div className="col-span-1 text-right">
