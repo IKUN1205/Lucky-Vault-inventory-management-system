@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { fetchInventory, fetchLocations, supabase } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
-import { Eye, Package, Search, Edit2, Save, X, Trash2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
+import { Eye, Package, Search, Edit2, Save, X, Trash2, ArrowUp, ArrowDown, ArrowUpDown, ChevronDown, ChevronUp, Layers, Diamond } from 'lucide-react'
 
 // All cost values stored in inventory.avg_cost_basis are USD-denominated —
 // they're converted at acquisition time using the rates in src/lib/supabase.js.
@@ -39,6 +39,20 @@ export default function ViewInventory() {
   const [editingId, setEditingId] = useState(null)
   const [editForm, setEditForm] = useState({ quantity: '', avg_cost_basis: '' })
 
+  // Per-location buckets of sellable singles / slabs, plus which buckets the
+  // user has expanded. Collapsed by default — sealed stays the headline; the
+  // cards roll up underneath each location card on demand (directive 2026-05-29).
+  const [singlesByLoc, setSinglesByLoc] = useState({})
+  const [slabsByLoc, setSlabsByLoc] = useState({})
+  const [expandedSingles, setExpandedSingles] = useState(new Set())
+  const [expandedSlabs, setExpandedSlabs] = useState(new Set())
+  const toggleSingles = (loc) => setExpandedSingles(prev => {
+    const next = new Set(prev); next.has(loc) ? next.delete(loc) : next.add(loc); return next
+  })
+  const toggleSlabs = (loc) => setExpandedSlabs(prev => {
+    const next = new Set(prev); next.has(loc) ? next.delete(loc) : next.add(loc); return next
+  })
+
   // Toggle sort: same column = flip direction; different column = start desc
   // (descending is the more useful default for $ and qty — biggest first).
   const handleSort = (field) => {
@@ -63,11 +77,51 @@ export default function ViewInventory() {
       const locData = await fetchLocations('Physical')
       setLocations(locData)
       loadInventory()
+      loadCardsByLocation()
     } catch (error) {
       console.error('Error loading data:', error)
       addToast('Failed to load data', 'error')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Pull every sellable single + slab once, grouped by location name so each
+  // location card below has its own bucket. Sold rows are excluded; deleted
+  // rows are excluded.
+  const loadCardsByLocation = async () => {
+    try {
+      const [singlesRes, slabsRes] = await Promise.all([
+        supabase.from('singles').select(`
+          id, card_name, card_number, condition, quantity, current_market_price_usd,
+          tcg_id, status,
+          set:card_sets(name),
+          location:locations(id, name)
+        `).eq('deleted', false).in('status', ['in_inventory', 'listed']),
+        supabase.from('slabs').select(`
+          id, item_name, grading_company, cert_number, market_price_usd, lv_price_usd,
+          status,
+          location:locations(id, name)
+        `).eq('deleted', false).in('status', ['in_inventory', 'listed']),
+      ])
+      if (singlesRes.error) throw singlesRes.error
+      if (slabsRes.error) throw slabsRes.error
+      const sg = {}
+      for (const s of singlesRes.data || []) {
+        const name = s.location?.name || 'Unknown'
+        if (!sg[name]) sg[name] = []
+        sg[name].push(s)
+      }
+      const sl = {}
+      for (const s of slabsRes.data || []) {
+        const name = s.location?.name || 'Unknown'
+        if (!sl[name]) sl[name] = []
+        sl[name].push(s)
+      }
+      setSinglesByLoc(sg)
+      setSlabsByLoc(sl)
+    } catch (err) {
+      console.error('[ViewInventory] loadCardsByLocation failed:', err)
     }
   }
 
@@ -482,6 +536,20 @@ export default function ViewInventory() {
                 </tbody>
               </table>
             </div>
+
+            {/* Collapsible sub-sections — singles + slabs at this location.
+                Default collapsed so the sealed view stays the main story;
+                staff click to expand when they want to see what cards are
+                physically here. */}
+            <LocationCardsSubSections
+              locationName={locationName}
+              singles={singlesByLoc[locationName] || []}
+              slabs={slabsByLoc[locationName] || []}
+              expandedSingles={expandedSingles.has(locationName)}
+              expandedSlabs={expandedSlabs.has(locationName)}
+              onToggleSingles={() => toggleSingles(locationName)}
+              onToggleSlabs={() => toggleSlabs(locationName)}
+            />
           </div>
         )
       })}
@@ -490,6 +558,129 @@ export default function ViewInventory() {
         <div className="card text-center py-12">
           <Package className="mx-auto text-gray-600 mb-4" size={48} />
           <p className="text-gray-400">No inventory found</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Two collapsible sub-sections rendered inside each location card —
+// 🎴 Singles at {loc} and 💎 Slabs at {loc}. Default collapsed so the
+// sealed view stays the headline; the count next to each header tells
+// staff at a glance how many cards are at that location.
+function LocationCardsSubSections({
+  locationName, singles, slabs,
+  expandedSingles, expandedSlabs,
+  onToggleSingles, onToggleSlabs,
+}) {
+  const hasSingles = singles.length > 0
+  const hasSlabs = slabs.length > 0
+  if (!hasSingles && !hasSlabs) return null
+  return (
+    <div className="mt-4 space-y-2 border-t border-vault-border/50 pt-3">
+      {hasSingles && (
+        <div className="rounded-lg border border-vault-border/50 bg-vault-darker/30">
+          <button
+            type="button"
+            onClick={onToggleSingles}
+            className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-vault-darker/50 rounded-lg"
+          >
+            <span className="flex items-center gap-2 text-blue-300">
+              <Layers size={14} />
+              <span className="font-medium">Singles at {locationName}</span>
+              <span className="text-xs text-gray-500">
+                ({singles.length} card{singles.length === 1 ? '' : 's'},
+                {' '}{singles.reduce((s, r) => s + (Number(r.quantity) || 1), 0)} units)
+              </span>
+            </span>
+            {expandedSingles ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
+          </button>
+          {expandedSingles && (
+            <div className="px-3 pb-3 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 text-xs border-b border-vault-border/50">
+                    <th className="py-2 font-medium">CARD</th>
+                    <th className="py-2 font-medium">SET</th>
+                    <th className="py-2 font-medium">CONDITION</th>
+                    <th className="py-2 font-medium text-right">QTY</th>
+                    <th className="py-2 font-medium text-right">MARKET</th>
+                    <th className="py-2 font-medium">TCG ID</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-vault-border/30">
+                  {singles
+                    .slice()
+                    .sort((a, b) => (Number(b.current_market_price_usd) || 0) - (Number(a.current_market_price_usd) || 0))
+                    .map(s => (
+                      <tr key={s.id} className="hover:bg-vault-dark/30">
+                        <td className="py-1.5 text-white">
+                          {s.card_name}{s.card_number ? ` #${s.card_number}` : ''}
+                        </td>
+                        <td className="py-1.5 text-gray-400">{s.set?.name || '—'}</td>
+                        <td className="py-1.5 text-gray-400">{s.condition || '—'}</td>
+                        <td className="py-1.5 text-right text-gray-300">{s.quantity || 1}</td>
+                        <td className="py-1.5 text-right text-gray-300">
+                          {s.current_market_price_usd != null ? `$${Number(s.current_market_price_usd).toFixed(2)}` : '—'}
+                        </td>
+                        <td className="py-1.5 text-gray-500 text-xs">{s.tcg_id || '—'}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+      {hasSlabs && (
+        <div className="rounded-lg border border-vault-border/50 bg-vault-darker/30">
+          <button
+            type="button"
+            onClick={onToggleSlabs}
+            className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-vault-darker/50 rounded-lg"
+          >
+            <span className="flex items-center gap-2 text-emerald-300">
+              <Diamond size={14} />
+              <span className="font-medium">Slabs at {locationName}</span>
+              <span className="text-xs text-gray-500">({slabs.length})</span>
+            </span>
+            {expandedSlabs ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
+          </button>
+          {expandedSlabs && (
+            <div className="px-3 pb-3 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 text-xs border-b border-vault-border/50">
+                    <th className="py-2 font-medium">ITEM</th>
+                    <th className="py-2 font-medium">GRADE</th>
+                    <th className="py-2 font-medium">CERT #</th>
+                    <th className="py-2 font-medium text-right">MARKET</th>
+                    <th className="py-2 font-medium text-right">LV</th>
+                    <th className="py-2 font-medium">STATUS</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-vault-border/30">
+                  {slabs
+                    .slice()
+                    .sort((a, b) => (Number(b.market_price_usd) || 0) - (Number(a.market_price_usd) || 0))
+                    .map(s => (
+                      <tr key={s.id} className="hover:bg-vault-dark/30">
+                        <td className="py-1.5 text-white truncate max-w-md" title={s.item_name}>{s.item_name}</td>
+                        <td className="py-1.5 text-gray-400">{s.grading_company || '—'}</td>
+                        <td className="py-1.5 text-gray-500 text-xs">{s.cert_number || '—'}</td>
+                        <td className="py-1.5 text-right text-gray-300">
+                          {s.market_price_usd != null ? `$${Number(s.market_price_usd).toFixed(2)}` : '—'}
+                        </td>
+                        <td className="py-1.5 text-right text-gray-300">
+                          {s.lv_price_usd != null ? `$${Number(s.lv_price_usd).toFixed(2)}` : '—'}
+                        </td>
+                        <td className="py-1.5 text-gray-400">{s.status}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>
