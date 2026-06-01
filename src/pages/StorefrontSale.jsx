@@ -371,31 +371,49 @@ export default function StorefrontSale() {
 
   // Open the manual-line modal (Buy mode only). The modal handles the form;
   // saveManualLine validates + appends a slab_manual / single_manual cart
-  // line. The `stayOpen` option lets the cashier rapid-fire several items
-  // in one customer visit without closing/reopening the modal each time.
-  const openManualLine = (subKind /* 'slab' | 'single' */) => {
-    setManualLineDraft({ subKind, description: '', quantity: 1 })
+  // line. `subKind` accepts:
+  //   'slab'        → per-slab description (cashier types item name)
+  //   'single'      → per-single description
+  //   'bulk_single' → quick mode: only enter total qty (e.g. customer
+  //                   sells us 20 cards). Description auto-fills as
+  //                   "Bulk buy: N cards"; storefront_sales row is the
+  //                   same as a regular single_manual buy, so Cards Scan
+  //                   intake later is on a parallel track that doesn't
+  //                   touch the singles inventory table from here.
+  const openManualLine = (subKind /* 'slab' | 'single' | 'bulk_single' */) => {
+    const isBulk = subKind === 'bulk_single'
+    setManualLineDraft({
+      subKind: isBulk ? 'single' : subKind,
+      bulk: isBulk,
+      description: '',
+      quantity: 1,
+    })
   }
   const saveManualLine = ({ stayOpen = false } = {}) => {
     const draft = manualLineDraft
     if (!draft) return
-    const desc = (draft.description || '').trim()
-    if (!desc) { addToast('Description is required', 'error'); return }
     const qty = Math.max(1, parseInt(draft.quantity) || 1)
+    let desc
+    if (draft.bulk) {
+      // Bulk buy — description is auto-derived from qty. Cashier just
+      // entered the count; the actual card identities get captured later
+      // by Cards Scan against the photo in Lark.
+      desc = `Bulk buy: ${qty} card${qty === 1 ? '' : 's'} (pending Cards Scan intake)`
+    } else {
+      desc = (draft.description || '').trim()
+      if (!desc) { addToast('Description is required', 'error'); return }
+    }
     const kind = draft.subKind === 'slab' ? 'slab_manual' : 'single_manual'
     const key = `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-    // Buy-mode manual lines don't carry a per-line price now; the cashier
-    // enters one cart total at the bottom. our_price=null so the
-    // distribution helper falls back to equal-per-unit for these.
     setCart(prev => [
       ...prev,
-      { kind, key, description: desc, quantity: draft.subKind === 'slab' ? 1 : qty, our_price: null },
+      { kind, key, description: desc, quantity: draft.subKind === 'slab' ? 1 : qty, our_price: null, bulk: !!draft.bulk },
     ])
-    addToast(`Added: ${draft.subKind} — ${desc}`, 'success')
+    addToast(draft.bulk ? `Added: bulk buy of ${qty} cards` : `Added: ${draft.subKind} — ${desc}`, 'success')
     if (stayOpen) {
       // Reset to a fresh blank entry of the same kind so the cashier can
       // keep typing the next item without losing focus / context.
-      setManualLineDraft({ subKind: draft.subKind, description: '', quantity: 1, price: '' })
+      setManualLineDraft({ subKind: draft.subKind, bulk: !!draft.bulk, description: '', quantity: 1 })
     } else {
       setManualLineDraft(null)
     }
@@ -875,6 +893,19 @@ export default function StorefrontSale() {
               >
                 + Single (manual)
               </button>
+              {/* Bulk Buy — for many-card purchases where typing each name
+                  is unrealistic. Cashier just enters qty; Cards Scan team
+                  intakes the cards later off the Lark photo. Doesn't touch
+                  the singles inventory table, parallel track. */}
+              <button
+                type="button"
+                onClick={() => openManualLine('bulk_single')}
+                disabled={submitting}
+                className="text-xs px-2.5 py-1 border border-purple-500/40 text-purple-300 rounded hover:bg-purple-500/10 disabled:opacity-50"
+                title="Many cards at once — just enter total count"
+              >
+                + Bulk Buy
+              </button>
             </>
           )}
 
@@ -1032,9 +1063,7 @@ export default function StorefrontSale() {
 function ManualLineModal({ draft, onChange, onSave, onCancel }) {
   if (!draft) return null
   const isSlab = draft.subKind === 'slab'
-  // Enter (form submit) defaults to "Add & next" — bulk-friendly: type
-  // description → tab → price → Enter → form clears → type next item.
-  // Cashier clicks "Add to cart" explicitly when they're done.
+  const isBulk = !!draft.bulk
   return (
     <div
       className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
@@ -1046,33 +1075,40 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 mb-3">
-          {isSlab
-            ? <Diamond size={18} className="text-emerald-300" />
-            : <Layers size={18} className="text-blue-300" />}
+          {isBulk
+            ? <Layers size={18} className="text-purple-300" />
+            : isSlab
+              ? <Diamond size={18} className="text-emerald-300" />
+              : <Layers size={18} className="text-blue-300" />}
           <h3 className="font-semibold text-base text-white">
-            Buy {isSlab ? 'slab' : 'single'} — manual entry
+            {isBulk ? 'Bulk buy — just enter total count' : `Buy ${isSlab ? 'slab' : 'single'} — manual entry`}
           </h3>
         </div>
         <p className="text-xs text-gray-500 mb-3">
-          The {isSlab ? 'slab' : 'single'} isn't in our cards inventory yet, so we just record the money out.
-          The store staff intakes the card properly later via Cards Scan.
+          {isBulk
+            ? 'For many-card buys where typing each name isn\'t realistic. We just record the count + total \$ paid; Cards Scan team intakes each card properly later using the Lark photo. Doesn\'t touch the singles inventory.'
+            : `The ${isSlab ? 'slab' : 'single'} isn't in our cards inventory yet, so we just record the money out. The store staff intakes the card properly later via Cards Scan.`}
         </p>
 
-        <label className="block text-xs text-gray-400 mb-1">
-          Description <span className="text-red-400">*</span>
-        </label>
-        <input
-          type="text"
-          value={draft.description}
-          onChange={(e) => onChange({ description: e.target.value })}
-          placeholder={isSlab ? 'e.g. PSA 10 Charizard Base Set #4' : 'e.g. NM Pikachu Promo'}
-          autoFocus
-          className="w-full mb-3"
-        />
+        {!isBulk && (
+          <>
+            <label className="block text-xs text-gray-400 mb-1">
+              Description <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="text"
+              value={draft.description}
+              onChange={(e) => onChange({ description: e.target.value })}
+              placeholder={isSlab ? 'e.g. PSA 10 Charizard Base Set #4' : 'e.g. NM Pikachu Promo'}
+              autoFocus
+              className="w-full mb-3"
+            />
+          </>
+        )}
 
         <div className="mb-3">
           <label className="block text-xs text-gray-400 mb-1">
-            Qty {isSlab && <span className="text-gray-600">(slab = 1)</span>}
+            {isBulk ? 'Total cards bought' : 'Qty'} {isSlab && <span className="text-gray-600">(slab = 1)</span>}
           </label>
           <input
             type="number"
@@ -1080,6 +1116,7 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
             value={draft.quantity}
             onChange={(e) => onChange({ quantity: parseInt(e.target.value) || 1 })}
             disabled={isSlab}
+            autoFocus={isBulk}
             className="w-full max-w-[8rem]"
           />
           {/* Per-line price removed — cashier types one cart total below. */}
@@ -1652,7 +1689,9 @@ function CartRow({ line, onUpdate, onRemove, disabled }) {
     qtyEditable = false
   } else if (line.kind === 'single_manual') {
     title = line.description || '(no description)'
-    sub = 'Manual buy — not yet in singles inventory (intake separately via Cards Scan)'
+    sub = line.bulk
+      ? 'Bulk buy — Cards Scan team will intake individually from Lark photo'
+      : 'Manual buy — not yet in singles inventory (intake separately via Cards Scan)'
     // No DB-side cap for manual singles — qty is whatever cashier typed.
     available = 999
     qtyEditable = true
