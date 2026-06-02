@@ -195,14 +195,10 @@ export default async function handler(req, res) {
     }
     console.log('[sync-slabs-sheet] OK', summary)
 
-    const meaningful = ins > 0 || insErr > 0 || updErr > 0 || upd > 0
-    if (meaningful) {
-      const lines = ['🔄 Slabs sheet sync']
-      if (ins > 0) lines.push(`✅ ${ins} new slab${ins === 1 ? '' : 's'} imported`)
-      if (upd > 0) lines.push(`💲 ${upd} price${upd === 1 ? '' : 's'} changed`)
-      if (insErr + updErr > 0) lines.push(`⚠️ ${insErr + updErr} errors — check logs`)
-      lines.push(`Took ${Math.round(durationMs / 100) / 10}s · ${today}`)
-      await postLark(lines.join('\n'))
+    // Per-run Lark silent on success — same as singles. Daily roll-up
+    // via /api/sync-digest-eod at 5 PM PT. Errors still ping immediately.
+    if (insErr + updErr > 0) {
+      await postLark(`⚠️ Slabs sheet sync — ${insErr + updErr} error${insErr + updErr === 1 ? '' : 's'} this run, check logs`)
     }
     return res.status(200).json(summary)
   } catch (err) {

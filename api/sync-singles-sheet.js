@@ -365,17 +365,12 @@ export default async function handler(req, res) {
     // did nothing" messages clutter the channel). Send when there's at
     // least one new row, any errors, any new sets, or one+ price actually
     // moved. The unchanged-prices count is implied by silence.
-    const meaningful =
-      insertedOk > 0 || insertedErr > 0 || updatedErr > 0
-      || setsCreated > 0 || updatedOk > 0
-    if (meaningful) {
-      const lines = ['🔄 Singles sheet sync']
-      if (insertedOk > 0) lines.push(`✅ ${insertedOk} new singles imported`)
-      if (updatedOk > 0)  lines.push(`💲 ${updatedOk} price${updatedOk === 1 ? '' : 's'} changed`)
-      if (setsCreated > 0) lines.push(`🏷️ ${setsCreated} new card_sets entries auto-created`)
-      if (insertedErr + updatedErr > 0) lines.push(`⚠️ ${insertedErr + updatedErr} errors — check logs`)
-      lines.push(`Took ${Math.round(durationMs / 100) / 10}s · ${today}`)
-      await postLark(lines.join('\n'))
+    // Per-run Lark is now silent on success. Daily activity rolls up into
+    // a single 5 PM PT digest via /api/sync-digest-eod so the inventory
+    // in/out group isn't pinged 24× a day. Errors still ping immediately
+    // so they surface within the hour.
+    if (insertedErr + updatedErr > 0) {
+      await postLark(`⚠️ Singles sheet sync — ${insertedErr + updatedErr} error${insertedErr + updatedErr === 1 ? '' : 's'} this run, check logs`)
     }
 
     return res.status(200).json(summary)

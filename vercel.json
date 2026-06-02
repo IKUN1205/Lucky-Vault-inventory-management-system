@@ -21,6 +21,10 @@
     {
       "path": "/api/sync-slabs-sheet",
       "schedule": "30 * * * *"
+    },
+    {
+      "path": "/api/sync-digest-eod",
+      "schedule": "0 0 * * *"
     }
   ]
 }
