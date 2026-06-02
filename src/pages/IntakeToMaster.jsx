@@ -252,37 +252,38 @@ export default function IntakeToMaster() {
       }
 
       const product = acquisition.product || {}
-      // Queue this receive into pending allocations. Sticky banner shows
-      // the count; user clicks to open the modal and work through them.
-      // Above the per-category threshold → toast nudges them to open it
-      // right away; below → quiet success.
-      try {
-        const suggestion = await computeAllocationSuggestion({
-          productId, qtyAvailable: qty,
-        })
-        setPendingAllocations(prev => [
-          ...prev,
-          {
-            key: `pa-${acqId}-${Date.now()}`,
-            product, productId, qtyReceived: qty, suggestion, done: false,
-          },
-        ])
-      } catch (err) {
-        console.error('[IntakeToMaster] suggestion load failed:', err)
-        addToast(`Could not load allocation suggestion: ${err.message || err}`, 'error')
-      }
       const auto = shouldAutoAllocate(product.category, qty)
+      // Only queue into pendingAllocations when we hit the per-category
+      // threshold (Box 30 / Pack 100 / others 10). Below threshold stays
+      // quiet — no sticky banner, no modal nag — but the cashier can
+      // still force-allocate via the "Allocate?" toast link if they want
+      // (useful for high-value low-qty items like Premium Collections).
+      const queueAndOpen = async (opts = {}) => {
+        try {
+          const suggestion = await computeAllocationSuggestion({ productId, qtyAvailable: qty })
+          setPendingAllocations(prev => [
+            ...prev,
+            { key: `pa-${acqId}-${Date.now()}`, product, productId, qtyReceived: qty, suggestion, done: false },
+          ])
+          if (opts.openModal) setAllocatorOpen(true)
+        } catch (err) {
+          console.error('[IntakeToMaster] suggestion load failed:', err)
+          addToast(`Could not load allocation suggestion: ${err.message || err}`, 'error')
+        }
+      }
       if (auto) {
+        await queueAndOpen()
         addToast(
           `Received ${qty} into Master — pending allocation`,
           'success',
           { action: { label: 'Allocate now', onClick: () => setAllocatorOpen(true) } }
         )
       } else {
+        // Below threshold — no banner, no queue. Cashier can opt in via toast link.
         addToast(
           `Received ${qty} into Master`,
           'success',
-          { action: { label: 'Undo', onClick: undo } }
+          { action: { label: 'Allocate?', onClick: () => queueAndOpen({ openModal: true }) } }
         )
       }
 
