@@ -1,6 +1,9 @@
 {
   "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
   ],
   "crons": [
     {
@@ -26,6 +29,10 @@
     {
       "path": "/api/cash-alert-eod",
       "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/sync-singles-sheet",
+      "schedule": "0 19 * * *"
     }
   ]
 }
