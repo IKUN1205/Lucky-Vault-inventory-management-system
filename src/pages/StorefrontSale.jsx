@@ -1750,6 +1750,10 @@ function CartRow({ line, onUpdate, onRemove, disabled }) {
 
   const qty = Number(line.quantity ?? 1) || 1
   const ourPrice = Number(line.our_price) || 0
+  // Show "Our: $X" when we have a reference, or "Our: —" when we don't.
+  // Lets cashiers see "system doesn't know" at a glance and not assume the
+  // price display is broken (slabs without sheet MP, sealed by design, etc.)
+  const ourPriceLabel = ourPrice > 0 ? `$${ourPrice.toFixed(2)}` : '—'
 
   return (
     <div className="grid grid-cols-12 gap-3 items-center p-3 bg-vault-darker/40 border border-vault-border rounded-lg">
@@ -1758,7 +1762,7 @@ function CartRow({ line, onUpdate, onRemove, disabled }) {
         <div className="min-w-0">
           <div className="text-white font-medium truncate">{title}</div>
           <div className="text-xs text-gray-500 truncate">
-            {ourPrice > 0 && <span className="text-gray-400">Our: ${ourPrice.toFixed(2)} · </span>}
+            <span className="text-gray-400">Our: {ourPriceLabel} · </span>
             {sub}
           </div>
         </div>
