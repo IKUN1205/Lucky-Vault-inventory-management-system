@@ -624,10 +624,21 @@ function IntakeCard({ acquisition, onReceive, processing }) {
 //   - "Skip all" — fires advisories for everything left
 // ============================================================================
 function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLocationId, addToast, reload }) {
-  // Local copy of each item's editable rows. Indexed by item key.
+  // Local editable copy of each item's rows. Indexed by item key.
   const [draft, setDraft] = useState(() => Object.fromEntries(
     items.map(it => [it.key, (it.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))])
   ))
+  // Which item keys are in "我手动改" / edit mode. Default = display
+  // only (numbers shown as gold read-only text). Click "Adjust" to
+  // unlock the inputs for that item; click Cancel to revert + lock.
+  const [editingKeys, setEditingKeys] = useState(new Set())
+  const isEditing = (k) => editingKeys.has(k)
+  const setEditing = (k, on) => setEditingKeys(prev => {
+    const next = new Set(prev)
+    on ? next.add(k) : next.delete(k)
+    return next
+  })
+
   const [busyKey, setBusyKey] = useState(null)
   const [batchBusy, setBatchBusy] = useState(false)
 
@@ -652,8 +663,13 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
   }
 
   // ---- per-item actions ----
-  const applyOne = async (item) => {
-    const rows = draft[item.key]
+  // useSuggested=true → apply the ORIGINAL suggested numbers regardless of
+  // any draft edits ('一键挪过去'). false → apply whatever's in the draft
+  // (which is what the user typed in edit mode).
+  const applyOne = async (item, { useSuggested = false } = {}) => {
+    const rows = useSuggested
+      ? (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
+      : draft[item.key]
     const ts = rows.reduce((s, r) => s + (Number(r.send) || 0), 0)
     if (ts > item.qtyReceived) {
       addToast(`${productLabel(item.product)}: send (${ts}) exceeds received (${item.qtyReceived})`, 'error')
@@ -782,7 +798,8 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
           <button onClick={onClose} className="text-gray-400 hover:text-white text-xs">close</button>
         </div>
         <p className="text-xs text-gray-500 mb-3">
-          💡 The Send numbers are suggestions based on last 7 days of sales. <span className="text-gray-300">Tap any Send field to change it</span> — or use the per-item Reset link to put the suggestion back.
+          💡 每张卡有三个选项: <span className="text-gray-300">先不动 / 我手动改 / 一键挪过去</span>.
+          {' '}底部 "Apply all" 一键全部按建议处理.
         </p>
 
         <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
@@ -792,8 +809,20 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
             const over = ts > item.qtyReceived
             const keep = item.qtyReceived - ts
             const isBusy = busyKey === item.key
+            const editing = isEditing(item.key)
+            // For display, show the SUGGESTED values when not editing
+            // (so 一键挪过去 means what you see is what you'll apply).
+            const displayRows = editing
+              ? rows
+              : (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
+            const displayTotal = displayRows.reduce((s, r) => s + (Number(r.send) || 0), 0)
+            const displayKeep = item.qtyReceived - displayTotal
+            const displayOver = displayTotal > item.qtyReceived
             return (
-              <div key={item.key} className="bg-vault-darker/40 border border-vault-border rounded-lg p-3">
+              <div
+                key={item.key}
+                className={`bg-vault-darker/40 border rounded-lg p-3 ${editing ? 'border-vault-gold/60 ring-1 ring-vault-gold/30' : 'border-vault-border'}`}
+              >
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-white truncate">{productLabel(item.product)}</div>
@@ -801,15 +830,9 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
                       Received: <span className="text-vault-gold font-semibold">{item.qtyReceived}</span>
                       {' '}· Last {item.suggestion.window_days}d: {item.suggestion.total_sold_in_window} sold ({item.suggestion.total_daily_velocity}/day)
                       {item.suggestion.is_dying && <span className="ml-2 text-amber-300">⚠ slow</span>}
+                      {editing && <span className="ml-2 text-vault-gold">· editing</span>}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => resetItem(item)}
-                    disabled={isBusy || batchBusy}
-                    className="text-[11px] text-gray-400 hover:text-vault-gold underline disabled:opacity-50"
-                    title="Put the suggested numbers back"
-                  >Reset to suggestion</button>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -824,9 +847,8 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
                       </tr>
                     </thead>
                     <tbody>
-                      {rows.map(r => {
+                      {displayRows.map(r => {
                         const short = r.location_name.replace(/^Stream Room\s*[-—]\s*/i, '')
-                        const edited = Number(r.send) !== Number(r.suggested_send)
                         return (
                           <tr key={r.location_id} className="border-b border-vault-border/20">
                             <td className="py-1 text-white">{short}</td>
@@ -834,13 +856,17 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
                             <td className="py-1 text-right text-gray-400">{r.current_stock}</td>
                             <td className="py-1 text-right text-gray-400">{r.target}</td>
                             <td className="py-1 text-right">
-                              <input
-                                type="number" min="0"
-                                value={r.send}
-                                onChange={(e) => setRowSend(item.key, r.location_id, e.target.value)}
-                                disabled={isBusy || batchBusy}
-                                className={`w-16 text-right px-1.5 py-0.5 text-sm border ${edited ? 'border-vault-gold/60 bg-vault-gold/5' : 'border-vault-border'} rounded`}
-                              />
+                              {editing ? (
+                                <input
+                                  type="number" min="0"
+                                  value={r.send}
+                                  onChange={(e) => setRowSend(item.key, r.location_id, e.target.value)}
+                                  disabled={isBusy || batchBusy}
+                                  className="w-16 text-right px-1.5 py-0.5 text-sm border border-vault-gold/60 bg-vault-gold/5 rounded"
+                                />
+                              ) : (
+                                <span className="font-mono text-sm text-vault-gold">{r.send}</span>
+                              )}
                             </td>
                           </tr>
                         )
@@ -848,37 +874,71 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
                       <tr>
                         <td className="py-1 text-gray-300 text-xs">Keep at Master</td>
                         <td colSpan={3}></td>
-                        <td className={`py-1 text-right font-mono text-sm ${over ? 'text-red-300' : 'text-gray-200'}`}>{keep}</td>
+                        <td className={`py-1 text-right font-mono text-sm ${displayOver ? 'text-red-300' : 'text-gray-200'}`}>{displayKeep}</td>
                       </tr>
                       <tr>
                         <td colSpan={4} className="py-1 text-right text-[10px] text-gray-500">Total send</td>
-                        <td className={`py-1 text-right font-mono text-sm ${over ? 'text-red-300' : 'text-vault-gold'}`}>{ts} / {item.qtyReceived}</td>
+                        <td className={`py-1 text-right font-mono text-sm ${displayOver ? 'text-red-300' : 'text-vault-gold'}`}>{displayTotal} / {item.qtyReceived}</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
 
-                {over && (
+                {displayOver && (
                   <div className="text-[11px] text-red-300 mt-1">Send total exceeds received — reduce.</div>
                 )}
 
-                <div className="flex justify-end gap-2 mt-2">
-                  <button
-                    type="button"
-                    onClick={() => skipOne(item)}
-                    disabled={isBusy || batchBusy}
-                    className="text-xs px-3 py-1.5 text-gray-300 hover:text-white"
-                  >
-                    Skip (Lark only)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyOne(item)}
-                    disabled={isBusy || batchBusy || ts === 0 || over}
-                    className="text-xs px-3 py-1.5 bg-vault-gold/20 border border-vault-gold/40 text-vault-gold rounded hover:bg-vault-gold/30 disabled:opacity-50"
-                  >
-                    {isBusy ? <Loader2 size={12} className="animate-spin" /> : `Apply ${ts}`}
-                  </button>
+                {/* Three primary buttons per directive 2026-06-02:
+                    [先不动 / Skip] [我手动改 / Adjust] [一键挪过去 / Apply suggested]
+                    In edit mode the middle pair swaps to Cancel + Apply changes. */}
+                <div className="flex justify-end gap-2 mt-3">
+                  {!editing ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => skipOne(item)}
+                        disabled={isBusy || batchBusy}
+                        className="text-xs px-3 py-1.5 text-gray-300 hover:text-white border border-vault-border rounded"
+                      >
+                        先不动 · Skip
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditing(item.key, true)}
+                        disabled={isBusy || batchBusy}
+                        className="text-xs px-3 py-1.5 text-blue-300 hover:bg-blue-500/10 border border-blue-500/40 rounded"
+                      >
+                        我手动改 · Adjust
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applyOne(item, { useSuggested: true })}
+                        disabled={isBusy || batchBusy || displayTotal === 0}
+                        className="text-xs px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold"
+                      >
+                        {isBusy ? <Loader2 size={12} className="animate-spin" /> : `一键挪过去 · Apply ${displayTotal}`}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => { resetItem(item); setEditing(item.key, false) }}
+                        disabled={isBusy || batchBusy}
+                        className="text-xs px-3 py-1.5 text-gray-300 hover:text-white border border-vault-border rounded"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applyOne(item, { useSuggested: false }).then(ok => ok && setEditing(item.key, false))}
+                        disabled={isBusy || batchBusy || ts === 0 || over}
+                        className="text-xs px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold"
+                      >
+                        {isBusy ? <Loader2 size={12} className="animate-spin" /> : `Apply changes · ${ts}`}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )
