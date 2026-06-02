@@ -247,6 +247,15 @@ export default function PlatformSales() {
   // ---------- submit ----------
 
   const cartTotal = cart.reduce((s, l) => s + (Number(l.price) || 0) * (Number(l.quantity ?? 1) || 1), 0)
+  // Sum of reference prices ("Our price" column × qty) for lines that have one.
+  // Streamer-facing sanity check: how does the cart's sold total compare to
+  // what the system thinks each item is worth? Shown as a small line under
+  // Cart total so they can spot under-selling at a glance.
+  const cartReferenceTotal = cart.reduce((s, l) => {
+    const op = Number(l.our_price) || 0
+    const qty = Number(l.quantity ?? 1) || 1
+    return op > 0 ? s + op * qty : s
+  }, 0)
   const cartUnits = cart.reduce((s, l) => s + (Number(l.quantity ?? 1) || 1), 0)
 
   const validateCart = () => {
@@ -510,9 +519,31 @@ export default function PlatformSales() {
               {cart.map(line => (
                 <CartRow key={line.key} line={line} onUpdate={updateLine} onRemove={removeLine} disabled={submitting} />
               ))}
-              <div className="flex justify-between items-center pt-3 mt-3 border-t border-vault-border">
-                <span className="text-sm text-gray-400">Cart total</span>
-                <span className="text-lg font-bold text-vault-gold">{fmtUsd(cartTotal)}</span>
+              <div className="pt-3 mt-3 border-t border-vault-border space-y-1">
+                {cartReferenceTotal > 0 && (
+                  <div className="flex justify-between items-center text-xs text-gray-500">
+                    <span>Reference total (sum of our prices)</span>
+                    <span className="font-mono">{fmtUsd(cartReferenceTotal)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-400">Cart total (sold)</span>
+                  <span className="text-lg font-bold text-vault-gold">{fmtUsd(cartTotal)}</span>
+                </div>
+                {cartReferenceTotal > 0 && cartTotal > 0 && (
+                  (() => {
+                    const diff = cartTotal - cartReferenceTotal
+                    const pct = (diff / cartReferenceTotal) * 100
+                    const color = diff >= 0 ? 'text-emerald-300' : 'text-red-300'
+                    const sign = diff >= 0 ? '+' : '−'
+                    return (
+                      <div className={`flex justify-between items-center text-[11px] ${color}`}>
+                        <span>vs reference</span>
+                        <span className="font-mono">{sign}{fmtUsd(Math.abs(diff)).replace('$','$')} ({sign}{Math.abs(pct).toFixed(1)}%)</span>
+                      </div>
+                    )
+                  })()
+                )}
               </div>
             </div>
           )}
