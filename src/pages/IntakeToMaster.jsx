@@ -8,12 +8,15 @@ import {
   deleteReceipt,
   updateAcquisitionStatus,
   updateInventory,
-  convertToUSD
+  convertToUSD,
+  shouldAutoAllocate,
+  computeAllocationSuggestion,
+  createMovement,
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import BarcodeScanner from '../components/BarcodeScanner'
 import Instructions from '../components/Instructions'
-import { Package, Check, AlertTriangle } from 'lucide-react'
+import { Package, Check, AlertTriangle, Loader2 } from 'lucide-react'
 
 // Helper to extract Launch Name from full product name
 const extractLaunchName = (fullName, category) => {
@@ -91,6 +94,11 @@ export default function IntakeToMaster() {
   // DOM refs keyed by acquisition id — used to scroll the highlighted
   // card into view after a scan.
   const cardRefs = useRef({})
+  // Smart Allocator modal state — opens after a "big enough" receive
+  // (qty ≥ category threshold) OR when the user clicks the "Allocate?"
+  // link on the small-receive toast. See computeAllocationSuggestion()
+  // in supabase.js for the logic; thresholds are in ALLOCATION_THRESHOLDS.
+  const [allocator, setAllocator] = useState(null)   // { product, qtyReceived, suggestion: {...} } | null
 
   useEffect(() => {
     loadData()
@@ -238,11 +246,31 @@ export default function IntakeToMaster() {
         }
       }
 
-      addToast(
-        `Received ${qty} units into Master Inventory`,
-        'success',
-        { action: { label: 'Undo', onClick: undo } }
-      )
+      const product = acquisition.product || {}
+      const openAllocator = async () => {
+        try {
+          const suggestion = await computeAllocationSuggestion({
+            productId, qtyAvailable: qty,
+          })
+          setAllocator({ product, productId, qtyReceived: qty, suggestion })
+        } catch (err) {
+          console.error('[IntakeToMaster] allocator load failed:', err)
+          addToast(`Could not load allocation suggestion: ${err.message || err}`, 'error')
+        }
+      }
+      const auto = shouldAutoAllocate(product.category, qty)
+      if (auto) {
+        addToast(`Received ${qty} into Master`, 'success', { action: { label: 'Undo', onClick: undo } })
+        // Wait a tick so the receive Lark POST is in flight, then open modal
+        setTimeout(openAllocator, 0)
+      } else {
+        // Below threshold — quiet success + optional manual link
+        addToast(
+          `Received ${qty} into Master`,
+          'success',
+          { action: { label: 'Allocate?', onClick: openAllocator } }
+        )
+      }
 
       // Refresh data
       loadData()
@@ -346,6 +374,18 @@ export default function IntakeToMaster() {
             )
           ))}
         </div>
+      )}
+
+      {/* Smart Allocator modal — opens after a big-enough Receive (per-category
+          threshold) OR via the manual "Allocate?" link on small receives. */}
+      {allocator && (
+        <AllocatorModal
+          allocator={allocator}
+          onClose={() => setAllocator(null)}
+          masterLocationId={masterLocation?.id}
+          addToast={addToast}
+          reload={loadData}
+        />
       )}
     </div>
   )
@@ -530,6 +570,226 @@ function IntakeCard({ acquisition, onReceive, processing }) {
           Receiving less than expected will mark as partial/discrepancy
         </div>
       )}
+    </div>
+  )
+}
+
+// ============================================================================
+// AllocatorModal — Smart restock dialog after a Receive
+// ============================================================================
+// Suggests how the just-received units should be moved out of Master to each
+// Stream Room + Front Store, based on last 7 days of channel-level sales.
+// Three exits:
+//   - Apply        → creates real Move records (Master → each room) and
+//                    fires the existing 'move' Lark per route
+//   - Adjust       → numbers become editable; same Apply path on commit
+//   - Skip         → no Moves; fires an 'allocation_suggestion' Lark so the
+//                    channel team sees the recommendation as advisory
+// ============================================================================
+function AllocatorModal({ allocator, onClose, masterLocationId, addToast, reload }) {
+  const { product, productId, qtyReceived, suggestion } = allocator
+  // Local editable copy of rows so the user can tweak before applying.
+  const [rows, setRows] = useState(
+    (suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
+  )
+  const [submitting, setSubmitting] = useState(false)
+  const productLabel = `${product.brand || ''} | ${extractLaunchName(product.name, product.category)} | ${product.category || ''}`.replace(/^\s*\|\s*/, '').trim()
+  const totalSend = rows.reduce((s, r) => s + (Number(r.send) || 0), 0)
+  const keepAtMaster = qtyReceived - totalSend
+  const overcommitted = totalSend > qtyReceived
+
+  const setRowSend = (locationId, v) => {
+    const n = Math.max(0, parseInt(v) || 0)
+    setRows(prev => prev.map(r => r.location_id === locationId ? { ...r, send: n } : r))
+  }
+
+  const apply = async () => {
+    if (overcommitted) {
+      addToast(`Can't send more than received (${qtyReceived})`, 'error')
+      return
+    }
+    if (!masterLocationId) {
+      addToast('Master location id missing', 'error')
+      return
+    }
+    setSubmitting(true)
+    try {
+      let moved = 0
+      for (const r of rows) {
+        const qty = Number(r.send) || 0
+        if (qty <= 0) continue
+        // Real Move: decrement Master, increment room, record movement row.
+        await createMovement({
+          product_id: productId,
+          from_location_id: masterLocationId,
+          to_location_id: r.location_id,
+          quantity: qty,
+          notes: `Smart allocation after receive`,
+        })
+        await updateInventory(productId, masterLocationId, -qty)
+        await updateInventory(productId, r.location_id, +qty)
+        // One 'move' Lark per destination (matches existing move format).
+        try {
+          fetch('/api/lark-notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'move',
+              fromLocation: 'Master Inventory',
+              toLocation: r.location_name,
+              items: [{ name: productLabel, quantity: qty }],
+              totalUnits: qty,
+              user: 'Allocator',
+            }),
+          }).catch(() => {})
+        } catch (_) {}
+        moved += qty
+      }
+      addToast(`Moved ${moved} unit${moved === 1 ? '' : 's'} to ${rows.filter(r => Number(r.send) > 0).length} location${rows.filter(r => Number(r.send) > 0).length === 1 ? '' : 's'}`, 'success')
+      onClose()
+      reload?.()
+    } catch (err) {
+      console.error('[AllocatorModal] apply failed:', err)
+      addToast(`Apply failed: ${err.message || err}`, 'error')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const skip = async () => {
+    setSubmitting(true)
+    try {
+      // Fire-and-forget — the receive happened regardless of Lark health.
+      const payloadRows = rows.map(r => ({
+        location_name: r.location_name,
+        current_stock: r.current_stock,
+        daily_velocity: r.daily_velocity,
+        suggested_send: Number(r.send) || 0,   // honor any user tweaks
+      }))
+      fetch('/api/lark-notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'allocation_suggestion',
+          productLabel,
+          qtyReceived,
+          windowDays: suggestion.window_days,
+          totalSold: suggestion.total_sold_in_window,
+          isDying: suggestion.is_dying,
+          rows: payloadRows,
+        }),
+      }).catch(() => {})
+      addToast('Saved as suggestion — not moved', 'info')
+      onClose()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-2xl w-full p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 mb-3">
+          <Package size={18} className="text-vault-gold" />
+          <h3 className="font-semibold text-base text-white">Smart restock — how should this split?</h3>
+        </div>
+        <p className="text-sm text-gray-300 mb-1">
+          Just received: <span className="text-white">{productLabel}</span> × <span className="text-vault-gold font-semibold">{qtyReceived}</span> at Master
+        </p>
+        <p className="text-xs text-gray-500 mb-3">
+          Last {suggestion.window_days} days total: {suggestion.total_sold_in_window} sold ({suggestion.total_daily_velocity}/day)
+          {suggestion.is_dying && (
+            <span className="ml-2 text-amber-300">· ⚠ Slow seller — no restock suggested</span>
+          )}
+        </p>
+
+        {suggestion.is_dying ? (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded p-3 text-sm text-amber-200">
+            This SKU has barely moved in the last {suggestion.window_days} days. We recommend
+            keeping all {qtyReceived} at Master and pushing them out later if demand picks up.
+            You can still tweak the numbers below and Apply if you want to override.
+          </div>
+        ) : null}
+
+        <div className="overflow-x-auto mt-3">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500 text-xs border-b border-vault-border/50">
+                <th className="py-2">STREAM ROOM</th>
+                <th className="py-2 text-right">SOLD/DAY</th>
+                <th className="py-2 text-right">CURRENT</th>
+                <th className="py-2 text-right">TARGET</th>
+                <th className="py-2 text-right">SEND</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-vault-border/30">
+              {rows.map(r => {
+                const short = r.location_name.replace(/^Stream Room\s*[-—]\s*/i, '')
+                return (
+                  <tr key={r.location_id}>
+                    <td className="py-1.5 text-white">{short}</td>
+                    <td className="py-1.5 text-right text-gray-300">{r.daily_velocity}</td>
+                    <td className="py-1.5 text-right text-gray-300">{r.current_stock}</td>
+                    <td className="py-1.5 text-right text-gray-300">{r.target}</td>
+                    <td className="py-1.5 text-right">
+                      <input
+                        type="number" min="0"
+                        value={r.send}
+                        onChange={(e) => setRowSend(r.location_id, e.target.value)}
+                        disabled={submitting}
+                        className="w-20 text-right px-2 py-1 text-sm"
+                      />
+                    </td>
+                  </tr>
+                )
+              })}
+              <tr className="font-semibold">
+                <td className="py-2 text-gray-300">Keep at Master</td>
+                <td className="py-2 text-right text-gray-500">—</td>
+                <td className="py-2 text-right text-gray-500">—</td>
+                <td className="py-2 text-right text-gray-500">—</td>
+                <td className={`py-2 text-right font-mono ${overcommitted ? 'text-red-300' : 'text-gray-200'}`}>{keepAtMaster}</td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr className="border-t border-vault-border/50">
+                <td colSpan={4} className="py-2 text-right text-xs text-gray-500">Total send</td>
+                <td className={`py-2 text-right font-mono ${overcommitted ? 'text-red-300' : 'text-vault-gold'}`}>
+                  {totalSend} / {qtyReceived}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        {overcommitted && (
+          <div className="text-xs text-red-300 mt-2">Total send is more than what was received — reduce some numbers.</div>
+        )}
+
+        <div className="flex justify-between items-center gap-2 mt-5">
+          <button
+            type="button"
+            onClick={skip}
+            disabled={submitting}
+            className="text-sm px-3 py-2 text-gray-300 hover:text-white"
+          >
+            Skip — keep at Master (send Lark advisory)
+          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={apply}
+              disabled={submitting || totalSend === 0 || overcommitted}
+              className="btn btn-primary px-4 py-2 text-sm"
+            >
+              {submitting ? <Loader2 size={14} className="animate-spin" /> : `Apply — move ${totalSend}`}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

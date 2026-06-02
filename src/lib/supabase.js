@@ -326,6 +326,159 @@ export const updateProductBarcode = async (productId, barcode) => {
   return data
 }
 
+// ============================================================================
+// Smart allocation suggestions for Intake to Master
+// ============================================================================
+// When a shipment lands at Master Inventory and is "big enough" per category
+// thresholds below, the receive flow opens an Allocator modal that recommends
+// how the new units should split across Stream Rooms + Front Store based on
+// last 7 days of sales at each. Logic per directive 2026-06-02:
+//   - Velocity per room = (last 7 days sold at that room) / 7
+//   - Target stock per room = velocity × daysCoverage (default 4 days)
+//   - Suggested send = max(0, target − current stock at that room)
+//   - "Dying" SKU = total daily velocity across all rooms < 1/day → suggest 0
+//     (don't push out from Master if nothing's moving)
+//   - If sum of suggestions > qty received → scale down proportionally;
+//     leftover goes to the room with the highest velocity.
+// ============================================================================
+
+// Per-category trigger thresholds (qty received ≥ threshold → auto-open
+// modal; below threshold → toast with optional "Allocate?" link override).
+// Anything not in the map falls back to DEFAULT.
+export const ALLOCATION_THRESHOLDS = {
+  'Booster Pack':              100,
+  'Booster Box':                30,
+  'ETB':                        10,
+  'Collection Box':             10,
+  'Premium Collection':         10,
+  'Ultra-Premium Collection':   10,
+}
+export const DEFAULT_ALLOCATION_THRESHOLD = 10
+export const shouldAutoAllocate = (category, qty) => {
+  const t = ALLOCATION_THRESHOLDS[category] ?? DEFAULT_ALLOCATION_THRESHOLD
+  return (Number(qty) || 0) >= t
+}
+
+// Channel string (in platform_sales.channel) → physical Stream Room name
+// (matches CHANNELS array in PlatformSales.jsx). Front Store is handled
+// separately via storefront_sales below.
+const CHANNEL_TO_STREAM_ROOM = {
+  'SlabbiePatty':  'Stream Room - eBay SlabbiePatty',
+  'LuckyVaultUS':  'Stream Room - eBay LuckyVaultUS',
+  'PackHeadsTCG':  'Stream Room - TikTok Packheads',
+  'RocketsHQ':     'Stream Room - TikTok RocketsHQ',
+  'Whatnot':       'Stream Room - Whatnot',
+}
+
+export const computeAllocationSuggestion = async ({
+  productId,
+  qtyAvailable,
+  daysCoverage = 4,
+  windowDays = 7,
+  dyingThreshold = 1,   // < 1 unit/day total = "dying"
+}) => {
+  if (!productId) throw new Error('productId required')
+  const today = new Date().toLocaleDateString('en-CA')
+  const from = new Date()
+  from.setDate(from.getDate() - windowDays + 1)
+  const fromStr = from.toLocaleDateString('en-CA')
+
+  const [locsRes, invRes, sfRes, psRes] = await Promise.all([
+    supabase.from('locations').select('id, name, type').eq('active', true),
+    supabase.from('inventory').select('quantity, location_id').eq('product_id', productId),
+    supabase.from('storefront_sales')
+      .select('quantity, transaction_type')
+      .eq('product_id', productId).eq('deleted', false)
+      .gte('date', fromStr).lte('date', today),
+    supabase.from('platform_sales')
+      .select('quantity, channel')
+      .eq('product_id', productId)
+      .gte('date', fromStr).lte('date', today),
+  ])
+  if (locsRes.error) throw locsRes.error
+  if (invRes.error)  throw invRes.error
+  if (sfRes.error)   throw sfRes.error
+  if (psRes.error)   throw psRes.error
+
+  // Storefront sales count only forward sales (sale | trade), not buys/refunds
+  const sfSold = (sfRes.data || [])
+    .filter(r => r.transaction_type === 'sale' || r.transaction_type === 'trade' || r.transaction_type == null)
+    .reduce((s, r) => s + (Number(r.quantity) || 0), 0)
+  const psByChannel = {}
+  for (const r of psRes.data || []) {
+    psByChannel[r.channel] = (psByChannel[r.channel] || 0) + (Number(r.quantity) || 0)
+  }
+  const totalSold7d = sfSold + Object.values(psByChannel).reduce((s, v) => s + v, 0)
+  const totalVelocity = totalSold7d / windowDays
+  const isDying = totalVelocity < dyingThreshold
+
+  // Current stock per location id (sum across rows in case of duplicates)
+  const stockByLocId = {}
+  for (const r of invRes.data || []) {
+    stockByLocId[r.location_id] = (stockByLocId[r.location_id] || 0) + (Number(r.quantity) || 0)
+  }
+  const allLocs = locsRes.data || []
+  const locByName = new Map(allLocs.map(l => [l.name, l]))
+
+  // Build a row per Stream Room + one for Front Store. Skip rooms whose
+  // location isn't configured (handles dev/test environments).
+  const rows = []
+  for (const [channel, roomName] of Object.entries(CHANNEL_TO_STREAM_ROOM)) {
+    const loc = locByName.get(roomName)
+    if (!loc) continue
+    const sold = psByChannel[channel] || 0
+    const daily = sold / windowDays
+    const current = stockByLocId[loc.id] || 0
+    const target = Math.ceil(daily * daysCoverage)
+    const suggested = isDying ? 0 : Math.max(0, target - current)
+    rows.push({
+      location_id: loc.id, location_name: roomName, channel,
+      sold_in_window: sold, daily_velocity: +daily.toFixed(2),
+      current_stock: current, target, suggested_send: suggested,
+    })
+  }
+  const fs = locByName.get('Front Store')
+  if (fs) {
+    const daily = sfSold / windowDays
+    const current = stockByLocId[fs.id] || 0
+    const target = Math.ceil(daily * daysCoverage)
+    const suggested = isDying ? 0 : Math.max(0, target - current)
+    rows.push({
+      location_id: fs.id, location_name: 'Front Store', channel: 'Storefront',
+      sold_in_window: sfSold, daily_velocity: +daily.toFixed(2),
+      current_stock: current, target, suggested_send: suggested,
+    })
+  }
+
+  // Scale down if our suggestions overshoot the qty we actually have.
+  let totalSuggested = rows.reduce((s, r) => s + r.suggested_send, 0)
+  if (totalSuggested > qtyAvailable && totalSuggested > 0) {
+    const factor = qtyAvailable / totalSuggested
+    let allocated = 0
+    for (const r of rows) {
+      r.suggested_send = Math.floor(r.suggested_send * factor)
+      allocated += r.suggested_send
+    }
+    const leftover = qtyAvailable - allocated
+    if (leftover > 0) {
+      const top = [...rows].sort((a, b) => b.daily_velocity - a.daily_velocity)[0]
+      if (top) top.suggested_send += leftover
+    }
+    totalSuggested = qtyAvailable
+  }
+
+  return {
+    is_dying: isDying,
+    total_sold_in_window: totalSold7d,
+    total_daily_velocity: +totalVelocity.toFixed(2),
+    qty_available: qtyAvailable,
+    days_coverage: daysCoverage,
+    window_days: windowDays,
+    total_suggested: totalSuggested,
+    rows,
+  }
+}
+
 export const createHighValueMovement = async (movement) => {
   const { data, error } = await supabase
     .from('high_value_movements')

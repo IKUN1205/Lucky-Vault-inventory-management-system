@@ -149,6 +149,30 @@ export default async function handler(req, res) {
     return handleStorefrontTransaction(body, res)
   }
 
+  // Smart-allocation suggestion (NOT a real move) — fires when the
+  // intake-to-master Allocator modal is dismissed via "先不动 / Skip".
+  // Goes to the same inventory in/out group as real moves so the
+  // channel manager sees the advice + the eventual move side-by-side.
+  if (type === 'allocation_suggestion') {
+    const url = process.env.LARK_WEBHOOK_INVENTORY_IO || process.env.LARK_WEBHOOK_URL
+    if (!url) return res.status(500).json({ error: 'No inventory-io webhook configured' })
+    let text
+    try { text = buildMessage(body) }
+    catch (err) { return res.status(400).json({ error: err.message || 'Invalid payload' }) }
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text } }),
+      })
+      const txt = await r.text()
+      if (!r.ok) return res.status(502).json({ error: 'Lark webhook failed', status: r.status, details: txt })
+      return res.status(200).json({ ok: true })
+    } catch (err) {
+      return res.status(500).json({ error: 'Failed to call Lark webhook', message: String(err?.message || err) })
+    }
+  }
+
   // Platform sales fan out to the per-channel stream-room group: every
   // cart submit on Platform Sales fires one message into the matching
   // Lark room (SlabbiePatty / LuckyVaultUS / PackHeadsTCG / RocketsHQ /
@@ -932,6 +956,42 @@ function buildMessage(body) {
       lines.push(`Customer brought $${ti.toFixed(2)} in trade-in`)
     }
 
+    lines.push(nowUtcStamp())
+    return lines.join('\n')
+  }
+
+  if (type === 'allocation_suggestion') {
+    // 💡 Smart restock suggestion fired by Intake to Master when the user
+    // dismisses the Allocator modal with "Skip". The receive itself
+    // already triggered its own 'receive' notification — this is a
+    // separate advisory note for the channel team.
+    const {
+      productLabel,
+      qtyReceived,
+      windowDays = 7,
+      totalSold,
+      isDying,
+      rows = [],   // [{ location_name, suggested_send, current_stock, daily_velocity }]
+    } = body
+    if (!productLabel) throw new Error('allocation_suggestion: missing productLabel')
+    const sendRows = rows.filter(r => Number(r.suggested_send) > 0)
+    const lines = []
+    lines.push('💡 Smart restock suggestion (not yet moved)')
+    lines.push(`Just received: ${productLabel} × ${qtyReceived} at Master`)
+    lines.push('')
+    if (isDying) {
+      lines.push(`⚠ Slow seller — only ${totalSold ?? 0} sold in last ${windowDays}d. No restock recommended; staff can override via Move Inventory if needed.`)
+    } else if (sendRows.length === 0) {
+      lines.push(`All rooms already stocked. Keep at Master.`)
+    } else {
+      lines.push(`Suggested distribution (based on last ${windowDays}d sales):`)
+      for (const r of sendRows) {
+        const where = (r.location_name || '').replace(/^Stream Room\s*[-—]\s*/i, '')
+        lines.push(`  • → ${where}: ${r.suggested_send}`)
+      }
+      lines.push('')
+      lines.push(`⏳ Nothing moved yet — apply via Move Inventory when ready.`)
+    }
     lines.push(nowUtcStamp())
     return lines.join('\n')
   }
