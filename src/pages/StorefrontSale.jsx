@@ -1413,6 +1413,10 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
   if (!summary) return null
 
   const { totals = {}, by_payment = {}, date, transactions = [] } = summary
+  // Compare the summary's date against PT today. When the cashier picks a
+  // past date the widget header swaps "Today" → "Day" + flips to amber so
+  // it's visually obvious you're looking at historical numbers, not live.
+  const isViewingToday = date === today()
   const paymentEntries = Object.entries(by_payment)
     .sort((a, b) => (b[1].total_net_cash || 0) - (a[1].total_net_cash || 0))
 
@@ -1421,13 +1425,18 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
     || (totals.buy_count || 0) > 0
 
   return (
-    <div className="card mb-4 border-vault-gold/20">
+    <div className={`card mb-4 ${isViewingToday ? 'border-vault-gold/20' : 'border-amber-500/40'}`}>
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <TrendingUp size={16} className="text-vault-gold" />
+          <TrendingUp size={16} className={isViewingToday ? 'text-vault-gold' : 'text-amber-300'} />
           <h2 className="font-display text-sm font-semibold text-white uppercase tracking-wider">
-            Today ({date})
+            {isViewingToday ? 'Today' : 'Day'} ({date})
           </h2>
+          {!isViewingToday && (
+            <span className="text-[10px] uppercase tracking-wider text-amber-300 bg-amber-500/15 border border-amber-500/30 rounded px-1.5 py-0.5">
+              Viewing past day
+            </span>
+          )}
         </div>
         <button
           type="button"
