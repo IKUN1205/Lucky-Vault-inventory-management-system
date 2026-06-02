@@ -12,7 +12,9 @@ import {
   shouldAutoAllocate,
   computeAllocationSuggestion,
   createMovement,
+  logAllocationDecision,
 } from '../lib/supabase'
+import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
 import BarcodeScanner from '../components/BarcodeScanner'
 import Instructions from '../components/Instructions'
@@ -75,8 +77,9 @@ function buildBatchGroups(allAcq) {
 }
 
 export default function IntakeToMaster() {
-  
+
   const { toasts, addToast, removeToast } = useToast()
+  const { user } = useAuth()
   
   // allAcquisitions holds EVERYTHING (incl. already-received) so a batch can
   // show its full roster + completeness. The pending list and the grouped
@@ -419,6 +422,7 @@ export default function IntakeToMaster() {
             setPendingAllocations([])
           }}
           masterLocationId={masterLocation?.id}
+          decidedById={user?.id || null}
           addToast={addToast}
           reload={loadData}
         />
@@ -623,7 +627,7 @@ function IntakeCard({ acquisition, onReceive, processing }) {
 //   - "Apply all (use suggested)" — applies every un-actioned card with original numbers
 //   - "Skip all" — fires advisories for everything left
 // ============================================================================
-function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLocationId, addToast, reload }) {
+function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLocationId, decidedById, addToast, reload }) {
   // Local editable copy of each item's rows. Indexed by item key.
   const [draft, setDraft] = useState(() => Object.fromEntries(
     items.map(it => [it.key, (it.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))])
@@ -708,6 +712,17 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
         routes += 1
       }
       addToast(`Moved ${moved} of ${productLabel(item.product)} → ${routes} room${routes === 1 ? '' : 's'}`, 'success')
+      // Fire-and-forget audit log so future LLM/heuristic refinement
+      // can learn from this decision vs the baseline suggestion.
+      logAllocationDecision({
+        productId: item.productId,
+        product: item.product,
+        qtyReceived: item.qtyReceived,
+        suggestion: item.suggestion,
+        finalRows: rows,
+        action: useSuggested ? 'apply_suggested' : 'apply_adjusted',
+        decidedById,
+      }).catch(() => {})
       onItemDone(item.key)
       return true
     } catch (err) {
@@ -740,6 +755,17 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
           isDying: item.suggestion.is_dying,
           rows: payloadRows,
         }),
+      }).catch(() => {})
+      // Audit log for skipped (advisory) decisions too — same shape as
+      // apply, just with action='skip' and no real Moves happened.
+      logAllocationDecision({
+        productId: item.productId,
+        product: item.product,
+        qtyReceived: item.qtyReceived,
+        suggestion: item.suggestion,
+        finalRows: rows,
+        action: 'skip',
+        decidedById,
       }).catch(() => {})
       addToast(`Saved as suggestion: ${productLabel(item.product)}`, 'info')
       onItemDone(item.key)

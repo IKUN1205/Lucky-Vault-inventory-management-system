@@ -467,7 +467,7 @@ export const computeAllocationSuggestion = async ({
     totalSuggested = qtyAvailable
   }
 
-  return {
+  const baseline = {
     is_dying: isDying,
     total_sold_in_window: totalSold7d,
     total_daily_velocity: +totalVelocity.toFixed(2),
@@ -477,6 +477,69 @@ export const computeAllocationSuggestion = async ({
     total_suggested: totalSuggested,
     rows,
   }
+  // Refinement hook — no-op today; will use accumulated allocation_decisions
+  // history (and eventually LLM) to nudge the per-row suggested_send when
+  // there's enough history to learn from.
+  return await enrichSuggestionWithHistory(baseline, productId, { daysCoverage })
+}
+
+// Log a single decision from the BatchAllocatorModal. Fire-and-forget by
+// design — the user's action (Apply / Skip) already succeeded before we
+// reach this point, so a failed log doesn't roll anything back.
+//   action: 'apply_suggested' | 'apply_adjusted' | 'skip' | 'batch_apply_all'
+//   suggestion: the full suggestion object returned by
+//               computeAllocationSuggestion() — we pull params off it
+//   finalRows: [{ location_id, location_name, send }] — what actually
+//              committed (for skip, the user's last edit numbers if any)
+export const logAllocationDecision = async ({
+  productId, product, qtyReceived,
+  suggestion, finalRows, action, decidedById = null, notes = null,
+}) => {
+  if (!productId || !suggestion) return  // best-effort; never throw
+  try {
+    const { error } = await supabase
+      .from('allocation_decisions')
+      .insert({
+        product_id: productId,
+        product_category: product?.category || null,
+        product_brand: product?.brand || null,
+        qty_received: qtyReceived,
+        suggested_split: (suggestion.rows || []).map(r => ({
+          location_id: r.location_id,
+          location_name: r.location_name,
+          daily_velocity: r.daily_velocity,
+          current_stock: r.current_stock,
+          target: r.target,
+          suggested_send: r.suggested_send,
+        })),
+        final_split: (finalRows || []).map(r => ({
+          location_id: r.location_id,
+          location_name: r.location_name,
+          actual_send: Number(r.send) || 0,
+        })),
+        action,
+        days_coverage: suggestion.days_coverage,
+        is_dying_flag: !!suggestion.is_dying,
+        total_sold_7d_at_decision: suggestion.total_sold_in_window,
+        decided_by_id: decidedById,
+        notes,
+      })
+    if (error) console.warn('[logAllocationDecision] insert failed:', error.message)
+  } catch (err) {
+    console.warn('[logAllocationDecision] threw:', err)
+  }
+}
+
+// Hook reserved for a future LLM/learned-rule refinement layer. Today it
+// just returns the baseline unchanged. The signature is stable so when we
+// wire up Claude or a heuristic refinement later, all upstream code paths
+// stay unchanged — see computeAllocationSuggestion() below.
+async function enrichSuggestionWithHistory(baseline /*, productId, options */) {
+  // TODO when we have ~20+ decisions per product: pull
+  //   allocation_decisions + post-decision sales for this productId
+  //   (or its category), feed Claude with the context, apply LLM
+  //   adjustments to baseline.rows[].suggested_send.
+  return baseline
 }
 
 export const createHighValueMovement = async (movement) => {
