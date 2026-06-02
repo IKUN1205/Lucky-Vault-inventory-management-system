@@ -663,12 +663,49 @@ export default function StorefrontSale() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Date</label>
-            <input
-              type="date"
-              value={saleDate}
-              onChange={(e) => setSaleDate(e.target.value)}
-              disabled={submitting}
-            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  // Shift saleDate by N days. Parse as local YYYY-MM-DD to
+                  // avoid UTC drift (new Date('YYYY-MM-DD') is parsed as UTC
+                  // midnight, which can land you on the previous day in PT).
+                  const [y, m, d] = saleDate.split('-').map(Number)
+                  const dt = new Date(y, m - 1, d)
+                  dt.setDate(dt.getDate() - 1)
+                  setSaleDate(dt.toLocaleDateString('en-CA'))
+                }}
+                disabled={submitting}
+                className="px-2 py-1.5 text-sm border border-vault-border rounded hover:bg-vault-darker disabled:opacity-50"
+                title="Previous day"
+              >◀</button>
+              <input
+                type="date"
+                value={saleDate}
+                onChange={(e) => setSaleDate(e.target.value)}
+                disabled={submitting}
+                className="flex-1"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const [y, m, d] = saleDate.split('-').map(Number)
+                  const dt = new Date(y, m - 1, d)
+                  dt.setDate(dt.getDate() + 1)
+                  setSaleDate(dt.toLocaleDateString('en-CA'))
+                }}
+                disabled={submitting || saleDate >= today()}
+                className="px-2 py-1.5 text-sm border border-vault-border rounded hover:bg-vault-darker disabled:opacity-50"
+                title="Next day"
+              >▶</button>
+              <button
+                type="button"
+                onClick={() => setSaleDate(today())}
+                disabled={submitting || saleDate === today()}
+                className="px-2 py-1.5 text-xs border border-vault-gold/40 text-vault-gold rounded hover:bg-vault-gold/10 disabled:opacity-50"
+                title="Jump to today"
+              >Today</button>
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">
