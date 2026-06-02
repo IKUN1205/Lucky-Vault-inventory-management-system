@@ -11,28 +11,16 @@
       "schedule": "0 13 * * *"
     },
     {
-      "path": "/api/sync-singles-sheet",
-      "schedule": "0 13 * * *"
-    },
-    {
-      "path": "/api/sync-singles-sheet",
-      "schedule": "0 1 * * *"
-    },
-    {
-      "path": "/api/sync-slabs-sheet",
-      "schedule": "0 13 * * *"
-    },
-    {
-      "path": "/api/sync-slabs-sheet",
-      "schedule": "0 1 * * *"
-    },
-    {
       "path": "/api/cash-alert-eod",
       "schedule": "0 2 * * *"
     },
     {
       "path": "/api/sync-singles-sheet",
-      "schedule": "0 19 * * *"
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/sync-slabs-sheet",
+      "schedule": "30 * * * *"
     }
   ]
 }
