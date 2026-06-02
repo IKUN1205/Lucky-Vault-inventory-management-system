@@ -94,11 +94,13 @@ export default function IntakeToMaster() {
   // DOM refs keyed by acquisition id — used to scroll the highlighted
   // card into view after a scan.
   const cardRefs = useRef({})
-  // Smart Allocator modal state — opens after a "big enough" receive
-  // (qty ≥ category threshold) OR when the user clicks the "Allocate?"
-  // link on the small-receive toast. See computeAllocationSuggestion()
-  // in supabase.js for the logic; thresholds are in ALLOCATION_THRESHOLDS.
-  const [allocator, setAllocator] = useState(null)   // { product, qtyReceived, suggestion: {...} } | null
+  // Smart Allocator — queues every receive into a pending list rather
+  // than popping the modal one SKU at a time (directive 2026-06-02:
+  // "shipment as boundary"). Sticky banner shows the count; click it to
+  // open ONE modal that walks the user through every pending SKU.
+  // pendingAllocations: [{ key, product, productId, qtyReceived, suggestion, done }]
+  const [pendingAllocations, setPendingAllocations] = useState([])
+  const [allocatorOpen, setAllocatorOpen] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -247,28 +249,37 @@ export default function IntakeToMaster() {
       }
 
       const product = acquisition.product || {}
-      const openAllocator = async () => {
-        try {
-          const suggestion = await computeAllocationSuggestion({
-            productId, qtyAvailable: qty,
-          })
-          setAllocator({ product, productId, qtyReceived: qty, suggestion })
-        } catch (err) {
-          console.error('[IntakeToMaster] allocator load failed:', err)
-          addToast(`Could not load allocation suggestion: ${err.message || err}`, 'error')
-        }
+      // Queue this receive into pending allocations. Sticky banner shows
+      // the count; user clicks to open the modal and work through them.
+      // Above the per-category threshold → toast nudges them to open it
+      // right away; below → quiet success.
+      try {
+        const suggestion = await computeAllocationSuggestion({
+          productId, qtyAvailable: qty,
+        })
+        setPendingAllocations(prev => [
+          ...prev,
+          {
+            key: `pa-${acqId}-${Date.now()}`,
+            product, productId, qtyReceived: qty, suggestion, done: false,
+          },
+        ])
+      } catch (err) {
+        console.error('[IntakeToMaster] suggestion load failed:', err)
+        addToast(`Could not load allocation suggestion: ${err.message || err}`, 'error')
       }
       const auto = shouldAutoAllocate(product.category, qty)
       if (auto) {
-        addToast(`Received ${qty} into Master`, 'success', { action: { label: 'Undo', onClick: undo } })
-        // Wait a tick so the receive Lark POST is in flight, then open modal
-        setTimeout(openAllocator, 0)
+        addToast(
+          `Received ${qty} into Master — pending allocation`,
+          'success',
+          { action: { label: 'Allocate now', onClick: () => setAllocatorOpen(true) } }
+        )
       } else {
-        // Below threshold — quiet success + optional manual link
         addToast(
           `Received ${qty} into Master`,
           'success',
-          { action: { label: 'Allocate?', onClick: openAllocator } }
+          { action: { label: 'Undo', onClick: undo } }
         )
       }
 
@@ -376,12 +387,37 @@ export default function IntakeToMaster() {
         </div>
       )}
 
-      {/* Smart Allocator modal — opens after a big-enough Receive (per-category
-          threshold) OR via the manual "Allocate?" link on small receives. */}
-      {allocator && (
-        <AllocatorModal
-          allocator={allocator}
-          onClose={() => setAllocator(null)}
+      {/* Sticky bottom banner — visible whenever there are pending
+          allocations from this session. Clicking opens the batch modal. */}
+      {pendingAllocations.some(p => !p.done) && (
+        <div className="fixed left-1/2 -translate-x-1/2 bottom-6 z-40 max-w-2xl">
+          <button
+            type="button"
+            onClick={() => setAllocatorOpen(true)}
+            className="flex items-center gap-3 bg-vault-gold/95 text-vault-dark px-4 py-3 rounded-xl shadow-2xl border border-vault-gold/60 hover:bg-vault-gold transition"
+          >
+            <Package size={18} />
+            <span className="font-semibold">
+              {pendingAllocations.filter(p => !p.done).length} item{pendingAllocations.filter(p => !p.done).length === 1 ? '' : 's'} pending allocation
+            </span>
+            <span className="text-sm">— click to review</span>
+          </button>
+        </div>
+      )}
+
+      {/* Batch Allocator modal — one modal handles all pending receives.
+          Per-item Apply / Skip + global Apply-all / Skip-remaining. */}
+      {allocatorOpen && pendingAllocations.some(p => !p.done) && (
+        <BatchAllocatorModal
+          items={pendingAllocations.filter(p => !p.done)}
+          onClose={() => setAllocatorOpen(false)}
+          onItemDone={(key) => {
+            setPendingAllocations(prev => prev.map(p => p.key === key ? { ...p, done: true } : p))
+          }}
+          onAllDone={() => {
+            setAllocatorOpen(false)
+            setPendingAllocations([])
+          }}
           masterLocationId={masterLocation?.id}
           addToast={addToast}
           reload={loadData}
@@ -575,219 +611,298 @@ function IntakeCard({ acquisition, onReceive, processing }) {
 }
 
 // ============================================================================
-// AllocatorModal — Smart restock dialog after a Receive
+// BatchAllocatorModal — handle the whole shipment's allocations at once
 // ============================================================================
-// Suggests how the just-received units should be moved out of Master to each
-// Stream Room + Front Store, based on last 7 days of channel-level sales.
-// Three exits:
-//   - Apply        → creates real Move records (Master → each room) and
-//                    fires the existing 'move' Lark per route
-//   - Adjust       → numbers become editable; same Apply path on commit
-//   - Skip         → no Moves; fires an 'allocation_suggestion' Lark so the
-//                    channel team sees the recommendation as advisory
+// Renders every pending receive as a card with its own per-room table.
+// Each card supports:
+//   - Editable Send inputs (always — that's how the cashier "manually changes")
+//   - "Reset to suggestion" button (in case you mess up the numbers)
+//   - Per-card Apply (real Moves + 'move' Lark per route)
+//   - Per-card Skip (advisory 'allocation_suggestion' Lark, no inventory change)
+// Plus footer-level batch actions:
+//   - "Apply all (use suggested)" — applies every un-actioned card with original numbers
+//   - "Skip all" — fires advisories for everything left
 // ============================================================================
-function AllocatorModal({ allocator, onClose, masterLocationId, addToast, reload }) {
-  const { product, productId, qtyReceived, suggestion } = allocator
-  // Local editable copy of rows so the user can tweak before applying.
-  const [rows, setRows] = useState(
-    (suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
-  )
-  const [submitting, setSubmitting] = useState(false)
-  const productLabel = `${product.brand || ''} | ${extractLaunchName(product.name, product.category)} | ${product.category || ''}`.replace(/^\s*\|\s*/, '').trim()
-  const totalSend = rows.reduce((s, r) => s + (Number(r.send) || 0), 0)
-  const keepAtMaster = qtyReceived - totalSend
-  const overcommitted = totalSend > qtyReceived
+function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLocationId, addToast, reload }) {
+  // Local copy of each item's editable rows. Indexed by item key.
+  const [draft, setDraft] = useState(() => Object.fromEntries(
+    items.map(it => [it.key, (it.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))])
+  ))
+  const [busyKey, setBusyKey] = useState(null)
+  const [batchBusy, setBatchBusy] = useState(false)
 
-  const setRowSend = (locationId, v) => {
+  const productLabel = (product) => {
+    const lname = extractLaunchName(product.name, product.category)
+    return `${product.brand || ''} | ${lname} | ${product.category || ''}`.replace(/^\s*\|\s*/, '').trim()
+  }
+  const totalSend = (key) => draft[key].reduce((s, r) => s + (Number(r.send) || 0), 0)
+
+  const setRowSend = (itemKey, locationId, v) => {
     const n = Math.max(0, parseInt(v) || 0)
-    setRows(prev => prev.map(r => r.location_id === locationId ? { ...r, send: n } : r))
+    setDraft(d => ({
+      ...d,
+      [itemKey]: d[itemKey].map(r => r.location_id === locationId ? { ...r, send: n } : r),
+    }))
+  }
+  const resetItem = (item) => {
+    setDraft(d => ({
+      ...d,
+      [item.key]: (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send })),
+    }))
   }
 
-  const apply = async () => {
-    if (overcommitted) {
-      addToast(`Can't send more than received (${qtyReceived})`, 'error')
-      return
+  // ---- per-item actions ----
+  const applyOne = async (item) => {
+    const rows = draft[item.key]
+    const ts = rows.reduce((s, r) => s + (Number(r.send) || 0), 0)
+    if (ts > item.qtyReceived) {
+      addToast(`${productLabel(item.product)}: send (${ts}) exceeds received (${item.qtyReceived})`, 'error')
+      return false
     }
-    if (!masterLocationId) {
-      addToast('Master location id missing', 'error')
-      return
-    }
-    setSubmitting(true)
+    if (!masterLocationId) { addToast('Master location id missing', 'error'); return false }
+    setBusyKey(item.key)
     try {
-      let moved = 0
+      let moved = 0, routes = 0
       for (const r of rows) {
         const qty = Number(r.send) || 0
         if (qty <= 0) continue
-        // Real Move: decrement Master, increment room, record movement row.
         await createMovement({
-          product_id: productId,
+          product_id: item.productId,
           from_location_id: masterLocationId,
           to_location_id: r.location_id,
           quantity: qty,
-          notes: `Smart allocation after receive`,
+          notes: 'Smart allocation after receive',
         })
-        await updateInventory(productId, masterLocationId, -qty)
-        await updateInventory(productId, r.location_id, +qty)
-        // One 'move' Lark per destination (matches existing move format).
-        try {
-          fetch('/api/lark-notify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              type: 'move',
-              fromLocation: 'Master Inventory',
-              toLocation: r.location_name,
-              items: [{ name: productLabel, quantity: qty }],
-              totalUnits: qty,
-              user: 'Allocator',
-            }),
-          }).catch(() => {})
-        } catch (_) {}
+        await updateInventory(item.productId, masterLocationId, -qty)
+        await updateInventory(item.productId, r.location_id, +qty)
+        // Best-effort per-route Lark
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'move',
+            fromLocation: 'Master Inventory',
+            toLocation: r.location_name,
+            items: [{ name: productLabel(item.product), quantity: qty }],
+            totalUnits: qty,
+            user: 'Allocator',
+          }),
+        }).catch(() => {})
         moved += qty
+        routes += 1
       }
-      addToast(`Moved ${moved} unit${moved === 1 ? '' : 's'} to ${rows.filter(r => Number(r.send) > 0).length} location${rows.filter(r => Number(r.send) > 0).length === 1 ? '' : 's'}`, 'success')
-      onClose()
-      reload?.()
+      addToast(`Moved ${moved} of ${productLabel(item.product)} → ${routes} room${routes === 1 ? '' : 's'}`, 'success')
+      onItemDone(item.key)
+      return true
     } catch (err) {
-      console.error('[AllocatorModal] apply failed:', err)
+      console.error('[BatchAllocator] apply failed:', err)
       addToast(`Apply failed: ${err.message || err}`, 'error')
+      return false
     } finally {
-      setSubmitting(false)
+      setBusyKey(null)
     }
   }
-
-  const skip = async () => {
-    setSubmitting(true)
+  const skipOne = async (item) => {
+    setBusyKey(item.key)
     try {
-      // Fire-and-forget — the receive happened regardless of Lark health.
+      const rows = draft[item.key]
       const payloadRows = rows.map(r => ({
         location_name: r.location_name,
         current_stock: r.current_stock,
         daily_velocity: r.daily_velocity,
-        suggested_send: Number(r.send) || 0,   // honor any user tweaks
+        suggested_send: Number(r.send) || 0,
       }))
       fetch('/api/lark-notify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'allocation_suggestion',
-          productLabel,
-          qtyReceived,
-          windowDays: suggestion.window_days,
-          totalSold: suggestion.total_sold_in_window,
-          isDying: suggestion.is_dying,
+          productLabel: productLabel(item.product),
+          qtyReceived: item.qtyReceived,
+          windowDays: item.suggestion.window_days,
+          totalSold: item.suggestion.total_sold_in_window,
+          isDying: item.suggestion.is_dying,
           rows: payloadRows,
         }),
       }).catch(() => {})
-      addToast('Saved as suggestion — not moved', 'info')
-      onClose()
+      addToast(`Saved as suggestion: ${productLabel(item.product)}`, 'info')
+      onItemDone(item.key)
+      return true
     } finally {
-      setSubmitting(false)
+      setBusyKey(null)
+    }
+  }
+
+  // ---- batch actions ----
+  const applyAllSuggested = async () => {
+    setBatchBusy(true)
+    try {
+      // Reset every item to original suggestion before applying, so this
+      // button's name "use suggested" matches its behavior.
+      for (const item of items) {
+        setDraft(d => ({
+          ...d,
+          [item.key]: (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send })),
+        }))
+      }
+      // Wait a tick for state to settle (or just iterate using item.suggestion directly)
+      for (const item of items) {
+        const rows = (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
+        const orig = draft
+        draft[item.key] = rows   // sync for applyOne
+        await applyOne(item)
+      }
+      reload?.()
+      onAllDone()
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+  const skipAll = async () => {
+    setBatchBusy(true)
+    try {
+      for (const item of items) await skipOne(item)
+      onAllDone()
+    } finally {
+      setBatchBusy(false)
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={onClose}>
       <div
-        className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-2xl w-full p-5 shadow-2xl"
+        className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-3xl w-full p-5 shadow-2xl my-8"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-2 mb-3">
-          <Package size={18} className="text-vault-gold" />
-          <h3 className="font-semibold text-base text-white">Smart restock — how should this split?</h3>
-        </div>
-        <p className="text-sm text-gray-300 mb-1">
-          Just received: <span className="text-white">{productLabel}</span> × <span className="text-vault-gold font-semibold">{qtyReceived}</span> at Master
-        </p>
-        <p className="text-xs text-gray-500 mb-3">
-          Last {suggestion.window_days} days total: {suggestion.total_sold_in_window} sold ({suggestion.total_daily_velocity}/day)
-          {suggestion.is_dying && (
-            <span className="ml-2 text-amber-300">· ⚠ Slow seller — no restock suggested</span>
-          )}
-        </p>
-
-        {suggestion.is_dying ? (
-          <div className="bg-amber-500/10 border border-amber-500/30 rounded p-3 text-sm text-amber-200">
-            This SKU has barely moved in the last {suggestion.window_days} days. We recommend
-            keeping all {qtyReceived} at Master and pushing them out later if demand picks up.
-            You can still tweak the numbers below and Apply if you want to override.
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2">
+            <Package size={18} className="text-vault-gold" />
+            <h3 className="font-semibold text-base text-white">Smart restock — {items.length} item{items.length === 1 ? '' : 's'} to allocate</h3>
           </div>
-        ) : null}
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xs">close</button>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          💡 The Send numbers are suggestions based on last 7 days of sales. <span className="text-gray-300">Tap any Send field to change it</span> — or use the per-item Reset link to put the suggestion back.
+        </p>
 
-        <div className="overflow-x-auto mt-3">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-gray-500 text-xs border-b border-vault-border/50">
-                <th className="py-2">STREAM ROOM</th>
-                <th className="py-2 text-right">SOLD/DAY</th>
-                <th className="py-2 text-right">CURRENT</th>
-                <th className="py-2 text-right">TARGET</th>
-                <th className="py-2 text-right">SEND</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-vault-border/30">
-              {rows.map(r => {
-                const short = r.location_name.replace(/^Stream Room\s*[-—]\s*/i, '')
-                return (
-                  <tr key={r.location_id}>
-                    <td className="py-1.5 text-white">{short}</td>
-                    <td className="py-1.5 text-right text-gray-300">{r.daily_velocity}</td>
-                    <td className="py-1.5 text-right text-gray-300">{r.current_stock}</td>
-                    <td className="py-1.5 text-right text-gray-300">{r.target}</td>
-                    <td className="py-1.5 text-right">
-                      <input
-                        type="number" min="0"
-                        value={r.send}
-                        onChange={(e) => setRowSend(r.location_id, e.target.value)}
-                        disabled={submitting}
-                        className="w-20 text-right px-2 py-1 text-sm"
-                      />
-                    </td>
-                  </tr>
-                )
-              })}
-              <tr className="font-semibold">
-                <td className="py-2 text-gray-300">Keep at Master</td>
-                <td className="py-2 text-right text-gray-500">—</td>
-                <td className="py-2 text-right text-gray-500">—</td>
-                <td className="py-2 text-right text-gray-500">—</td>
-                <td className={`py-2 text-right font-mono ${overcommitted ? 'text-red-300' : 'text-gray-200'}`}>{keepAtMaster}</td>
-              </tr>
-            </tbody>
-            <tfoot>
-              <tr className="border-t border-vault-border/50">
-                <td colSpan={4} className="py-2 text-right text-xs text-gray-500">Total send</td>
-                <td className={`py-2 text-right font-mono ${overcommitted ? 'text-red-300' : 'text-vault-gold'}`}>
-                  {totalSend} / {qtyReceived}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
+        <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+          {items.map(item => {
+            const rows = draft[item.key]
+            const ts = totalSend(item.key)
+            const over = ts > item.qtyReceived
+            const keep = item.qtyReceived - ts
+            const isBusy = busyKey === item.key
+            return (
+              <div key={item.key} className="bg-vault-darker/40 border border-vault-border rounded-lg p-3">
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-white truncate">{productLabel(item.product)}</div>
+                    <div className="text-xs text-gray-500">
+                      Received: <span className="text-vault-gold font-semibold">{item.qtyReceived}</span>
+                      {' '}· Last {item.suggestion.window_days}d: {item.suggestion.total_sold_in_window} sold ({item.suggestion.total_daily_velocity}/day)
+                      {item.suggestion.is_dying && <span className="ml-2 text-amber-300">⚠ slow</span>}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => resetItem(item)}
+                    disabled={isBusy || batchBusy}
+                    className="text-[11px] text-gray-400 hover:text-vault-gold underline disabled:opacity-50"
+                    title="Put the suggested numbers back"
+                  >Reset to suggestion</button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-500 text-[10px] border-b border-vault-border/40">
+                        <th className="py-1">STREAM ROOM</th>
+                        <th className="py-1 text-right">SOLD/DAY</th>
+                        <th className="py-1 text-right">CURRENT</th>
+                        <th className="py-1 text-right">TARGET</th>
+                        <th className="py-1 text-right">SEND</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(r => {
+                        const short = r.location_name.replace(/^Stream Room\s*[-—]\s*/i, '')
+                        const edited = Number(r.send) !== Number(r.suggested_send)
+                        return (
+                          <tr key={r.location_id} className="border-b border-vault-border/20">
+                            <td className="py-1 text-white">{short}</td>
+                            <td className="py-1 text-right text-gray-400">{r.daily_velocity}</td>
+                            <td className="py-1 text-right text-gray-400">{r.current_stock}</td>
+                            <td className="py-1 text-right text-gray-400">{r.target}</td>
+                            <td className="py-1 text-right">
+                              <input
+                                type="number" min="0"
+                                value={r.send}
+                                onChange={(e) => setRowSend(item.key, r.location_id, e.target.value)}
+                                disabled={isBusy || batchBusy}
+                                className={`w-16 text-right px-1.5 py-0.5 text-sm border ${edited ? 'border-vault-gold/60 bg-vault-gold/5' : 'border-vault-border'} rounded`}
+                              />
+                            </td>
+                          </tr>
+                        )
+                      })}
+                      <tr>
+                        <td className="py-1 text-gray-300 text-xs">Keep at Master</td>
+                        <td colSpan={3}></td>
+                        <td className={`py-1 text-right font-mono text-sm ${over ? 'text-red-300' : 'text-gray-200'}`}>{keep}</td>
+                      </tr>
+                      <tr>
+                        <td colSpan={4} className="py-1 text-right text-[10px] text-gray-500">Total send</td>
+                        <td className={`py-1 text-right font-mono text-sm ${over ? 'text-red-300' : 'text-vault-gold'}`}>{ts} / {item.qtyReceived}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                {over && (
+                  <div className="text-[11px] text-red-300 mt-1">Send total exceeds received — reduce.</div>
+                )}
+
+                <div className="flex justify-end gap-2 mt-2">
+                  <button
+                    type="button"
+                    onClick={() => skipOne(item)}
+                    disabled={isBusy || batchBusy}
+                    className="text-xs px-3 py-1.5 text-gray-300 hover:text-white"
+                  >
+                    Skip (Lark only)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyOne(item)}
+                    disabled={isBusy || batchBusy || ts === 0 || over}
+                    className="text-xs px-3 py-1.5 bg-vault-gold/20 border border-vault-gold/40 text-vault-gold rounded hover:bg-vault-gold/30 disabled:opacity-50"
+                  >
+                    {isBusy ? <Loader2 size={12} className="animate-spin" /> : `Apply ${ts}`}
+                  </button>
+                </div>
+              </div>
+            )
+          })}
         </div>
 
-        {overcommitted && (
-          <div className="text-xs text-red-300 mt-2">Total send is more than what was received — reduce some numbers.</div>
-        )}
-
-        <div className="flex justify-between items-center gap-2 mt-5">
+        {/* Batch footer actions */}
+        <div className="flex justify-between items-center gap-2 mt-4 pt-3 border-t border-vault-border/50">
           <button
             type="button"
-            onClick={skip}
-            disabled={submitting}
+            onClick={skipAll}
+            disabled={batchBusy}
             className="text-sm px-3 py-2 text-gray-300 hover:text-white"
           >
-            Skip — keep at Master (send Lark advisory)
+            Skip all remaining (Lark advisories)
           </button>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={apply}
-              disabled={submitting || totalSend === 0 || overcommitted}
-              className="btn btn-primary px-4 py-2 text-sm"
-            >
-              {submitting ? <Loader2 size={14} className="animate-spin" /> : `Apply — move ${totalSend}`}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={applyAllSuggested}
+            disabled={batchBusy || items.length === 0}
+            className="btn btn-primary px-4 py-2 text-sm"
+          >
+            {batchBusy ? <Loader2 size={14} className="animate-spin" /> : `Apply all (use suggested)`}
+          </button>
         </div>
       </div>
     </div>
