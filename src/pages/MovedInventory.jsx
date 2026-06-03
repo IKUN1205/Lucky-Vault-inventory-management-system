@@ -71,6 +71,11 @@ export default function MovedInventory() {
   // each scanned slab as sold (markSlabAsSold) instead of moving it. Only
   // slabs are accepted in this mode — sealed / single scans get rejected.
   const [mysteryGame, setMysteryGame] = useState(false)
+  // Bucket total for any slabs that don't have a reference price in
+  // inventory. The cashier types ONE total at the bottom of the cart;
+  // we equal-split it across the priceless slabs at submit time so each
+  // gets a sensible sale_price_usd recorded.
+  const [mysteryPricelessTotal, setMysteryPricelessTotal] = useState('')
 
   // Mixed-kind cart.
   //   sealed: { kind:'sealed', key, product_id, product, inventory_row, quantity }
@@ -311,16 +316,9 @@ export default function MovedInventory() {
           addToast(`Slab cert #${result.slab.cert_number} status is "${status}" — not available to sell`, 'error')
           return
         }
-        // Mystery Game sells at whatever price the slab has in inventory
-        // (market / lv / list). No reference price → can't sell.
-        const hasRef =
-          result.slab.market_price_usd != null
-          || result.slab.lv_price_usd != null
-          || result.slab.list_price_usd != null
-        if (!hasRef) {
-          addToast(`Slab cert #${result.slab.cert_number} has no reference price — set MP in the sheet first`, 'error')
-          return
-        }
+        // No-reference-price slabs are still allowed in Mystery Game — the
+        // cashier enters one total at the bottom of the cart that we
+        // equal-split across all priceless ones at submit time.
         addSlabToCart(result.slab)
       } else if (result.kind === 'sealed') {
         addSealedToCart(result.product.id, 1)
@@ -378,13 +376,20 @@ export default function MovedInventory() {
       addToast('No slabs in cart to sell', 'error')
       return
     }
-    // Each slab needs a valid sold price.
-    for (const item of slabsOnly) {
+    // Split the priceless bucket equally across the slabs that didn't have
+    // a reference price. Slabs with stored prices keep their own value.
+    const priceless = slabsOnly.filter(c => c.sale_price === '' || c.sale_price == null)
+    const pricelessTotal = Number(mysteryPricelessTotal) || 0
+    if (priceless.length > 0 && pricelessTotal <= 0) {
+      addToast(`Enter the total for ${priceless.length} priceless slab${priceless.length === 1 ? '' : 's'}`, 'error')
+      return
+    }
+    const perPriceless = priceless.length > 0 ? pricelessTotal / priceless.length : 0
+    // Build a key → effective price map for downstream use.
+    const effectivePrice = (item) => {
       const p = Number(item.sale_price)
-      if (item.sale_price === '' || item.sale_price == null || isNaN(p) || p < 0) {
-        addToast(`Missing sold price for cert #${item.slab?.cert_number}`, 'error')
-        return
-      }
+      if (!isNaN(p) && p >= 0 && item.sale_price !== '' && item.sale_price != null) return p
+      return perPriceless
     }
     setSubmitting(true)
     // Shared transaction id so all slabs sold in one mystery game share a
@@ -397,7 +402,7 @@ export default function MovedInventory() {
     try {
       for (const item of slabsOnly) {
         try {
-          const price = Number(item.sale_price)
+          const price = effectivePrice(item)
           await markSlabAsSold(item.slab_id, {
             sale_price_usd: price,
             sale_channel: 'in_person',
@@ -419,6 +424,8 @@ export default function MovedInventory() {
       // the cashier can retry without losing context.
       const failedIds = new Set(failed.map(f => f.item.slab_id))
       setCart(prev => prev.filter(c => c.kind !== 'slab' || failedIds.has(c.slab_id)))
+      // If nothing left in cart, clear the priceless total too.
+      if (failed.length === 0) setMysteryPricelessTotal('')
 
       const totalPaid = sold.reduce((s, it) => s + it.price, 0)
       if (sold.length > 0) {
@@ -637,6 +644,15 @@ export default function MovedInventory() {
     return <div className="flex items-center justify-center h-64"><div className="spinner"></div></div>
   }
   const totalCartUnits = cart.reduce((s, c) => s + (c.kind === 'slab' ? 1 : c.quantity), 0)
+  // Mystery Game cart breakdown — used by the bottom summary + submit gate.
+  const mgSlabs = mysteryGame ? cart.filter(c => c.kind === 'slab') : []
+  const mgPriced = mgSlabs.filter(c => c.sale_price !== '' && c.sale_price != null)
+  const mgPriceless = mgSlabs.filter(c => c.sale_price === '' || c.sale_price == null)
+  const mgPricedSubtotal = mgPriced.reduce((s, c) => s + (Number(c.sale_price) || 0), 0)
+  const mgPricelessTotalNum = Number(mysteryPricelessTotal) || 0
+  const mgGrandTotal = mgPricedSubtotal + mgPricelessTotalNum
+  const mgPricelessRequired = mgPriceless.length > 0
+  const mgPricelessFilled = !mgPricelessRequired || mgPricelessTotalNum > 0
 
   return (
     <div className="fade-in">
@@ -848,6 +864,51 @@ export default function MovedInventory() {
           </div>
         )}
 
+        {/* Mystery Game cart summary — only shows the priceless bucket
+            input when at least one slab in the cart has no reference price. */}
+        {mysteryGame && cart.length > 0 && (
+          <div className="card border-purple-500/30 space-y-3">
+            {mgPriced.length > 0 && (
+              <div className="flex justify-between items-center text-sm text-gray-300">
+                <span>Priced slabs ({mgPriced.length}) — from inventory</span>
+                <span className="font-mono text-vault-gold">${mgPricedSubtotal.toFixed(2)}</span>
+              </div>
+            )}
+            {mgPricelessRequired && (
+              <div className="flex justify-between items-center gap-3">
+                <label className="flex flex-col text-sm text-gray-300">
+                  <span>
+                    Total for {mgPriceless.length} priceless slab{mgPriceless.length === 1 ? '' : 's'}
+                    {' '}<span className="text-red-400">*</span>
+                  </span>
+                  <span className="text-[11px] text-gray-500 mt-0.5">
+                    Split equally across them at submit
+                  </span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={mysteryPricelessTotal}
+                    onChange={(e) => setMysteryPricelessTotal(e.target.value)}
+                    placeholder="0.00"
+                    disabled={submitting}
+                    className={`w-32 text-right pl-5 font-mono ${
+                      !mgPricelessFilled ? 'border-red-500/50' : ''
+                    }`}
+                  />
+                </div>
+              </div>
+            )}
+            <div className="flex justify-between items-center pt-2 border-t border-vault-border/50">
+              <span className="text-sm text-gray-300">Grand total (Mystery Game)</span>
+              <span className="text-xl font-bold text-purple-300 font-mono">${mgGrandTotal.toFixed(2)}</span>
+            </div>
+          </div>
+        )}
+
         {/* Notes + Submit */}
         <div className="card space-y-4">
           <div>
@@ -862,7 +923,7 @@ export default function MovedInventory() {
               submitting || cart.length === 0
               || !movedById
               || (mysteryGame
-                ? cart.some(c => c.kind === 'slab' && (c.sale_price === '' || c.sale_price == null || Number(c.sale_price) < 0))
+                ? !mgPricelessFilled
                 : (!fromLocationId || !toLocationId))
             }
           >
