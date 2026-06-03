@@ -174,7 +174,7 @@ export default function OnlineOrders() {
   }
 
   const handleSubmit = async (e) => {
-    e.preventDefault()
+    if (e?.preventDefault) e.preventDefault()
 
     if (!form.platform_channel) {
       addToast('Pick a Platform / Channel', 'error')
@@ -352,7 +352,11 @@ export default function OnlineOrders() {
         </div>
       </Instructions>
 
-      <form onSubmit={handleSubmit} className="card max-w-3xl">
+      {/* Was <form onSubmit={handleSubmit}> — but BarcodeScanner's Enter key
+          bubbled up and triggered a native form submit → full page refresh
+          after every scan. Same fix as MovedInventory (commit 1bcfc31):
+          plain <div>, button is type="button" with onClick={handleSubmit}. */}
+      <div className="card max-w-3xl">
         {/* Header: date + platform + handled by */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
@@ -546,7 +550,8 @@ export default function OnlineOrders() {
         </div>
 
         <button
-          type="submit"
+          type="button"
+          onClick={handleSubmit}
           className="btn-primary w-full flex items-center justify-center gap-2"
           disabled={submitting || cart.length === 0}
         >
@@ -560,7 +565,7 @@ export default function OnlineOrders() {
             </>
           )}
         </button>
-      </form>
+      </div>
     </div>
   )
 }
