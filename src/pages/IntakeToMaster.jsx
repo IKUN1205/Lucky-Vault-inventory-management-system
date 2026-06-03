@@ -671,7 +671,12 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
   // useSuggested=true → apply the ORIGINAL suggested numbers regardless of
   // any draft edits ('一键挪过去'). false → apply whatever's in the draft
   // (which is what the user typed in edit mode).
-  const applyOne = async (item, { useSuggested = false } = {}) => {
+  // skipReload=true → caller (applyAllSuggested) reloads once at the end
+  //   instead of N times in the loop. Default false so the per-item buttons
+  //   (Apply changes / 一键挪过去) refresh the parent page; without that
+  //   reload the IntakeToMaster view never reflected the move and staff
+  //   reasonably concluded "smart allocator 移不动" (bug 2026-06-03).
+  const applyOne = async (item, { useSuggested = false, skipReload = false } = {}) => {
     const rows = useSuggested
       ? (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
       : draft[item.key]
@@ -725,6 +730,12 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
         decidedById,
       }).catch(() => {})
       onItemDone(item.key)
+      // Refresh the parent inventory view so the user actually sees the
+      // move take effect. Skipped when called from applyAllSuggested
+      // (it reloads once after the loop).
+      if (!skipReload) {
+        try { await reload?.() } catch (e) { console.warn('[BatchAllocator] reload after apply failed:', e) }
+      }
       return true
     } catch (err) {
       console.error('[BatchAllocator] apply failed:', err)
@@ -793,7 +804,7 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
         const rows = (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
         const orig = draft
         draft[item.key] = rows   // sync for applyOne
-        await applyOne(item)
+        await applyOne(item, { skipReload: true })
       }
       reload?.()
       onAllDone()
