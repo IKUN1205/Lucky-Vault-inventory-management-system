@@ -290,13 +290,28 @@ export default function MovedInventory() {
     try {
       const result = await lookupScannedCode(code)
       if (mysteryGame) {
-        if (result.kind === 'slab') {
-          addSlabToCart(result.slab)
-        } else if (result.kind === 'unknown') {
-          setUnknownCode(code)
-        } else {
-          addToast('Mystery Game mode: slabs only. Sealed/single scans ignored.', 'info')
+        if (result.kind === 'unknown') {
+          // Cert# doesn't exist in our slabs table at all — the cashier
+          // needs to intake this slab via Cards Scan before it can be sold.
+          addToast(`Slab cert #${code} not in inventory — add it via Cards Scan first, then scan again`, 'error')
+          return
         }
+        if (result.kind !== 'slab') {
+          addToast('Mystery Game mode: slabs only. Sealed/single scans ignored.', 'info')
+          return
+        }
+        // Reject non-sellable statuses with a specific reason so the cashier
+        // knows exactly what to fix.
+        const status = result.slab.status
+        if (status === 'sold') {
+          addToast(`Slab cert #${result.slab.cert_number} is already sold — can't resell`, 'error')
+          return
+        }
+        if (status !== 'in_inventory' && status !== 'listed') {
+          addToast(`Slab cert #${result.slab.cert_number} status is "${status}" — not available to sell`, 'error')
+          return
+        }
+        addSlabToCart(result.slab)
       } else if (result.kind === 'sealed') {
         addSealedToCart(result.product.id, 1)
       } else if (result.kind === 'single') {
@@ -651,22 +666,37 @@ export default function MovedInventory() {
       <div className="space-y-4">
         {/* Header — date / movedBy / from / to */}
         <div className={`card ${mysteryGame ? 'border-purple-500/40' : ''}`}>
-          {/* Mystery Game toggle — when on, this whole page flips from
-              "move" semantics to "mark slabs as sold" semantics. */}
-          <label className="flex items-center gap-2 mb-3 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={mysteryGame}
-              onChange={(e) => {
-                setMysteryGame(e.target.checked)
-                if (e.target.checked) setToLocationId('')   // TO not needed in mystery mode
-              }}
-              className="cursor-pointer"
-            />
-            <span className="text-sm font-medium text-purple-300">
-              🎲 Mystery Game mode — scan slabs to mark sold (no move)
-            </span>
-          </label>
+          {/* Mode tabs — click 🎲 Mystery Game to flip the page from "move"
+              semantics to "mark slabs as sold" semantics. Click 📦 Move to
+              come back. Same tab styling as Storefront Sale's Sale/Trade/Buy
+              so cashiers don't have to learn a new pattern. */}
+          <div className="flex items-center gap-2 mb-4">
+            <span className="text-xs text-gray-500 uppercase tracking-wider">Mode:</span>
+            <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40">
+              <button
+                type="button"
+                onClick={() => { setMysteryGame(false) }}
+                className={`px-3 py-1.5 text-sm rounded-md transition flex items-center gap-2 ${
+                  !mysteryGame
+                    ? 'bg-vault-gold text-vault-dark font-semibold'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                📦 Move Inventory
+              </button>
+              <button
+                type="button"
+                onClick={() => { setMysteryGame(true); setToLocationId(''); setFromLocationId('') }}
+                className={`px-3 py-1.5 text-sm rounded-md transition flex items-center gap-2 ${
+                  mysteryGame
+                    ? 'bg-purple-500/80 text-white font-semibold'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                🎲 Mystery Game
+              </button>
+            </div>
+          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <div>
