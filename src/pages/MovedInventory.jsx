@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement,
   fetchUsers, lookupScannedCode,
-  moveSingleToLocation, moveSlabToLocation,
+  moveSingleToLocation, moveSlabToLocation, markSlabAsSold,
   fetchSinglesAtLocation, fetchSlabsAtLocation,
   searchProductsForStorefront, searchSinglesForStorefront, searchSlabsForStorefront,
 } from '../lib/supabase'
@@ -66,6 +66,11 @@ export default function MovedInventory() {
   const [toLocationId, setToLocationId] = useState('')
   const [movedById, setMovedById] = useState('')
   const [notes, setNotes] = useState('')
+  // Mystery Game mode — alternate flow for slab-blind-sales at the storefront
+  // (directive 2026-06-02). Same scan-and-build-a-cart UX, but submit marks
+  // each scanned slab as sold (markSlabAsSold) instead of moving it. Only
+  // slabs are accepted in this mode — sealed / single scans get rejected.
+  const [mysteryGame, setMysteryGame] = useState(false)
 
   // Mixed-kind cart.
   //   sealed: { kind:'sealed', key, product_id, product, inventory_row, quantity }
@@ -233,20 +238,35 @@ export default function MovedInventory() {
 
   const addSlabToCart = (slab) => {
     if (!slab) return
-    const stockRow = slabsAtFrom.find(s => s.id === slab.id)
-    if (!stockRow) {
-      addToast(`${slab.item_name} is not at the source location`, 'error')
-      return
+    // Mystery Game mode doesn't need the slab to be at the FROM location —
+    // it's being sold, not moved out of a particular shelf. Skip the
+    // "is at source" check and use the slab as-is.
+    let stockRow = slab
+    if (!mysteryGame) {
+      stockRow = slabsAtFrom.find(s => s.id === slab.id)
+      if (!stockRow) {
+        addToast(`${slab.item_name} is not at the source location`, 'error')
+        return
+      }
     }
     if (cartHasSlab(slab.id)) {
       addToast('Slab already in cart', 'info')
       return
     }
+    // In Mystery mode, pre-fill the sold price from the slab's reference
+    // (market / LV / list) so the cashier only types it in when overriding.
+    const defaultPrice = mysteryGame
+      ? (slab.market_price_usd != null ? Number(slab.market_price_usd)
+         : slab.lv_price_usd != null ? Number(slab.lv_price_usd)
+         : slab.list_price_usd != null ? Number(slab.list_price_usd)
+         : '')
+      : undefined
     setCart(prev => [...prev, {
       kind: 'slab',
       key: `slab-${slab.id}`,
       slab_id: slab.id,
       slab: stockRow,
+      sale_price: mysteryGame ? String(defaultPrice ?? '') : undefined,
     }])
     addToast(`Added: ${slab.item_name}`, 'success')
   }
@@ -256,7 +276,11 @@ export default function MovedInventory() {
     e?.preventDefault?.()
     const code = scanValue.trim()
     if (!code) return
-    if (!fromLocationId) {
+    // Mystery Game mode skips the FROM-location requirement (the slab is
+    // being marked sold, not moved out of a specific shelf) and only
+    // accepts slab scans. Sealed / single scans get rejected with a
+    // clear toast so the cashier knows why the scan didn't add.
+    if (!mysteryGame && !fromLocationId) {
       addToast('Pick FROM location first', 'error')
       setScanValue('')
       return
@@ -265,7 +289,15 @@ export default function MovedInventory() {
     setUnknownCode(null)
     try {
       const result = await lookupScannedCode(code)
-      if (result.kind === 'sealed') {
+      if (mysteryGame) {
+        if (result.kind === 'slab') {
+          addSlabToCart(result.slab)
+        } else if (result.kind === 'unknown') {
+          setUnknownCode(code)
+        } else {
+          addToast('Mystery Game mode: slabs only. Sealed/single scans ignored.', 'info')
+        }
+      } else if (result.kind === 'sealed') {
         addSealedToCart(result.product.id, 1)
       } else if (result.kind === 'single') {
         addSingleToCart(result.single, 1)
@@ -314,13 +346,98 @@ export default function MovedInventory() {
     setCart([])
   }
 
+  // ---------- mystery game submit (mark each slab as sold) ----------
+  const handleMysteryGameSubmit = async () => {
+    const slabsOnly = cart.filter(c => c.kind === 'slab')
+    if (slabsOnly.length === 0) {
+      addToast('No slabs in cart to sell', 'error')
+      return
+    }
+    // Each slab needs a valid sold price.
+    for (const item of slabsOnly) {
+      const p = Number(item.sale_price)
+      if (item.sale_price === '' || item.sale_price == null || isNaN(p) || p < 0) {
+        addToast(`Missing sold price for cert #${item.slab?.cert_number}`, 'error')
+        return
+      }
+    }
+    setSubmitting(true)
+    // Shared transaction id so all slabs sold in one mystery game share a
+    // grouping key downstream.
+    const transactionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `mg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    const sold = []
+    const failed = []
+    try {
+      for (const item of slabsOnly) {
+        try {
+          const price = Number(item.sale_price)
+          await markSlabAsSold(item.slab_id, {
+            sale_price_usd: price,
+            sale_channel: 'in_person',
+            sale_date: date,
+            sale_fees_usd: null,
+            buyer_name: null,
+            sale_notes: 'Mystery Game',
+            sold_by_id: movedById || null,
+            transaction_id: transactionId,
+            transaction_type: 'sale',
+          })
+          sold.push({ ...item, price })
+        } catch (err) {
+          console.error('[MysteryGame] slab sell failed:', item, err)
+          failed.push({ item, error: err.message || String(err) })
+        }
+      }
+      // Drop the successfully-sold ones from the cart; keep failures so
+      // the cashier can retry without losing context.
+      const failedIds = new Set(failed.map(f => f.item.slab_id))
+      setCart(prev => prev.filter(c => c.kind !== 'slab' || failedIds.has(c.slab_id)))
+
+      const totalPaid = sold.reduce((s, it) => s + it.price, 0)
+      if (sold.length > 0) {
+        addToast(
+          `🎲 Mystery Game: sold ${sold.length} slab${sold.length === 1 ? '' : 's'} for $${totalPaid.toFixed(2)}${failed.length > 0 ? ` (${failed.length} failed)` : ''}`,
+          failed.length > 0 ? 'info' : 'success',
+        )
+        // Lark — use the 'move' event type with a distinct prefix so the
+        // inventory in/out group sees "mystery game" right at the top.
+        try {
+          const itemsForLark = sold.map(it => ({
+            name: `${it.slab?.item_name || 'Slab'} cert#${it.slab?.cert_number}`,
+            quantity: 1,
+            kind: 'slab',
+            price: it.price,
+          }))
+          fetch('/api/lark-notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'move',
+              fromLocation: '🎲 Mystery Game',
+              toLocation: `Sold (${sold.length} slabs · $${totalPaid.toFixed(2)})`,
+              items: itemsForLark,
+              totalUnits: sold.length,
+              user: users.find(u => u.id === movedById)?.name || 'Unknown',
+            }),
+          }).catch(() => {})
+        } catch (_) {}
+      }
+      for (const f of failed) addToast(`Failed: cert#${f.item.slab?.cert_number} — ${f.error}`, 'error')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   // ---------- submit ----------
   const handleSubmit = async (e) => {
     e?.preventDefault?.()
+    if (cart.length === 0) { addToast('Cart is empty', 'error'); return }
+    if (mysteryGame) return handleMysteryGameSubmit()
     if (!fromLocationId || !toLocationId) { addToast('Pick FROM and TO locations', 'error'); return }
     if (fromLocationId === toLocationId) { addToast('FROM and TO must differ', 'error'); return }
     if (!movedById) { addToast('Pick who is moving the items', 'error'); return }
-    if (cart.length === 0) { addToast('Cart is empty', 'error'); return }
 
     setSubmitting(true)
     const completedSealed = []   // for undo
@@ -533,43 +650,68 @@ export default function MovedInventory() {
           now calls handleSubmit directly via onClick. */}
       <div className="space-y-4">
         {/* Header — date / movedBy / from / to */}
-        <div className="card">
+        <div className={`card ${mysteryGame ? 'border-purple-500/40' : ''}`}>
+          {/* Mystery Game toggle — when on, this whole page flips from
+              "move" semantics to "mark slabs as sold" semantics. */}
+          <label className="flex items-center gap-2 mb-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={mysteryGame}
+              onChange={(e) => {
+                setMysteryGame(e.target.checked)
+                if (e.target.checked) setToLocationId('')   // TO not needed in mystery mode
+              }}
+              className="cursor-pointer"
+            />
+            <span className="text-sm font-medium text-purple-300">
+              🎲 Mystery Game mode — scan slabs to mark sold (no move)
+            </span>
+          </label>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">Date *</label>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Moved By *</label>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                {mysteryGame ? 'Sold by *' : 'Moved By *'}
+              </label>
               <select value={movedById} onChange={(e) => setMovedById(e.target.value)} required>
-                <option value="">Who is moving these items...</option>
+                <option value="">{mysteryGame ? 'Who is running the game...' : 'Who is moving these items...'}</option>
                 {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
-            <div className="md:col-span-2">
-              <label className="block text-sm font-medium text-gray-300 mb-2">From Location *</label>
-              <select value={fromLocationId} onChange={(e) => setFromLocationId(e.target.value)} required>
-                <option value="">Select source...</option>
-                {physicalLocations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
-              </select>
+          {!mysteryGame ? (
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-gray-300 mb-2">From Location *</label>
+                <select value={fromLocationId} onChange={(e) => setFromLocationId(e.target.value)} required>
+                  <option value="">Select source...</option>
+                  {physicalLocations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+                </select>
+              </div>
+              <div className="flex justify-center">
+                <ArrowRight className="text-vault-gold" size={24} />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-gray-300 mb-2">To Location *</label>
+                <select value={toLocationId} onChange={(e) => setToLocationId(e.target.value)} required>
+                  <option value="">Select destination...</option>
+                  {allDestinations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+                </select>
+              </div>
             </div>
-            <div className="flex justify-center">
-              <ArrowRight className="text-vault-gold" size={24} />
+          ) : (
+            <div className="text-xs text-purple-200 bg-purple-500/10 border border-purple-500/30 rounded p-3">
+              Mystery Game mode: just scan the slab cert# and the system will mark it sold at the price you enter. No FROM/TO needed.
             </div>
-            <div className="md:col-span-2">
-              <label className="block text-sm font-medium text-gray-300 mb-2">To Location *</label>
-              <select value={toLocationId} onChange={(e) => setToLocationId(e.target.value)} required>
-                <option value="">Select destination...</option>
-                {allDestinations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
-              </select>
-            </div>
-          </div>
+          )}
         </div>
 
-        {/* Scan + manual entry — both gated on FROM being picked */}
-        {fromLocationId && (
+        {/* Scan + manual entry — gated on FROM being picked OR Mystery Game on */}
+        {(fromLocationId || mysteryGame) && (
           <>
             <div className="card">
               <div className="bg-vault-darker/40 border border-vault-border rounded-lg p-3 space-y-2">
@@ -656,7 +798,9 @@ export default function MovedInventory() {
                   key={item.key}
                   item={item}
                   onQtyChange={(q) => updateLineQty(item.key, q)}
+                  onSalePriceChange={(v) => setCart(prev => prev.map(c => c.key === item.key ? { ...c, sale_price: v } : c))}
                   onRemove={() => removeLine(item.key)}
+                  mysteryGame={mysteryGame}
                   disabled={submitting}
                 />
               ))}
@@ -673,12 +817,20 @@ export default function MovedInventory() {
           <button
             type="button"
             onClick={handleSubmit}
-            className="btn btn-primary w-full"
-            disabled={submitting || cart.length === 0 || !fromLocationId || !toLocationId || !movedById}
+            className={`btn w-full ${mysteryGame ? 'btn-secondary border-purple-500/50 text-purple-200 hover:bg-purple-500/10' : 'btn-primary'}`}
+            disabled={
+              submitting || cart.length === 0
+              || !movedById
+              || (mysteryGame
+                ? cart.some(c => c.kind === 'slab' && (c.sale_price === '' || c.sale_price == null || Number(c.sale_price) < 0))
+                : (!fromLocationId || !toLocationId))
+            }
           >
             {submitting
               ? <div className="spinner w-5 h-5 border-2"></div>
-              : <><Save size={20} /> Move {cart.length || ''} {cart.length === 1 ? 'Item' : 'Items'}</>
+              : mysteryGame
+                ? <><Save size={20} /> 🎲 Mark {cart.filter(c => c.kind === 'slab').length} slab{cart.filter(c => c.kind === 'slab').length === 1 ? '' : 's'} as sold</>
+                : <><Save size={20} /> Move {cart.length || ''} {cart.length === 1 ? 'Item' : 'Items'}</>
             }
           </button>
         </div>
@@ -690,7 +842,7 @@ export default function MovedInventory() {
 // ============================================================================
 // CartRow — kind-aware row in the cart
 // ============================================================================
-function CartRow({ item, onQtyChange, onRemove, disabled }) {
+function CartRow({ item, onQtyChange, onRemove, onSalePriceChange, mysteryGame, disabled }) {
   const meta = KIND_META[item.kind]
   const Icon = meta.icon
   let title, sub, max, qtyEditable
@@ -725,21 +877,44 @@ function CartRow({ item, onQtyChange, onRemove, disabled }) {
         </div>
       </div>
       <div className="col-span-3 md:col-span-3">
-        <label className="block text-[10px] uppercase tracking-wider text-gray-500">
-          Qty {max > 1 && <span className="text-gray-600 normal-case">/ {max}</span>}
-        </label>
-        {qtyEditable ? (
-          <input
-            type="number"
-            min="1"
-            max={max}
-            value={item.quantity}
-            onChange={(e) => onQtyChange(e.target.value)}
-            disabled={disabled}
-            className="w-full"
-          />
+        {mysteryGame && item.kind === 'slab' ? (
+          <>
+            <label className="block text-[10px] uppercase tracking-wider text-gray-500">
+              Sold price <span className="text-red-400">*</span>
+            </label>
+            <div className="relative">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">$</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={item.sale_price ?? ''}
+                onChange={(e) => onSalePriceChange?.(e.target.value)}
+                placeholder="0.00"
+                disabled={disabled}
+                className={`w-full pl-5 text-right font-mono ${item.sale_price === '' || item.sale_price == null ? 'border-red-500/50' : ''}`}
+              />
+            </div>
+          </>
         ) : (
-          <div className="text-white text-sm pt-1">1</div>
+          <>
+            <label className="block text-[10px] uppercase tracking-wider text-gray-500">
+              Qty {max > 1 && <span className="text-gray-600 normal-case">/ {max}</span>}
+            </label>
+            {qtyEditable ? (
+              <input
+                type="number"
+                min="1"
+                max={max}
+                value={item.quantity}
+                onChange={(e) => onQtyChange(e.target.value)}
+                disabled={disabled}
+                className="w-full"
+              />
+            ) : (
+              <div className="text-white text-sm pt-1">1</div>
+            )}
+          </>
         )}
       </div>
       <div className="col-span-2 md:col-span-1 flex justify-end">
