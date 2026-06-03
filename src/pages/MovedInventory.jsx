@@ -311,6 +311,16 @@ export default function MovedInventory() {
           addToast(`Slab cert #${result.slab.cert_number} status is "${status}" — not available to sell`, 'error')
           return
         }
+        // Mystery Game sells at whatever price the slab has in inventory
+        // (market / lv / list). No reference price → can't sell.
+        const hasRef =
+          result.slab.market_price_usd != null
+          || result.slab.lv_price_usd != null
+          || result.slab.list_price_usd != null
+        if (!hasRef) {
+          addToast(`Slab cert #${result.slab.cert_number} has no reference price — set MP in the sheet first`, 'error')
+          return
+        }
         addSlabToCart(result.slab)
       } else if (result.kind === 'sealed') {
         addSealedToCart(result.product.id, 1)
@@ -910,20 +920,12 @@ function CartRow({ item, onQtyChange, onRemove, onSalePriceChange, mysteryGame, 
         {mysteryGame && item.kind === 'slab' ? (
           <>
             <label className="block text-[10px] uppercase tracking-wider text-gray-500">
-              Sold price <span className="text-red-400">*</span>
+              Sold @ (from inventory)
             </label>
-            <div className="relative">
-              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">$</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={item.sale_price ?? ''}
-                onChange={(e) => onSalePriceChange?.(e.target.value)}
-                placeholder="0.00"
-                disabled={disabled}
-                className={`w-full pl-5 text-right font-mono ${item.sale_price === '' || item.sale_price == null ? 'border-red-500/50' : ''}`}
-              />
+            <div className="text-right font-mono text-vault-gold pt-1">
+              {item.sale_price != null && item.sale_price !== ''
+                ? `$${Number(item.sale_price).toFixed(2)}`
+                : '—'}
             </div>
           </>
         ) : (
