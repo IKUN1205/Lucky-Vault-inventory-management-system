@@ -2279,10 +2279,14 @@ export const lookupScannedCode = async (code) => {
     if (slab) return { kind: 'slab', slab }
   }
 
-  // 3. Single TCG ID → singles.tcg_id. Stored as integer in some imports,
-  //    string in others; cast both sides.
+  // 3. Single TCG ID → singles.tcg_id. Multiple rows can share a tcg_id
+  //    after a partial/fungible sale (we split a qty=2 row into a qty=1
+  //    in_inventory row + a qty=1 sold clone, both non-deleted). Don't
+  //    use maybeSingle() — it would 406 on those. Instead order so the
+  //    sellable row wins (in_inventory > listed > sold), then return
+  //    the first match.
   {
-    const { data: single, error } = await supabase
+    const { data: rows, error } = await supabase
       .from('singles')
       .select(`
         *,
@@ -2291,9 +2295,13 @@ export const lookupScannedCode = async (code) => {
       `)
       .eq('tcg_id', trimmed)
       .eq('deleted', false)
-      .maybeSingle()
+      .limit(5)
     if (error) throw error
-    if (single) return { kind: 'single', single }
+    if (rows && rows.length > 0) {
+      const rank = (s) => s === 'in_inventory' ? 0 : s === 'listed' ? 1 : 2
+      const sorted = [...rows].sort((a, b) => rank(a.status) - rank(b.status))
+      return { kind: 'single', single: sorted[0] }
+    }
   }
 
   return { kind: 'unknown', code: trimmed }
