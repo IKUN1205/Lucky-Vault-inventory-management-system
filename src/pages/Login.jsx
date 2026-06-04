@@ -1,9 +1,36 @@
 import React, { useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
 import { Lock, AlertCircle, User as UserIcon, ArrowLeft } from 'lucide-react'
 
+// After a successful login, send the user to a page they actually have
+// permission for. Without this, a user whose previous browser session was
+// on /platform-sales (or who pasted a bookmarked URL) would see Login at
+// that URL, log in, and immediately hit AccessDenied — because the URL
+// stayed the same and their allowed_pages didn't cover it. Shared
+// browsers in the store made this hit almost every fresh login.
+//
+// Order of preference:
+//   1. The URL they were trying to reach, IF they actually have access
+//   2. '/' if they have Dashboard
+//   3. The first non-'/' page in their allowed_pages
+//   4. Fall back to '/' (which then renders AccessDenied — at least the
+//      AccessDenied page itself shows a "logout and sign in as someone
+//      else" escape hatch, which is better than being stuck on a random URL)
+const pickPostLoginPath = (loggedInUser, currentPath) => {
+  const allowed = loggedInUser?.allowed_pages || []
+  const hasUsers = allowed.includes('/users')  // admin = access everything
+  const canAccess = (p) => hasUsers || allowed.includes(p)
+  if (currentPath && currentPath !== '/login' && canAccess(currentPath)) return currentPath
+  if (canAccess('/')) return '/'
+  const fallback = allowed.find(p => p !== '/')
+  return fallback || '/'
+}
+
 export default function Login() {
   const { login, loginAs } = useAuth()
+  const navigate = useNavigate()
+  const location = useLocation()
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -29,7 +56,11 @@ export default function Login() {
     const result = await login(pin)
     setLoading(false)
 
-    if (result.success) return
+    if (result.success) {
+      const target = pickPostLoginPath(result.user, location.pathname)
+      if (target && target !== location.pathname) navigate(target, { replace: true })
+      return
+    }
     if (result.needsPicker) {
       setPickerCandidates(result.candidates)
       setError('')
@@ -43,11 +74,14 @@ export default function Login() {
     setLoading(true)
     const result = await loginAs(userId)
     setLoading(false)
-    if (!result.success) {
-      setError(result.error)
-      setPickerCandidates(null)
-      setPin('')
+    if (result.success) {
+      const target = pickPostLoginPath(result.user, location.pathname)
+      if (target && target !== location.pathname) navigate(target, { replace: true })
+      return
     }
+    setError(result.error)
+    setPickerCandidates(null)
+    setPin('')
   }
 
   const handleBackToPin = () => {
