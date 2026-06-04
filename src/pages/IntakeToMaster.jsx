@@ -630,9 +630,26 @@ function IntakeCard({ acquisition, onReceive, processing }) {
 // ============================================================================
 function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLocationId, decidedById, addToast, reload }) {
   // Local editable copy of each item's rows. Indexed by item key.
+  // Init lazily, then keep in sync as `items` grows — staff can keep
+  // receiving while the modal is open, and each new pending entry needs
+  // its own draft slot. Without the sync useEffect below, accessing
+  // draft[newItem.key] in render throws and the whole modal blanks.
+  // (bug seen in production 2026-06-04.)
   const [draft, setDraft] = useState(() => Object.fromEntries(
     items.map(it => [it.key, (it.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))])
   ))
+  useEffect(() => {
+    setDraft(prev => {
+      let next = prev
+      let mutated = false
+      for (const it of items) {
+        if (next[it.key]) continue
+        if (!mutated) { next = { ...prev }; mutated = true }
+        next[it.key] = (it.suggestion?.rows || []).map(r => ({ ...r, send: r.suggested_send }))
+      }
+      return mutated ? next : prev
+    })
+  }, [items])
   // Which item keys are in "我手动改" / edit mode. Default = display
   // only (numbers shown as gold read-only text). Click "Adjust" to
   // unlock the inputs for that item; click Cancel to revert + lock.
@@ -651,7 +668,10 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
     const lname = extractLaunchName(product.name, product.category)
     return `${product.brand || ''} | ${lname} | ${product.category || ''}`.replace(/^\s*\|\s*/, '').trim()
   }
-  const totalSend = (key) => draft[key].reduce((s, r) => s + (Number(r.send) || 0), 0)
+  // Defensive: if a new item appears in `items` before the sync useEffect
+  // has filled in its draft entry, treat its totalSend as 0 rather than
+  // crashing on undefined.reduce(...).
+  const totalSend = (key) => (draft[key] || []).reduce((s, r) => s + (Number(r.send) || 0), 0)
 
   const setRowSend = (itemKey, locationId, v) => {
     const n = Math.max(0, parseInt(v) || 0)
@@ -676,10 +696,11 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
   //   (Apply changes / 一键挪过去) refresh the parent page; without that
   //   reload the IntakeToMaster view never reflected the move and staff
   //   reasonably concluded "smart allocator 移不动" (bug 2026-06-03).
-  const applyOne = async (item, { useSuggested = false, skipReload = false } = {}) => {
-    const rows = useSuggested
-      ? (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
-      : draft[item.key]
+  const applyOne = async (item, { useSuggested = false, skipReload = false, overrideRows = null } = {}) => {
+    const rows = overrideRows
+      || (useSuggested
+        ? (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
+        : (draft[item.key] || (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))))
     const ts = rows.reduce((s, r) => s + (Number(r.send) || 0), 0)
     if (ts > item.qtyReceived) {
       addToast(`${productLabel(item.product)}: send (${ts}) exceeds received (${item.qtyReceived})`, 'error')
@@ -717,7 +738,14 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
         moved += qty
         routes += 1
       }
-      addToast(`Moved ${moved} of ${productLabel(item.product)} → ${routes} room${routes === 1 ? '' : 's'}`, 'success')
+      // Special-case ts=0 = "Keep all at Master, no Lark advisory" — staff
+      // explicitly committed the decision to NOT move anything (directive
+      // 2026-06-04). Different from Skip, which fires a Lark suggestion.
+      if (ts === 0) {
+        addToast(`Kept ${item.qtyReceived} of ${productLabel(item.product)} at Master`, 'success')
+      } else {
+        addToast(`Moved ${moved} of ${productLabel(item.product)} → ${routes} room${routes === 1 ? '' : 's'}`, 'success')
+      }
       // Fire-and-forget audit log so future LLM/heuristic refinement
       // can learn from this decision vs the baseline suggestion.
       logAllocationDecision({
@@ -726,7 +754,7 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
         qtyReceived: item.qtyReceived,
         suggestion: item.suggestion,
         finalRows: rows,
-        action: useSuggested ? 'apply_suggested' : 'apply_adjusted',
+        action: ts === 0 ? 'apply_keep_at_master' : (useSuggested ? 'apply_suggested' : 'apply_adjusted'),
         decidedById,
       }).catch(() => {})
       onItemDone(item.key)
@@ -791,20 +819,12 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
   const applyAllSuggested = async () => {
     setBatchBusy(true)
     try {
-      // Reset every item to original suggestion before applying, so this
-      // button's name "use suggested" matches its behavior.
-      for (const item of items) {
-        setDraft(d => ({
-          ...d,
-          [item.key]: (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send })),
-        }))
-      }
-      // Wait a tick for state to settle (or just iterate using item.suggestion directly)
+      // Pass overrideRows directly to applyOne instead of mutating the
+      // draft dict — that mutation worked but was a React anti-pattern
+      // that could race with the state-tracked draft on re-renders.
       for (const item of items) {
         const rows = (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
-        const orig = draft
-        draft[item.key] = rows   // sync for applyOne
-        await applyOne(item, { skipReload: true })
+        await applyOne(item, { skipReload: true, overrideRows: rows })
       }
       reload?.()
       onAllDone()
@@ -842,7 +862,7 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
 
         <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
           {items.map(item => {
-            const rows = draft[item.key]
+            const rows = draft[item.key] || (item.suggestion.rows || []).map(r => ({ ...r, send: r.suggested_send }))
             const ts = totalSend(item.key)
             const over = ts > item.qtyReceived
             const keep = item.qtyReceived - ts
@@ -970,10 +990,12 @@ function BatchAllocatorModal({ items, onClose, onItemDone, onAllDone, masterLoca
                       <button
                         type="button"
                         onClick={() => applyOne(item, { useSuggested: false }).then(ok => ok && setEditing(item.key, false))}
-                        disabled={isBusy || batchBusy || ts === 0 || over}
+                        disabled={isBusy || batchBusy || over}
                         className="text-xs px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold"
                       >
-                        {isBusy ? <Loader2 size={12} className="animate-spin" /> : `Apply changes · ${ts}`}
+                        {isBusy
+                          ? <Loader2 size={12} className="animate-spin" />
+                          : (ts === 0 ? 'Keep at Master' : `Apply changes · ${ts}`)}
                       </button>
                     </>
                   )}
