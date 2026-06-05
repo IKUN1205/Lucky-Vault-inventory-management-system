@@ -118,6 +118,18 @@ export default function StorefrontSale() {
   // sale_price happens at submit by reference-weighted share, with
   // equal-per-unit fallback when references are missing.
   const [cartTotal, setCartTotal] = useState('')
+  // Some cashiers prefer typing a price per line (directive 2026-06-04 —
+  // staff request). Toggle persisted per-browser so the choice survives
+  // refreshes. 'total' = single grand-total input + auto-distribute (legacy).
+  // 'per_line' = each cart row has its own price input; the grand total
+  // becomes read-only and auto-sums.
+  const [priceMode, setPriceMode] = useState(() => {
+    try { return localStorage.getItem('lv:sf-price-mode') === 'per_line' ? 'per_line' : 'total' }
+    catch { return 'total' }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('lv:sf-price-mode', priceMode) } catch {}
+  }, [priceMode])
   const [manualLineDraft, setManualLineDraft] = useState(null)  // open modal state
 
   // Daily summary state. Re-fetched after each successful submit so the
@@ -158,10 +170,16 @@ export default function StorefrontSale() {
     loadSummary(saleDate)
   }, [saleDate, loadSummary])
 
-  // Cart gross = the SINGLE total the cashier types (no more per-line
-  // prices). Reference prices ("Our: $X") still show on each row as a
-  // hint, but they aren't summed; the cashier owns the total.
-  const cartGross = Number(cartTotal) || 0
+  // Per-line mode: cart total auto-sums from each row's price × qty.
+  // Total mode: cashier owns one number (legacy behavior).
+  const perLineTotal = useMemo(() => cart.reduce((sum, line) => {
+    const p = Number(line.price) || 0
+    const q = Number(line.quantity ?? 1) || 1
+    return sum + p * q
+  }, 0), [cart])
+  const cartGross = priceMode === 'per_line'
+    ? perLineTotal
+    : (Number(cartTotal) || 0)
 
   const cartTotalUnits = useMemo(() => {
     return cart.reduce((sum, line) => sum + (Number(line.quantity ?? 1) || 0), 0)
@@ -449,16 +467,26 @@ export default function StorefrontSale() {
         return `Payment split ($${splitSum.toFixed(2)}) doesn't match amount due ($${amountDueFromCustomer.toFixed(2)})`
       }
     }
-    // Per-line price is no longer entered; the cashier types ONE total
-    // at the bottom of the cart. Still validate qty + manual-line
-    // description.
-    const totalNum = Number(cartTotal)
-    if (cartTotal === '' || cartTotal == null || isNaN(totalNum) || totalNum <= 0) {
-      const label =
-        transactionType === 'buy'   ? 'Total we pay'
-        : transactionType === 'trade' ? 'Cart value'
-        :                              'Customer pays'
-      return `Enter ${label} (must be > 0)`
+    // In total mode the cashier types ONE total at the bottom of the cart.
+    // In per-line mode each row has its own price input that auto-sums.
+    // Either way the resulting cartGross must be > 0.
+    if (priceMode === 'per_line') {
+      if (cartGross <= 0) return 'Enter a price > 0 on at least one cart line'
+      // Reject lines with missing/zero price so the cashier doesn't ship a
+      // record with sale_price=0 by accident.
+      for (const line of cart) {
+        const p = Number(line.price)
+        if (!p || p <= 0) return 'One or more cart lines missing a price'
+      }
+    } else {
+      const totalNum = Number(cartTotal)
+      if (cartTotal === '' || cartTotal == null || isNaN(totalNum) || totalNum <= 0) {
+        const label =
+          transactionType === 'buy'   ? 'Total we pay'
+          : transactionType === 'trade' ? 'Cart value'
+          :                              'Customer pays'
+        return `Enter ${label} (must be > 0)`
+      }
     }
     for (const line of cart) {
       const qty = Number(line.quantity ?? 1)
@@ -482,11 +510,15 @@ export default function StorefrontSale() {
     const validationErr = validateCart()
     if (validationErr) { addToast(validationErr, 'error'); return }
     setSubmitting(true)
-    // Distribute the single cart total across lines so per-line writers
-    // (sealed deduct / slab sold / single sold) can stamp a sensible
+    // Total mode: distribute the single cart total across lines so per-line
+    // writers (sealed deduct / slab sold / single sold) can stamp a sensible
     // sale_price each. Reference-weighted when all lines have an our_price,
     // equal-per-unit otherwise.
-    const distributedCart = distributeCartTotal(cart, Number(cartTotal) || 0)
+    // Per-line mode: each line.price was set directly by the cashier — use
+    // the cart as-is, no distribution needed.
+    const distributedCart = priceMode === 'per_line'
+      ? cart.map(l => ({ ...l, price: Number(l.price) || 0 }))
+      : distributeCartTotal(cart, Number(cartTotal) || 0)
     // Build the payments array. Single-method: [{ method, amount: due }].
     // Split: [{ method1, amount1 }, { method2, amount2 }].
     const submittedPayments = (() => {
@@ -968,6 +1000,40 @@ export default function StorefrontSale() {
           )}
         </div>
 
+        {/* Price-mode toggle — defaults to whatever this terminal used last.
+            Total = single grand-total input (legacy). Per-line = each row
+            gets its own price input (staff request 2026-06-04). */}
+        {cart.length > 0 && (
+          <div className="flex justify-end mb-2">
+            <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40 text-xs">
+              <button
+                type="button"
+                onClick={() => setPriceMode('total')}
+                disabled={submitting}
+                className={`px-3 py-1 rounded-md transition ${
+                  priceMode === 'total'
+                    ? 'bg-vault-gold text-vault-dark font-semibold'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                Total only
+              </button>
+              <button
+                type="button"
+                onClick={() => setPriceMode('per_line')}
+                disabled={submitting}
+                className={`px-3 py-1 rounded-md transition ${
+                  priceMode === 'per_line'
+                    ? 'bg-vault-gold text-vault-dark font-semibold'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                Per-line price
+              </button>
+            </div>
+          </div>
+        )}
+
         {cart.length === 0 ? (
           <p className="text-center py-12 text-gray-500 text-sm">
             Cart is empty. Scan an item above to start.
@@ -981,6 +1047,7 @@ export default function StorefrontSale() {
                 onUpdate={(patch) => updateLine(line.key, patch)}
                 onRemove={() => removeLine(line.key)}
                 disabled={submitting}
+                priceMode={priceMode}
               />
             ))}
 
@@ -999,21 +1066,34 @@ export default function StorefrontSale() {
                       Reference (sum of our prices): {fmtUsd(cartReferenceTotal)}
                     </span>
                   )}
+                  {priceMode === 'per_line' && (
+                    <span className="text-[11px] text-vault-gold/80 mt-0.5">
+                      auto-sum from per-line prices
+                    </span>
+                  )}
                 </label>
                 <div className="relative">
                   <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">$</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={cartTotal}
-                    onChange={(e) => setCartTotal(e.target.value)}
-                    placeholder="0.00"
-                    disabled={submitting}
-                    className={`w-36 text-right pl-5 font-mono ${
-                      cartTotal === '' || cartTotal == null || Number(cartTotal) <= 0 ? 'border-red-500/50' : ''
-                    }`}
-                  />
+                  {priceMode === 'per_line' ? (
+                    <div className={`w-36 text-right pl-5 pr-2 py-2 font-mono rounded border bg-vault-darker/40 ${
+                      perLineTotal > 0 ? 'border-vault-gold/40 text-vault-gold' : 'border-red-500/50 text-gray-500'
+                    }`}>
+                      {perLineTotal.toFixed(2)}
+                    </div>
+                  ) : (
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={cartTotal}
+                      onChange={(e) => setCartTotal(e.target.value)}
+                      placeholder="0.00"
+                      disabled={submitting}
+                      className={`w-36 text-right pl-5 font-mono ${
+                        cartTotal === '' || cartTotal == null || Number(cartTotal) <= 0 ? 'border-red-500/50' : ''
+                      }`}
+                    />
+                  )}
                 </div>
               </div>
 
@@ -1067,7 +1147,7 @@ export default function StorefrontSale() {
             submitting
             || cart.length === 0
             || !paymentMethodId
-            || Number(cartTotal) <= 0
+            || cartGross <= 0
             || (splitPayment && splitEligible && (splitMismatch || splitMethodsClash || !paymentMethodId2))
           }
           className="btn btn-primary px-6 py-3 text-base"
@@ -1703,7 +1783,7 @@ function TransactionDetail({ txn }) {
 // ============================================================================
 // CartRow — single cart entry (sealed / slab / single)
 // ============================================================================
-function CartRow({ line, onUpdate, onRemove, disabled }) {
+function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
   const meta = KIND_META[line.kind]
   const Icon = meta.icon
 
@@ -1755,9 +1835,13 @@ function CartRow({ line, onUpdate, onRemove, disabled }) {
   // price display is broken (slabs without sheet MP, sealed by design, etc.)
   const ourPriceLabel = ourPrice > 0 ? `$${ourPrice.toFixed(2)}` : '—'
 
+  // In per-line mode the price input takes a column; we shrink the
+  // product-info column from 9 → 7 to make room. Total layout still 12 cols.
+  const isPerLine = priceMode === 'per_line'
+  const linePrice = Number(line.price) || 0
   return (
     <div className="grid grid-cols-12 gap-3 items-center p-3 bg-vault-darker/40 border border-vault-border rounded-lg">
-      <div className={`col-span-9 flex items-center gap-3 min-w-0 ${meta.color}`}>
+      <div className={`${isPerLine ? 'col-span-7' : 'col-span-9'} flex items-center gap-3 min-w-0 ${meta.color}`}>
         <Icon size={20} className="flex-shrink-0" />
         <div className="min-w-0">
           <div className="text-white font-medium truncate">{title}</div>
@@ -1789,6 +1873,34 @@ function CartRow({ line, onUpdate, onRemove, disabled }) {
           <div className="px-2 py-1 text-sm text-gray-400">1</div>
         )}
       </div>
+
+      {isPerLine && (
+        <div className="col-span-2">
+          <label className="block text-[10px] uppercase tracking-wider text-gray-500">
+            Price (per unit)
+          </label>
+          <div className="relative">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-xs pointer-events-none">$</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={line.price ?? ''}
+              onChange={(e) => onUpdate({ price: e.target.value === '' ? '' : Number(e.target.value) })}
+              placeholder={ourPrice > 0 ? ourPrice.toFixed(2) : '0.00'}
+              disabled={disabled}
+              className={`w-full pl-5 pr-1 py-1 text-sm text-right font-mono ${
+                linePrice <= 0 ? 'border-red-500/40' : ''
+              }`}
+            />
+          </div>
+          {linePrice > 0 && qty > 1 && (
+            <div className="text-[10px] text-gray-500 text-right mt-0.5">
+              line: ${(linePrice * qty).toFixed(2)}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="col-span-1 text-right">
         <button
