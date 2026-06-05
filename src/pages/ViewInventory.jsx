@@ -37,7 +37,13 @@ export default function ViewInventory() {
   // so "highest-value first" works the way you'd expect per shelf.
   const [sort, setSort] = useState({ field: 'totalValue', direction: 'desc' })
   const [editingId, setEditingId] = useState(null)
-  const [editForm, setEditForm] = useState({ quantity: '', avg_cost_basis: '' })
+  // applyToAll defaults ON because the typical mental model is "this product
+  // costs $X" — same across locations. Staff who legitimately want a
+  // per-location cost (rare — different intake batches at different prices)
+  // can uncheck it. Bug-fix 2026-06-04: previously the cost edit only hit
+  // the one location row, which surprised staff editing at Master expecting
+  // Stream Rooms to follow.
+  const [editForm, setEditForm] = useState({ quantity: '', avg_cost_basis: '', applyToAll: true })
 
   // Per-location buckets of sellable singles / slabs, plus which buckets the
   // user has expanded. Collapsed by default — sealed stays the headline; the
@@ -142,28 +148,53 @@ export default function ViewInventory() {
     setEditingId(inv.id)
     setEditForm({
       quantity: inv.quantity.toString(),
-      avg_cost_basis: inv.avg_cost_basis?.toString() || '0'
+      avg_cost_basis: inv.avg_cost_basis?.toString() || '0',
+      applyToAll: true,
     })
   }
 
   const cancelEdit = () => {
     setEditingId(null)
-    setEditForm({ quantity: '', avg_cost_basis: '' })
+    setEditForm({ quantity: '', avg_cost_basis: '', applyToAll: true })
   }
 
   const saveEdit = async (invId) => {
     try {
+      const newQty = parseInt(editForm.quantity) || 0
+      const newCost = parseFloat(editForm.avg_cost_basis) || 0
+      // Always update the row the user actually clicked Edit on (quantity
+      // is genuinely per-location, so this must stay row-scoped).
       const { error } = await supabase
         .from('inventory')
-        .update({
-          quantity: parseInt(editForm.quantity) || 0,
-          avg_cost_basis: parseFloat(editForm.avg_cost_basis) || 0
-        })
+        .update({ quantity: newQty, avg_cost_basis: newCost })
         .eq('id', invId)
-
       if (error) throw error
 
-      addToast('Inventory updated!')
+      // If "Apply to all locations" is checked, also push the new cost to
+      // every other inventory row for the same product. We have to look up
+      // the product_id first because the table row only knows its own id.
+      // Quantity is never propagated — each location's qty is independent.
+      let propagated = 0
+      if (editForm.applyToAll) {
+        const target = inventory.find(i => i.id === invId)
+        const productId = target?.product_id || target?.product?.id
+        if (productId) {
+          const { data: others, error: othersErr } = await supabase
+            .from('inventory')
+            .update({ avg_cost_basis: newCost })
+            .eq('product_id', productId)
+            .neq('id', invId)
+            .select('id')
+          if (othersErr) throw othersErr
+          propagated = (others || []).length
+        }
+      }
+
+      addToast(
+        propagated > 0
+          ? `Updated — cost applied to ${propagated + 1} location${propagated + 1 === 1 ? '' : 's'}`
+          : 'Inventory updated!'
+      )
       setEditingId(null)
       loadInventory()
     } catch (error) {
@@ -478,14 +509,27 @@ export default function ViewInventory() {
                         </td>
                         <td className="py-3 text-right">
                           {isEditing ? (
-                            <input
-                              type="number"
-                              value={editForm.avg_cost_basis}
-                              onChange={(e) => setEditForm(f => ({ ...f, avg_cost_basis: e.target.value }))}
-                              className="w-24 text-right py-1 px-2 text-sm"
-                              min="0"
-                              step="0.01"
-                            />
+                            <div className="flex flex-col items-end gap-1">
+                              <input
+                                type="number"
+                                value={editForm.avg_cost_basis}
+                                onChange={(e) => setEditForm(f => ({ ...f, avg_cost_basis: e.target.value }))}
+                                className="w-24 text-right py-1 px-2 text-sm"
+                                min="0"
+                                step="0.01"
+                              />
+                              {/* Default ON — most edits should propagate so all
+                                  locations show the same cost for the same SKU. */}
+                              <label className="flex items-center gap-1 text-[10px] text-gray-400 cursor-pointer select-none whitespace-nowrap">
+                                <input
+                                  type="checkbox"
+                                  checked={editForm.applyToAll}
+                                  onChange={(e) => setEditForm(f => ({ ...f, applyToAll: e.target.checked }))}
+                                  className="w-3 h-3 accent-vault-gold"
+                                />
+                                Apply to all locations
+                              </label>
+                            </div>
                           ) : (
                             <span className="text-gray-400">${inv.avg_cost_basis?.toFixed(2) || '0.00'}</span>
                           )}
