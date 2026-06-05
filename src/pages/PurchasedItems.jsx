@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react'
-import { 
+import {
   fetchProducts, fetchUsers, fetchVendors, fetchPaymentMethods,
   createAcquisition, deleteAcquisition, createVendor, createPaymentMethod, convertToUSD, getExchangeRates
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import BarcodeScanner from '../components/BarcodeScanner'
-import { ShoppingCart, Plus, Save, X, Trash2, HelpCircle, ChevronDown, ChevronUp } from 'lucide-react'
+import { ShoppingCart, Plus, Save, X, Trash2, HelpCircle, ChevronDown, ChevronUp, ClipboardPaste, Sparkles, Loader2 } from 'lucide-react'
+import { parsePurchaseText } from '../lib/parsePurchaseText'
 
 // Helper to extract Launch Name from full product name
 const extractLaunchName = (fullName, category) => {
@@ -46,6 +47,8 @@ export default function PurchasedItems() {
   const [showNewPayment, setShowNewPayment] = useState(false)
   const [newPaymentName, setNewPaymentName] = useState('')
   const [showInstructions, setShowInstructions] = useState(false)
+  // Paste-from-message: staff drop a vendor chat in, we parse it, they confirm.
+  const [pasteOpen, setPasteOpen] = useState(false)
 
   const [header, setHeader] = useState({
     date_purchased: new Date().toLocaleDateString('en-CA'),
@@ -112,6 +115,50 @@ export default function PurchasedItems() {
   const addLineItem = () => {
     const newId = Math.max(...lineItems.map(i => i.id), 0) + 1
     setLineItems([...lineItems, { id: newId, product_id: '', quantity: 1, cost: '', notes: '' }])
+  }
+
+  // Take a confirmed parse result (from PasteParseModal — already edited
+  // by the staff member) and stamp it onto the form. We REPLACE lineItems
+  // wholesale because the user explicitly clicked Apply from the paste
+  // modal and shouldn't end up with a stray empty first row mixed in.
+  // Header fields only update when the parse found something — never
+  // clobber a value the staff already typed with null.
+  const applyParsedPurchase = (parsed) => {
+    if (parsed.tracking) {
+      setHeader(h => ({
+        ...h,
+        tracking_number: parsed.tracking,
+        // Default carrier to USPS for 22-digit; UPS for 18; FedEx for 12/14.
+        carrier: h.carrier
+          || (parsed.tracking.length === 22 ? 'USPS'
+              : parsed.tracking.length === 18 ? 'UPS'
+              : parsed.tracking.length === 12 || parsed.tracking.length === 14 ? 'FedEx'
+              : h.carrier),
+      }))
+    }
+    if (parsed.paymentMethod?.id) {
+      setHeader(h => ({ ...h, payment_method_id: parsed.paymentMethod.id }))
+    }
+    if (parsed.vendor?.id) {
+      setHeader(h => ({ ...h, vendor_id: parsed.vendor.id }))
+    }
+    const matched = (parsed.lineItems || []).filter(li => li.productMatch?.id)
+    if (matched.length === 0) {
+      addToast('Nothing matched a product — fill the rows manually', 'info')
+      return
+    }
+    setLineItems(matched.map((li, idx) => ({
+      id: idx + 1,
+      product_id: li.productMatch.id,
+      quantity: li.qty || 1,
+      cost: li.cost != null ? String(li.cost) : '',
+      notes: '',
+    })))
+    addToast(
+      `Filled ${matched.length} line${matched.length === 1 ? '' : 's'} from message`,
+      'success'
+    )
+    setPasteOpen(false)
   }
 
   const removeLineItem = (id) => {
@@ -352,14 +399,25 @@ export default function PurchasedItems() {
         <p className="text-gray-400 mt-1">Log new inventory purchases</p>
       </div>
 
-      <div className="mb-4">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         <button
+          type="button"
           onClick={() => setShowInstructions(!showInstructions)}
           className="flex items-center gap-2 px-3 py-1.5 text-sm bg-vault-surface border border-vault-border rounded-lg text-gray-300 hover:text-vault-gold hover:border-vault-gold transition-colors"
         >
           <HelpCircle size={16} />
           <span>Instructions</span>
           {showInstructions ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+        <button
+          type="button"
+          onClick={() => setPasteOpen(true)}
+          className="flex items-center gap-2 px-3 py-1.5 text-sm bg-vault-gold/10 border border-vault-gold/40 rounded-lg text-vault-gold hover:bg-vault-gold/20 transition-colors"
+          title="Paste a vendor message — we'll extract tracking, line items, and payment for you to confirm."
+        >
+          <ClipboardPaste size={16} />
+          <span>Paste from message</span>
+          <Sparkles size={14} />
         </button>
         
         {showInstructions && (
@@ -613,6 +671,249 @@ export default function PurchasedItems() {
           </button>
         </div>
       </form>
+
+      {pasteOpen && (
+        <PasteParseModal
+          onClose={() => setPasteOpen(false)}
+          onApply={applyParsedPurchase}
+          products={products}
+          paymentMethods={paymentMethods}
+          vendors={vendors}
+          getProductLabel={getProductLabel}
+        />
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// PasteParseModal — paste vendor chat → confirm parse → apply to main form
+// ============================================================================
+// Two-stage flow keeps the heuristic parse out of the staff member's way:
+//   1. Paste raw text + Parse → see what we found
+//   2. Edit each line (qty / cost / which product) → Apply
+//
+// We do NOT auto-create vendors / payment methods here. If the parse found
+// a payment keyword (e.g. "Zelle") but it isn't in payment_methods yet,
+// we show the suggested label so the staffer knows what to add — but
+// require them to handle the actual creation in the main form's "+ Add"
+// flow. Reason: vendor/payment creation has side-effects (Lark, schemas)
+// that should go through the normal review path.
+function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, getProductLabel }) {
+  const [text, setText] = useState('')
+  const [parsed, setParsed] = useState(null)
+  const [parsing, setParsing] = useState(false)
+
+  const runParse = () => {
+    if (!text.trim()) return
+    setParsing(true)
+    // Synchronous, but a tiny tick lets the button show "Parsing…" so it
+    // doesn't feel like the click did nothing on big pastes.
+    setTimeout(() => {
+      const result = parsePurchaseText(text, { products, paymentMethods, vendors })
+      setParsed(result)
+      setParsing(false)
+    }, 50)
+  }
+
+  const updateLine = (idx, patch) => {
+    setParsed(p => ({
+      ...p,
+      lineItems: p.lineItems.map((li, i) => i === idx ? { ...li, ...patch } : li),
+    }))
+  }
+  const removeLine = (idx) => {
+    setParsed(p => ({ ...p, lineItems: p.lineItems.filter((_, i) => i !== idx) }))
+  }
+
+  const productOptions = products.map(p => ({ value: p.id, label: getProductLabel(p) }))
+  const matchedCount = (parsed?.lineItems || []).filter(li => li.productMatch?.id).length
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div
+        className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-3xl w-full p-5 shadow-2xl my-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2">
+            <ClipboardPaste size={18} className="text-vault-gold" />
+            <h3 className="font-semibold text-base text-white">Paste from message</h3>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xs">close</button>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          Paste the vendor's chat / receipt. We'll pull out the tracking, line items, payment method, and vendor — you confirm before filling the form.
+        </p>
+
+        {!parsed ? (
+          <>
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={12}
+              autoFocus
+              placeholder={`Example:\n\n9489 1472 2842 6840 2627 67\n\n45 first partner boxes\n$49x45=$2,205.00\n\n29 30th anniversary boxes\n$31x29=$899.00\n\nZelle\n504-303-2659\nTien Nguyen`}
+              className="w-full font-mono text-sm bg-vault-darker/40 border border-vault-border rounded-lg p-3 text-gray-200 placeholder:text-gray-600"
+            />
+            <div className="flex justify-end gap-2 mt-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="text-xs px-3 py-1.5 text-gray-300 hover:text-white border border-vault-border rounded"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={runParse}
+                disabled={parsing || !text.trim()}
+                className="text-xs px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold flex items-center gap-1"
+              >
+                {parsing ? <><Loader2 size={12} className="animate-spin" /> Parsing…</> : <><Sparkles size={12} /> Parse</>}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Header summary */}
+            <div className="space-y-2 mb-3">
+              <div className="flex items-center justify-between text-sm bg-vault-darker/40 rounded-lg p-2">
+                <span className="text-gray-400">Tracking</span>
+                <span className={`font-mono text-xs ${parsed.tracking ? 'text-vault-gold' : 'text-gray-600'}`}>
+                  {parsed.tracking || 'not found'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm bg-vault-darker/40 rounded-lg p-2">
+                <span className="text-gray-400">Payment</span>
+                <span className={`text-xs ${parsed.paymentMethod?.id ? 'text-vault-gold' : parsed.paymentMethod ? 'text-amber-300' : 'text-gray-600'}`}>
+                  {parsed.paymentMethod
+                    ? (parsed.paymentMethod.id ? parsed.paymentMethod.label : `${parsed.paymentMethod.label} (no saved method — add later)`)
+                    : 'not found'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm bg-vault-darker/40 rounded-lg p-2">
+                <span className="text-gray-400">Vendor</span>
+                <span className={`text-xs ${parsed.vendor?.id ? 'text-vault-gold' : parsed.vendor ? 'text-amber-300' : 'text-gray-600'}`}>
+                  {parsed.vendor
+                    ? `${parsed.vendor.name || ''}${parsed.vendor.phone ? ` · ${parsed.vendor.phone}` : ''}${parsed.vendor.id ? '' : ' (new — add later)'}`
+                    : 'not found'}
+                </span>
+              </div>
+              {parsed.rawTotal != null && (
+                <div className="flex items-center justify-between text-sm bg-vault-darker/40 rounded-lg p-2">
+                  <span className="text-gray-400">Grand total in message</span>
+                  <span className="text-vault-gold font-mono text-xs">${parsed.rawTotal.toFixed(2)}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Line items */}
+            <h4 className="text-xs uppercase tracking-wider text-gray-500 mb-2">
+              Line items — {matchedCount} of {parsed.lineItems.length} matched a product
+            </h4>
+            {parsed.lineItems.length === 0 ? (
+              <p className="text-xs text-gray-500 bg-vault-darker/40 rounded-lg p-3 text-center">
+                No quantity-and-price lines found in the message.
+              </p>
+            ) : (
+              <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
+                {parsed.lineItems.map((li, idx) => (
+                  <div key={idx} className={`bg-vault-darker/40 border rounded-lg p-3 ${li.productMatch?.id ? 'border-vault-border' : 'border-amber-500/40'}`}>
+                    <div className="text-xs text-gray-500 mb-2 truncate">
+                      <span className="text-gray-400">from message:</span> "{li.productName}"
+                      {li.productMatch?.score != null && (
+                        <span className="ml-2 text-gray-600">({Math.round(li.productMatch.score * 100)}% match)</span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-12 gap-2 items-end">
+                      <div className="col-span-6">
+                        <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Product</label>
+                        <SearchableSelect
+                          value={li.productMatch?.id || ''}
+                          onChange={(value) => {
+                            const prod = products.find(p => p.id === value)
+                            updateLine(idx, {
+                              productMatch: prod ? { id: prod.id, product: prod, score: 1 } : null,
+                            })
+                          }}
+                          options={productOptions}
+                          placeholder="Pick a product…"
+                          getOptionValue={(opt) => opt.value}
+                          getOptionLabel={(opt) => opt.label}
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Qty</label>
+                        <input
+                          type="number" min="1"
+                          value={li.qty}
+                          onChange={(e) => updateLine(idx, { qty: parseInt(e.target.value) || 0 })}
+                          className="w-full text-sm py-1 px-2"
+                        />
+                      </div>
+                      <div className="col-span-3">
+                        <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Cost / unit</label>
+                        <div className="relative">
+                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-xs pointer-events-none">$</span>
+                          <input
+                            type="number" min="0" step="0.01"
+                            value={li.cost ?? ''}
+                            onChange={(e) => updateLine(idx, { cost: e.target.value === '' ? null : Number(e.target.value) })}
+                            className="w-full text-sm pl-5 py-1 text-right font-mono"
+                          />
+                        </div>
+                      </div>
+                      <div className="col-span-1 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => removeLine(idx)}
+                          className="p-1.5 text-gray-400 hover:text-red-400"
+                          title="Drop this line"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    {li.cost != null && li.qty > 0 && (
+                      <div className="text-[11px] text-gray-500 text-right mt-1">
+                        line total: ${(li.cost * li.qty).toFixed(2)}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex justify-between items-center gap-2 mt-4 pt-3 border-t border-vault-border/50">
+              <button
+                type="button"
+                onClick={() => setParsed(null)}
+                className="text-xs px-3 py-1.5 text-gray-300 hover:text-white"
+              >
+                ← Edit paste
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="text-xs px-3 py-1.5 text-gray-300 hover:text-white border border-vault-border rounded"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onApply(parsed)}
+                  disabled={matchedCount === 0}
+                  className="text-xs px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold"
+                >
+                  Apply to form ({matchedCount})
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
