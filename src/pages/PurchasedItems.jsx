@@ -123,7 +123,27 @@ export default function PurchasedItems() {
   // modal and shouldn't end up with a stray empty first row mixed in.
   // Header fields only update when the parse found something — never
   // clobber a value the staff already typed with null.
+  //
+  // HARD RULE (directive 2026-06-04): every parsed line MUST have a chosen
+  // product. The modal's Apply button is already disabled when any line is
+  // unresolved — but we double-check here so this can never silently drop
+  // a line. If somehow a no-match line slipped through, we bail with a
+  // toast and the modal stays open for the staff to fix it.
   const applyParsedPurchase = (parsed) => {
+    const lines = parsed.lineItems || []
+    if (lines.length === 0) {
+      addToast('No line items in the parse — nothing to fill', 'error')
+      return
+    }
+    const unresolved = lines.filter(li => !li.productMatch?.id)
+    if (unresolved.length > 0) {
+      addToast(
+        `Pick a product for ${unresolved.length} unmatched line${unresolved.length === 1 ? '' : 's'} first (or remove them)`,
+        'error'
+      )
+      return
+    }
+
     if (parsed.tracking) {
       setHeader(h => ({
         ...h,
@@ -142,12 +162,7 @@ export default function PurchasedItems() {
     if (parsed.vendor?.id) {
       setHeader(h => ({ ...h, vendor_id: parsed.vendor.id }))
     }
-    const matched = (parsed.lineItems || []).filter(li => li.productMatch?.id)
-    if (matched.length === 0) {
-      addToast('Nothing matched a product — fill the rows manually', 'info')
-      return
-    }
-    setLineItems(matched.map((li, idx) => ({
+    setLineItems(lines.map((li, idx) => ({
       id: idx + 1,
       product_id: li.productMatch.id,
       quantity: li.qty || 1,
@@ -155,7 +170,7 @@ export default function PurchasedItems() {
       notes: '',
     })))
     addToast(
-      `Filled ${matched.length} line${matched.length === 1 ? '' : 's'} from message`,
+      `Filled ${lines.length} line${lines.length === 1 ? '' : 's'} from message`,
       'success'
     )
     setPasteOpen(false)
@@ -727,7 +742,12 @@ function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, 
   }
 
   const productOptions = products.map(p => ({ value: p.id, label: getProductLabel(p) }))
+  const lineCount = parsed?.lineItems?.length || 0
   const matchedCount = (parsed?.lineItems || []).filter(li => li.productMatch?.id).length
+  const unmatchedCount = lineCount - matchedCount
+  // Hard rule: every line must have a product chosen before Apply is allowed
+  // (directive 2026-06-04 from boss). Empty parse list also blocks Apply.
+  const canApply = lineCount > 0 && unmatchedCount === 0
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={onClose}>
@@ -809,9 +829,16 @@ function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, 
             </div>
 
             {/* Line items */}
-            <h4 className="text-xs uppercase tracking-wider text-gray-500 mb-2">
-              Line items — {matchedCount} of {parsed.lineItems.length} matched a product
-            </h4>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs uppercase tracking-wider text-gray-500">
+                Line items — {matchedCount} of {lineCount} matched
+              </h4>
+              {unmatchedCount > 0 && (
+                <span className="text-[10px] text-red-300 bg-red-500/10 border border-red-500/30 rounded px-2 py-0.5">
+                  ⚠ {unmatchedCount} need a product
+                </span>
+              )}
+            </div>
             {parsed.lineItems.length === 0 ? (
               <p className="text-xs text-gray-500 bg-vault-darker/40 rounded-lg p-3 text-center">
                 No quantity-and-price lines found in the message.
@@ -819,11 +846,20 @@ function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, 
             ) : (
               <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
                 {parsed.lineItems.map((li, idx) => (
-                  <div key={idx} className={`bg-vault-darker/40 border rounded-lg p-3 ${li.productMatch?.id ? 'border-vault-border' : 'border-amber-500/40'}`}>
-                    <div className="text-xs text-gray-500 mb-2 truncate">
-                      <span className="text-gray-400">from message:</span> "{li.productName}"
-                      {li.productMatch?.score != null && (
-                        <span className="ml-2 text-gray-600">({Math.round(li.productMatch.score * 100)}% match)</span>
+                  <div key={idx} className={`bg-vault-darker/40 border-2 rounded-lg p-3 ${
+                    li.productMatch?.id ? 'border-vault-border' : 'border-red-500/60 ring-1 ring-red-500/20'
+                  }`}>
+                    <div className="text-xs text-gray-500 mb-2 truncate flex items-center justify-between gap-2">
+                      <span className="truncate">
+                        <span className="text-gray-400">from message:</span> "{li.productName}"
+                        {li.productMatch?.score != null && (
+                          <span className="ml-2 text-gray-600">({Math.round(li.productMatch.score * 100)}% match)</span>
+                        )}
+                      </span>
+                      {!li.productMatch?.id && (
+                        <span className="text-[10px] text-red-300 whitespace-nowrap font-semibold">
+                          ⚠ pick a product or remove
+                        </span>
                       )}
                     </div>
                     <div className="grid grid-cols-12 gap-2 items-end">
@@ -926,10 +962,15 @@ function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, 
                 <button
                   type="button"
                   onClick={() => onApply(parsed)}
-                  disabled={matchedCount === 0}
-                  className="text-xs px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold"
+                  disabled={!canApply}
+                  title={canApply
+                    ? `Apply ${matchedCount} line${matchedCount === 1 ? '' : 's'} to the purchase form`
+                    : `Pick a product for ${unmatchedCount} unmatched line${unmatchedCount === 1 ? '' : 's'} first (or remove them)`}
+                  className="text-xs px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
                 >
-                  Apply to form ({matchedCount})
+                  {canApply
+                    ? `Apply to form (${matchedCount})`
+                    : `Resolve ${unmatchedCount} unmatched line${unmatchedCount === 1 ? '' : 's'}`}
                 </button>
               </div>
             </div>
