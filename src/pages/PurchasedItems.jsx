@@ -842,6 +842,28 @@ function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, 
                           getOptionValue={(opt) => opt.value}
                           getOptionLabel={(opt) => opt.label}
                         />
+                        {/* Alternate candidates — surfaces when the parse
+                            wasn't sure. One click swaps the SearchableSelect
+                            to the chosen alternate so staff don't have to
+                            scroll the whole catalog. */}
+                        {li.productCandidates && li.productCandidates.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            <span className="text-[10px] text-gray-500 self-center">or:</span>
+                            {li.productCandidates.map(c => (
+                              <button
+                                key={c.id}
+                                type="button"
+                                onClick={() => updateLine(idx, {
+                                  productMatch: { id: c.id, product: c.product, score: c.score },
+                                })}
+                                className="text-[10px] px-1.5 py-0.5 border border-vault-border rounded hover:border-vault-gold/50 hover:text-vault-gold text-gray-400 truncate max-w-[200px]"
+                                title={getProductLabel(c.product)}
+                              >
+                                {c.product.brand} {extractLaunchName(c.product.name, c.product.category)} ({Math.round(c.score * 100)}%)
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       <div className="col-span-2">
                         <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Qty</label>

@@ -20,14 +20,91 @@
 // surface the parse to the user for confirmation before saving.
 
 // Common words that hurt product matching (a vendor's casual "boxes" tells
-// us nothing about the SKU). Keep this small — we want the match to leverage
-// distinguishing terms like "first partner", "30th anniversary", etc.
+// us nothing about the SKU). Keep this short and ONLY words that are pure
+// noise — anything that can distinguish two SKUs stays (e.g. don't drop
+// "english" / "japanese" / "1st-edition").
 const NAME_STOPWORDS = new Set([
   'a', 'an', 'the',
-  'box', 'boxes', 'pack', 'packs',
-  'etb', 'collection', 'tin', 'bundle',
   'of', 'and', 'or', '&',
 ])
+
+// Trade abbreviations vendors use casually. Expanded into both the short
+// form and the full form so token matching catches "BB" against a product
+// named "Booster Box" AND vice-versa. Maps abbrev → full-form tokens.
+const ABBREVIATIONS = {
+  bb:     ['booster', 'box'],
+  bbs:    ['booster', 'box'],
+  etb:    ['elite', 'trainer', 'box'],
+  etbs:   ['elite', 'trainer', 'box'],
+  pc:     ['premium', 'collection'],
+  upc:    ['ultra', 'premium', 'collection'],
+  cb:     ['collection', 'box'],
+  bp:     ['booster', 'pack'],
+  bps:    ['booster', 'pack'],
+  op:     ['one', 'piece'],
+  ygo:    ['yugioh'],
+  mtg:    ['magic'],
+  pkmn:   ['pokemon'],
+  pkm:    ['pokemon'],
+  poke:   ['pokemon'],
+  jp:     ['japanese'],
+  en:     ['english'],
+  cn:     ['chinese'],
+  kr:     ['korean'],
+}
+
+// Words that strongly hint a CATEGORY. If the input contains one, products
+// whose `category` matches get a score boost — handles "Stellar Crown box"
+// (which is ambiguous between Booster Box and Collection Box) more sanely.
+const CATEGORY_HINTS = {
+  box:       ['box'],
+  boxes:     ['box'],
+  booster:   ['booster'],
+  elite:     ['elite trainer'],
+  trainer:   ['elite trainer'],
+  etb:       ['elite trainer'],
+  premium:   ['premium'],
+  pc:        ['premium'],
+  upc:       ['ultra premium'],
+  collection:['collection'],
+  pack:      ['pack'],
+  packs:     ['pack'],
+  bundle:    ['bundle'],
+  tin:       ['tin'],
+}
+
+// Lightweight stemmer — strips trailing 's' / 'es' / "th"/"st"/"nd"/"rd"
+// on numerals. Lets "boxes" → "box", "packs" → "pack", "30th" → "30",
+// "2nd" → "2", etc. Keeps the original token too so distinctive forms
+// don't disappear ("packing" doesn't lose its meaning to "pack").
+const stem = (t) => {
+  const forms = new Set([t])
+  if (t.endsWith('es') && t.length > 3) forms.add(t.slice(0, -2))
+  if (t.endsWith('s') && t.length > 2) forms.add(t.slice(0, -1))
+  const ord = t.match(/^(\d+)(st|nd|rd|th)$/i)
+  if (ord) forms.add(ord[1])
+  return Array.from(forms)
+}
+
+// Expand abbreviations + stemming for the SEARCH side of a fuzzy match.
+// Input "first partner boxes" → ["first", "partner", "box", "boxes"].
+// Input "stellar crown etb" → ["stellar", "crown", "elite", "trainer", "box"].
+const expandTokens = (text) => {
+  const raw = String(text || '')
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')   // strip punctuation but keep digits
+    .split(/\s+/)
+    .filter(Boolean)
+  const out = new Set()
+  for (const t of raw) {
+    if (NAME_STOPWORDS.has(t)) continue
+    if (ABBREVIATIONS[t]) {
+      for (const x of ABBREVIATIONS[t]) out.add(x)
+    }
+    for (const s of stem(t)) out.add(s)
+  }
+  return Array.from(out)
+}
 
 const PAYMENT_KEYWORDS = [
   // Each tuple: [regex-source for keyword, canonical label].
@@ -73,43 +150,66 @@ const trim = (s) => String(s || '').trim()
 
 /**
  * Fuzzy-match a free-text product name against the catalog.
- * Returns null if nothing scores well enough — caller falls back to
- * "no match, pick a product manually".
+ * Returns:
+ *   {
+ *     best: { product, score } | null,   // best match if it cleared 50%
+ *     candidates: [{ product, score }],  // up to 3 alternates ≥ 30%
+ *                                        // (excludes best to avoid dupes)
+ *   }
  *
- * Scoring: split the input name into content tokens (stopwords removed),
- * count how many appear in `${brand} ${name} ${category}` for each
- * product, normalize by token count, and pick the best ≥ 0.5.
+ * Scoring:
+ *   1. Expand input tokens (BB → booster box, 30th → 30, boxes → box).
+ *   2. For each product, build a haystack of brand + name + category and
+ *      expand the SAME way.
+ *   3. token_overlap = (hits / input_tokens_count). Distinct hits — a
+ *      product mentioning "box" 3 times still scores 1 for that token.
+ *   4. category_boost: if the input's category hint matches the product
+ *      category, +0.15 (caps at 1.0). Distinguishes "Stellar Crown box"
+ *      between Booster Box and Collection Box.
+ *   5. Tiebreak by product.id length (stable) so re-renders don't reshuffle.
  */
 function fuzzyMatchProduct(rawName, products) {
-  const lower = trim(rawName).toLowerCase()
-  if (!lower) return null
-  const tokens = lower
-    .split(/\s+/)
-    .filter(t => t && !NAME_STOPWORDS.has(t))
-  if (tokens.length === 0) return null
+  const tokens = expandTokens(rawName)
+  if (tokens.length === 0) return { best: null, candidates: [] }
 
-  let best = null
-  let bestScore = 0
+  // Which categories does this input hint at? (e.g. "box" → ["box"]).
+  const inputLower = String(rawName || '').toLowerCase()
+  const hintedCategories = new Set()
+  for (const word of inputLower.split(/\s+/)) {
+    const hints = CATEGORY_HINTS[word]
+    if (hints) for (const h of hints) hintedCategories.add(h)
+  }
+
+  const ranked = []
   for (const p of products) {
-    const hay = `${p.brand || ''} ${p.name || ''} ${p.category || ''}`.toLowerCase()
+    const hay = new Set(expandTokens(`${p.brand || ''} ${p.name || ''} ${p.category || ''}`))
     let hits = 0
     for (const t of tokens) {
-      if (hay.includes(t)) hits++
+      if (hay.has(t)) hits++
     }
-    // Normalize so a short distinctive name like "first partner" scoring
-    // 2/2 beats a longer name that incidentally hits 3 stopwords.
-    const score = hits / tokens.length
-    if (score > bestScore) {
-      bestScore = score
-      best = p
+    let score = hits / tokens.length
+    // Category boost — only if the input clearly hinted at a category and
+    // the product's category matches one of the hints.
+    if (hintedCategories.size > 0 && p.category) {
+      const cat = String(p.category).toLowerCase()
+      for (const h of hintedCategories) {
+        if (cat.includes(h)) { score = Math.min(1, score + 0.15); break }
+      }
     }
+    if (score > 0) ranked.push({ product: p, score })
   }
+  ranked.sort((a, b) => b.score - a.score)
 
-  // Require ≥ 50% token match AND at least 1 hit. Otherwise call it ambiguous.
-  if (best && bestScore >= 0.5) {
-    return { product: best, score: bestScore }
-  }
-  return null
+  // Pick the best if it cleared the high-confidence bar (≥ 0.5).
+  const top = ranked[0]
+  const best = top && top.score >= 0.5 ? top : null
+  // Alternate candidates: next 3 ≥ 0.3. If no strong best, surface the top
+  // few in case the autoselect is wrong — staff don't have to scrub the
+  // whole catalog. Excludes the chosen `best` to avoid duplicate entries.
+  const candidates = ranked
+    .filter(c => c.score >= 0.3 && (!best || c.product.id !== best.product.id))
+    .slice(0, 3)
+  return { best, candidates }
 }
 
 function pickTracking(text) {
@@ -214,15 +314,21 @@ function pickLineItems(text, products) {
     }
     if (cost == null && total == null) continue  // qty+name with no price → skip
 
-    const match = fuzzyMatchProduct(name, products)
+    const { best, candidates } = fuzzyMatchProduct(name, products)
     out.push({
       qty,
       cost,         // per-unit price (in original currency)
       total,        // line total = cost × qty (sanity-checkable in UI)
       productName: name,   // raw text from the message
-      productMatch: match
-        ? { id: match.product.id, product: match.product, score: match.score }
+      productMatch: best
+        ? { id: best.product.id, product: best.product, score: best.score }
         : null,
+      // Alternate candidates the UI surfaces as quick-pick chips when the
+      // auto-match looks weak (or wrong) — saves the cashier from typing
+      // into SearchableSelect when the right answer is in the top few.
+      productCandidates: candidates.map(c => ({
+        id: c.product.id, product: c.product, score: c.score,
+      })),
     })
   }
   return out
