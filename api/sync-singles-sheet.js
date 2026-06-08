@@ -344,13 +344,15 @@ export default async function handler(req, res) {
       }
     }
 
-    // Hourly safety-net back-sync: any single that Supabase says is sold
-    // but the sheet still shows as available gets Status='sold' pushed
-    // back. The frontend's fire-and-forget /api/sheet-mark-sold call after
-    // each sale handles the immediate case; this catches any sale where
-    // that fetch failed (network blip, function cold-start timeout, etc).
+    // Hourly safety-net back-sync. For each TCG ID that has any sold row
+    // in Supabase, push the right thing back to the sheet:
+    //   - remaining qty > 0  → update the sheet's Qty column (col E)
+    //   - remaining qty == 0 → write 'sold' to Status column (col I)
+    // Catches anything the immediate /api/sheet-mark-sold call missed
+    // (network blip, cold-start timeout, etc).
     let backsync = { skipped: 'env not set' }
     try {
+      // 1. All TCG IDs that have any sold row.
       const { data: soldRows } = await supabase
         .from('singles')
         .select('tcg_id')
@@ -358,13 +360,36 @@ export default async function handler(req, res) {
         .eq('deleted', false)
         .not('tcg_id', 'is', null)
       const soldIds = new Set((soldRows || []).map(r => String(r.tcg_id).trim()).filter(Boolean))
+
+      // 2. For those same TCG IDs, sum the LIVE (non-sold) qty so we know
+      //    whether each card is fully sold (write 'sold') or partially
+      //    sold (update qty). Single query — much faster than per-id.
+      let remainingByTcg = new Map()
+      if (soldIds.size > 0) {
+        const idArr = [...soldIds]
+        for (let i = 0; i < idArr.length; i += 200) {
+          const chunk = idArr.slice(i, i + 200)
+          const { data: live } = await supabase
+            .from('singles')
+            .select('tcg_id, quantity')
+            .in('tcg_id', chunk)
+            .neq('status', 'sold')
+            .eq('deleted', false)
+          for (const r of live || []) {
+            const k = String(r.tcg_id).trim()
+            remainingByTcg.set(k, (remainingByTcg.get(k) || 0) + (Number(r.quantity) || 0))
+          }
+        }
+      }
+
       backsync = await backsyncSoldStatus({
         spreadsheetId: SHEET_ID,
         tabs: SHEET_TABS.map(t => t.name),
-        idColumn: 5,         // TCG ID is col F
-        statusColumn: 8,     // Status is col I (added 2026-06-04 — singles
-                             // sheet only goes A..H natively + I=Status now)
+        idColumn: 5,         // F — TCG ID
+        qtyColumn: 4,        // E — Qty (singles can have >1)
+        statusColumn: 8,     // I — Status
         soldIdsInDb: soldIds,
+        remainingByTcg,
       })
     } catch (e) {
       console.warn('[sync-singles-sheet] back-sync threw (non-fatal):', e.message)

@@ -125,31 +125,45 @@ export async function batchUpdateValues(spreadsheetId, updates) {
 
 /**
  * Hourly back-sync helper used by sync-singles-sheet + sync-slabs-sheet.
- * Reads every tab's id+status columns, finds rows whose id matches a
- * Supabase row with status='sold' but whose sheet status isn't 'sold'
- * yet, and writes 'sold' in one batched call.
  *
- * Returns { scanned, alreadySold, written, perTab[] }. Used in the sync
- * handler's response payload so the cron log shows what happened.
+ * MODE A (slabs — no qtyColumn): for each sheet row whose id is in
+ *   soldIdsInDb, write 'sold' to the Status column if it isn't there yet.
+ *   Slabs are unique items (qty always 1), so a sold slab is just sold.
+ *
+ * MODE B (singles — qtyColumn provided): for each sheet row whose id has
+ *   any sold row in DB, look up the REMAINING (non-sold) qty for that id:
+ *     - remaining > 0 → write that number to the qty column if it differs
+ *       (don't touch status — there are still units in inventory).
+ *     - remaining == 0 → write 'sold' to status (and 0 to qty) if needed.
+ *   This avoids prematurely marking a qty=5 card as "sold" when only 1
+ *   was sold — staff would lose track of the other 4.
+ *
+ * Returns { written, perTab[], message }. message is a one-line human
+ * summary that gets echoed to Vercel cron logs.
  *
  * Args:
- *   spreadsheetId    : the Google Sheet id
+ *   spreadsheetId    : Google Sheet id
  *   tabs             : array of tab names to scan
  *   idColumn         : 0-based column where the cert/tcg lives
  *   statusColumn     : 0-based column where Status lives (target of write)
- *   soldIdsInDb      : Set<string> of cert/tcg numbers that are sold in DB
+ *   qtyColumn        : OPTIONAL. 0-based column where qty lives (singles only)
+ *   soldIdsInDb      : Set<string> of cert/tcg numbers that have any sold row in DB
+ *   remainingByTcg   : OPTIONAL. Map<string, number> of tcg → live non-sold qty
+ *                      sum. Required when qtyColumn is set.
  */
 export async function backsyncSoldStatus({
-  spreadsheetId, tabs, idColumn, statusColumn, soldIdsInDb,
+  spreadsheetId, tabs, idColumn, statusColumn,
+  qtyColumn, soldIdsInDb, remainingByTcg,
 }) {
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    return { skipped: 'GOOGLE_SERVICE_ACCOUNT_JSON not set', written: 0 }
+    return { skipped: 'GOOGLE_SERVICE_ACCOUNT_JSON not set', written: 0,
+             message: 'Skipped — GOOGLE_SERVICE_ACCOUNT_JSON env var not set.' }
   }
   const updates = []
   const perTab = []
   for (const tab of tabs) {
-    const maxColLetter = colToA1(Math.max(idColumn, statusColumn))
-    const range = `${tab}!A1:${maxColLetter}5000`
+    const widestCol = Math.max(idColumn, statusColumn, qtyColumn ?? 0)
+    const range = `${tab}!A1:${colToA1(widestCol)}5000`
     let rows
     try {
       rows = await readRange(spreadsheetId, range)
@@ -160,23 +174,49 @@ export async function backsyncSoldStatus({
       }
       throw e
     }
-    let scanned = 0, written = 0
+    let scanned = 0
+    let queuedStatus = 0, queuedQty = 0
     for (let r = 0; r < rows.length; r++) {
       const idCell = rows[r][idColumn]
       if (idCell == null || idCell === '') continue
       const idStr = String(idCell).trim()
-      // Sheet header row will be in here too — skip non-numeric singles
-      // tcg / cert ids. Cert numbers are always digit strings; tcg ids
-      // same. This double-purposes as a header-row filter.
+      // Skip header rows + junk — both cert and tcg are pure digit strings.
       if (!/^\d+$/.test(idStr)) continue
       scanned++
       if (!soldIdsInDb.has(idStr)) continue
       const currentStatus = String(rows[r][statusColumn] || '').trim().toLowerCase()
+
+      // ─── Singles: decide qty vs status based on remaining ────────────
+      if (qtyColumn != null) {
+        const remaining = remainingByTcg?.get(idStr) ?? 0
+        const sheetQty = Number(rows[r][qtyColumn]) || 0
+        if (remaining > 0) {
+          // Some units left — sync qty cell, leave status alone.
+          if (sheetQty !== remaining) {
+            updates.push({ range: cellA1(tab, r, qtyColumn), values: [[remaining]] })
+            queuedQty++
+          }
+        } else {
+          // All sold — write 'sold' to status (and zero qty if needed).
+          if (currentStatus !== 'sold') {
+            updates.push({ range: cellA1(tab, r, statusColumn), values: [['sold']] })
+            queuedStatus++
+          }
+          if (sheetQty !== 0) {
+            updates.push({ range: cellA1(tab, r, qtyColumn), values: [[0]] })
+            queuedQty++
+          }
+        }
+        continue
+      }
+
+      // ─── Slabs: always mark sold ────────────────────────────────────
       if (currentStatus === 'sold') continue
       updates.push({ range: cellA1(tab, r, statusColumn), values: [['sold']] })
-      written++
+      queuedStatus++
     }
-    perTab.push({ tab, scanned, queued: written })
+    perTab.push({ tab, scanned, status_writes: queuedStatus, qty_writes: queuedQty,
+                  queued: queuedStatus + queuedQty })
   }
   if (updates.length === 0) {
     return {

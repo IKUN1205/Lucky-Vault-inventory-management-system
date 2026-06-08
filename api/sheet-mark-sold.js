@@ -31,21 +31,27 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 // the cert / tcg id when locating the row.
 //
 // Verified against live sheet headers via service account read on
-// 2026-06-04:
+// 2026-06-04 (re-confirmed when title row added to Master Singles):
 // - Singles (id 14nuc6ckt5iPRAFkm7P6NAupbn_uXLwGyUsuVzQGFw80):
-//     A=Name B=Set C=Market$ D=Prices E=Qty F=TCG ID G=Location H=Date
-//     I=Status (added 2026-06-04 by this commit's setup script).
-//     idColumn=5 (F=TCG ID), statusColumn=8 (I=Status).
+//     Row 1 = header on both tabs:
+//       A=Name B=Set C=Market$ D=Prices E=Qty F=TCG ID G=Location H=Date I=Status
+//     idColumn=5 (F=TCG ID), qtyColumn=4 (E=Qty), statusColumn=8 (I=Status).
+//     Singles can have quantity > 1 (e.g. "5 copies of card X"). When we
+//     sell ONE of those 5, the sheet shouldn't go straight to 'sold' —
+//     it should reflect the remaining count. Only when remaining hits 0
+//     do we flip Status to 'sold'.
 // - Slabs (id 1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI):
 //     Pokemon Master + One Piece Master both have Status in col L (idx 11).
-//     Other tabs (OP NEW, New Input, Highend) skipped per boss directive —
-//     back-sync only touches the two canonical Master tabs.
+//     Slabs are unique items (qty always 1), so no qtyColumn — selling a
+//     slab always flips Status. Other tabs (OP NEW, New Input, Highend)
+//     skipped per boss directive.
 const SHEET_CONFIG = {
   single: {
     spreadsheetId: '14nuc6ckt5iPRAFkm7P6NAupbn_uXLwGyUsuVzQGFw80',
     tabs: ['Master Singles', 'New Singles '],
     idColumn: 5,
     idAttr: 'tcg_id',
+    qtyColumn: 4,        // E — for qty>1 cards we decrement this instead of writing 'sold'
     statusColumn: 8,
   },
   slab: {
@@ -162,6 +168,25 @@ export default async function handler(req, res) {
         { kind, db_id: id })
     }
 
+    // For singles: sum remaining (non-sold) quantity for this TCG ID.
+    // Even though the specific db row we're called for is sold, OTHER rows
+    // with the same tcg_id might still be in_inventory (e.g. user had
+    // qty=5, sold 1 → original row qty=4 in_inventory + sold clone qty=1).
+    // The sheet should reflect the remaining count, not flip to 'sold',
+    // until every unit is gone. Slabs don't have this case — they're
+    // unique items (qty always 1) so a sold slab is just sold.
+    let remainingQty = 0
+    if (cfg.qtyColumn != null) {
+      const { data: liveRows, error: liveErr } = await supabase
+        .from('singles')
+        .select('quantity')
+        .eq('tcg_id', idValue)
+        .neq('status', 'sold')
+        .eq('deleted', false)
+      if (liveErr) throw liveErr
+      remainingQty = (liveRows || []).reduce((s, r) => s + (Number(r.quantity) || 0), 0)
+    }
+
     // 2. For each tab in the sheet, read the id column and find the row
     //    that matches. Most-recently-edited tab wins (we just take the
     //    first hit). Singles can appear in either Master Singles OR
@@ -190,7 +215,8 @@ export default async function handler(req, res) {
         if (cell == null) continue
         if (String(cell).trim() !== idValue) continue
         const currentStatus = rows[r][cfg.statusColumn]
-        found = { tab, rowIndex: r, currentStatus }
+        const currentQty = cfg.qtyColumn != null ? rows[r][cfg.qtyColumn] : null
+        found = { tab, rowIndex: r, currentStatus, currentQty }
         break
       }
       if (found) break
@@ -205,35 +231,88 @@ export default async function handler(req, res) {
         { kind, db_id: id, id_value: idValue, tabs_scanned: tabsScanned })
     }
 
-    const targetCell = cellA1(found.tab, found.rowIndex, cfg.statusColumn)
-    const sheetUrl = `https://docs.google.com/spreadsheets/d/${cfg.spreadsheetId}/edit#gid=0&range=${encodeURIComponent(targetCell)}`
+    const statusCell = cellA1(found.tab, found.rowIndex, cfg.statusColumn)
+    const sheetUrl = `https://docs.google.com/spreadsheets/d/${cfg.spreadsheetId}/edit#range=${encodeURIComponent(statusCell)}`
+    const sheetStatusLower = String(found.currentStatus || '').trim().toLowerCase()
+    const sheetQty = Number(found.currentQty) || 0
 
-    // 3. Idempotent: if the sheet already says "sold", nothing to do.
-    if (String(found.currentStatus || '').trim().toLowerCase() === 'sold') {
-      return respond(res, 200, 'already_sold',
-        `Sheet row for ${kindNoun(kind).toLowerCase()} ${idLabel(kind)} ${idValue} already says "sold" in ${found.tab} row ${found.rowIndex + 1}. Nothing to write.`,
+    // ─── Singles with qty support ────────────────────────────────────
+    // If at least one unit still remains in inventory after this sale,
+    // we DON'T flip the row to 'sold' — we update the qty column.
+    // Only when remaining hits 0 does Status get 'sold'.
+    if (cfg.qtyColumn != null) {
+      const qtyCell = cellA1(found.tab, found.rowIndex, cfg.qtyColumn)
+
+      if (remainingQty > 0) {
+        // Some units still in inventory — sync qty (not status).
+        if (sheetQty === remainingQty) {
+          return respond(res, 200, 'qty_already_correct',
+            `${kindNoun(kind)} ${idLabel(kind)} ${idValue}: sheet already shows qty=${remainingQty} in ${found.tab} row ${found.rowIndex + 1}. Nothing to write.`,
+            {
+              kind, db_id: id, id_value: idValue,
+              sheet_tab: found.tab, sheet_row: found.rowIndex + 1,
+              sheet_cell: qtyCell, sheet_url: sheetUrl,
+              remaining_qty: remainingQty, sheet_qty: sheetQty,
+            })
+        }
+        const result = await batchUpdateValues(cfg.spreadsheetId, [
+          { range: qtyCell, values: [[remainingQty]] },
+        ])
+        return respond(res, 200, 'qty_decremented',
+          `Updated qty ${sheetQty} → ${remainingQty} for ${kindNoun(kind).toLowerCase()} ${idLabel(kind)} ${idValue} in ${found.tab} cell ${qtyCell.split('!')[1]}. (Status left alone — there are still units in inventory.)`,
+          {
+            kind, db_id: id, id_value: idValue,
+            sheet_tab: found.tab, sheet_row: found.rowIndex + 1,
+            sheet_cell: qtyCell, sheet_url: sheetUrl,
+            qty_before: sheetQty, qty_after: remainingQty,
+            cells_updated: result.totalUpdatedCells ?? result.updatedCells ?? 1,
+          })
+      }
+
+      // remainingQty === 0 — write 'sold' to Status (and zero qty too if it isn't already).
+      if (sheetStatusLower === 'sold') {
+        return respond(res, 200, 'already_sold',
+          `Sheet row for ${kindNoun(kind).toLowerCase()} ${idLabel(kind)} ${idValue} already says "sold" in ${found.tab} row ${found.rowIndex + 1} (all units gone). Nothing to write.`,
+          {
+            kind, db_id: id, id_value: idValue,
+            sheet_tab: found.tab, sheet_row: found.rowIndex + 1,
+            sheet_cell: statusCell, sheet_url: sheetUrl,
+            remaining_qty: 0,
+          })
+      }
+      const updates = [{ range: statusCell, values: [['sold']] }]
+      if (sheetQty !== 0) updates.push({ range: qtyCell, values: [[0]] })
+      const result = await batchUpdateValues(cfg.spreadsheetId, updates)
+      return respond(res, 200, 'marked_sold',
+        `All units sold — wrote "sold" to Status (and qty → 0) for ${kindNoun(kind).toLowerCase()} ${idLabel(kind)} ${idValue} in ${found.tab} row ${found.rowIndex + 1}.`,
         {
           kind, db_id: id, id_value: idValue,
-          sheet_tab: found.tab,
-          sheet_row: found.rowIndex + 1,
-          sheet_cell: targetCell,
-          sheet_url: sheetUrl,
+          sheet_tab: found.tab, sheet_row: found.rowIndex + 1,
+          sheet_cell: statusCell, sheet_url: sheetUrl,
+          remaining_qty: 0,
+          cells_updated: result.totalUpdatedCells ?? result.updatedCells ?? updates.length,
         })
     }
 
-    // 4. Write "sold" to the Status cell on that row.
+    // ─── Slabs (no qty — always mark sold) ───────────────────────────
+    if (sheetStatusLower === 'sold') {
+      return respond(res, 200, 'already_sold',
+        `Sheet row for slab ${idLabel(kind)} ${idValue} already says "sold" in ${found.tab} row ${found.rowIndex + 1}. Nothing to write.`,
+        {
+          kind, db_id: id, id_value: idValue,
+          sheet_tab: found.tab, sheet_row: found.rowIndex + 1,
+          sheet_cell: statusCell, sheet_url: sheetUrl,
+        })
+    }
     const result = await batchUpdateValues(cfg.spreadsheetId, [
-      { range: targetCell, values: [['sold']] },
+      { range: statusCell, values: [['sold']] },
     ])
-
     return respond(res, 200, 'marked_sold',
-      `Wrote "sold" to ${kindNoun(kind).toLowerCase()} ${idLabel(kind)} ${idValue} → ${found.tab} cell ${targetCell.split('!')[1]}.`,
+      `Wrote "sold" to slab ${idLabel(kind)} ${idValue} → ${found.tab} cell ${statusCell.split('!')[1]}.`,
       {
         kind, db_id: id, id_value: idValue,
-        sheet_tab: found.tab,
-        sheet_row: found.rowIndex + 1,
-        sheet_cell: targetCell,
-        sheet_url: sheetUrl,
+        sheet_tab: found.tab, sheet_row: found.rowIndex + 1,
+        sheet_cell: statusCell, sheet_url: sheetUrl,
         cells_updated: result.totalUpdatedCells ?? result.updatedCells ?? 1,
       })
   } catch (err) {
