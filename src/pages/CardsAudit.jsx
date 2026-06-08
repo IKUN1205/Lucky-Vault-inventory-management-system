@@ -5,6 +5,7 @@ import Instructions from '../components/Instructions'
 import {
   Scale, Search, RefreshCw, AlertTriangle, AlertCircle, Info,
   CheckCircle, ExternalLink, Loader2, FileSearch, MapPin,
+  ScanLine, Trash2, ChevronDown, ChevronRight,
 } from 'lucide-react'
 
 // Cards Audit — reconcile DB vs Google Sheet for singles + slabs.
@@ -39,6 +40,10 @@ const CODE_LABELS = {
 export default function CardsAudit() {
   const { toasts, addToast, removeToast } = useToast()
   const [kind, setKind] = useState('single')   // 'single' | 'slab'
+  // Three modes: 'quick' (one card), 'batch' (scan many in sequence),
+  // 'full' (run against the whole catalog). User picks which one they
+  // need; the other two stay out of view to keep the page focused.
+  const [auditMode, setAuditMode] = useState('quick')
   const [scanInput, setScanInput] = useState('')
   const [scanResult, setScanResult] = useState(null)
   const [scanning, setScanning] = useState(false)
@@ -46,6 +51,13 @@ export default function CardsAudit() {
   const [fullResult, setFullResult] = useState(null)
   const [filterCode, setFilterCode] = useState('')   // '' = show all
   const [pushingId, setPushingId] = useState(null)
+  // Batch scan state — keyed by id so re-scanning the same card just
+  // replaces the prior result instead of stacking duplicates. Order
+  // tracked separately so the most-recently-scanned floats to the top.
+  const [batchById, setBatchById] = useState({})       // { [id]: result }
+  const [batchOrder, setBatchOrder] = useState([])     // [id, id, …] newest first
+  const [batchExpanded, setBatchExpanded] = useState({}) // { [id]: true } for inline-expanded rows
+  const [batchPushAllRunning, setBatchPushAllRunning] = useState(false)
   // Location scope (singles only). '' = audit across all locations.
   const [locationName, setLocationName] = useState('')
   const [locations, setLocations] = useState([])
@@ -53,7 +65,7 @@ export default function CardsAudit() {
 
   useEffect(() => {
     inputRef.current?.focus()
-  }, [kind])
+  }, [kind, auditMode])
 
   useEffect(() => {
     fetchLocations('Physical')
@@ -98,6 +110,107 @@ export default function CardsAudit() {
       // Re-focus so the next scan/Enter just works.
       setTimeout(() => inputRef.current?.focus(), 50)
     }
+  }
+
+  // Batch scan — same /api/audit-cards?mode=scan call as Quick scan, but
+  // we accumulate into batchById instead of replacing scanResult. Same id
+  // scanned twice = the later result overwrites the earlier one (cleaner
+  // than duplicate rows for the typical "did I already scan this?" case).
+  const runBatchScan = async (idOverride) => {
+    const id = String(idOverride ?? scanInput).trim()
+    if (!id) {
+      addToast('Type or scan a TCG ID / Cert first', 'error')
+      return
+    }
+    setScanning(true)
+    try {
+      const p = qs(); p.set('mode', 'scan'); p.set('id', id)
+      const r = await fetch(`/api/audit-cards?${p}`)
+      const body = await r.json()
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`)
+      setBatchById(prev => ({ ...prev, [id]: body }))
+      setBatchOrder(prev => [id, ...prev.filter(x => x !== id)])
+      // Toast is small/silent here — staff scans fast, don't want a
+      // toast tornado. Use sound/visual on the row itself.
+      if (body.issues?.length === 0) {
+        addToast(`${id} ✓`, 'success', { duration: 1200 })
+      } else {
+        addToast(`${id} — ${body.issues.length} issue${body.issues.length === 1 ? '' : 's'}`, 'info', { duration: 1500 })
+      }
+    } catch (err) {
+      console.error('[audit] batch scan failed:', err)
+      addToast(`${id}: ${err.message}`, 'error')
+    } finally {
+      setScanning(false)
+      setScanInput('')
+      setTimeout(() => inputRef.current?.focus(), 50)
+    }
+  }
+
+  const clearBatch = () => {
+    if (batchOrder.length === 0) return
+    if (!confirm(`Clear ${batchOrder.length} scanned card${batchOrder.length === 1 ? '' : 's'}?`)) return
+    setBatchById({})
+    setBatchOrder([])
+    setBatchExpanded({})
+  }
+
+  const removeBatchEntry = (id) => {
+    setBatchById(prev => { const n = { ...prev }; delete n[id]; return n })
+    setBatchOrder(prev => prev.filter(x => x !== id))
+    setBatchExpanded(prev => { const n = { ...prev }; delete n[id]; return n })
+  }
+
+  // "Push all fixable" — iterate the batch, find issues with
+  // suggested_action set, call /api/sheet-mark-sold for each. Sequential
+  // so the user can see progress and we don't slam the sheet API. After
+  // each success we drop the issue from that card's result; if the card
+  // now has zero issues, the row turns green.
+  const pushAllBatchFixable = async () => {
+    const fixable = []
+    for (const id of batchOrder) {
+      const result = batchById[id]
+      if (!result?.db?.row_ids?.length) continue
+      for (const iss of result.issues || []) {
+        if (iss.suggested_action) fixable.push({ id, dbRowId: result.db.row_ids[0], issueCode: iss.code })
+      }
+    }
+    if (fixable.length === 0) {
+      addToast('No fixable issues in the batch', 'info')
+      return
+    }
+    if (!confirm(`Push ${fixable.length} fix${fixable.length === 1 ? '' : 'es'} to the sheet?`)) return
+    setBatchPushAllRunning(true)
+    let ok = 0, failed = 0
+    for (const f of fixable) {
+      try {
+        const r = await fetch('/api/sheet-mark-sold', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind, id: f.dbRowId }),
+        })
+        const body = await r.json()
+        if (body.ok) {
+          ok++
+          // Prune the fixed issue from this card's stored result.
+          setBatchById(prev => {
+            const cur = prev[f.id]
+            if (!cur) return prev
+            return {
+              ...prev,
+              [f.id]: { ...cur, issues: (cur.issues || []).filter(i => i.code !== f.issueCode) },
+            }
+          })
+        } else {
+          failed++
+        }
+      } catch {
+        failed++
+      }
+    }
+    setBatchPushAllRunning(false)
+    addToast(`Pushed ${ok} fix${ok === 1 ? '' : 'es'}${failed ? ` · ${failed} failed` : ''}`,
+             failed ? 'info' : 'success')
   }
 
   const runFull = async () => {
@@ -239,71 +352,156 @@ export default function CardsAudit() {
         )}
       </div>
 
-      {/* Scan box */}
-      <div className="card mb-5">
-        <h2 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
-          <Search size={18} /> Quick scan
-        </h2>
-        <div className="flex items-stretch gap-2">
-          <input
-            ref={inputRef}
-            type="text"
-            value={scanInput}
-            onChange={(e) => setScanInput(e.target.value)}
-            onKeyDown={onScanKey}
-            placeholder={`Scan or type a ${idLabel}…`}
-            disabled={scanning}
-            className="flex-1 px-3 py-2 text-sm font-mono"
-            autoFocus
-          />
+      {/* Mode tabs — pick which workflow you're in so the page stays focused.
+          Quick scan: one card.  Batch scan: many in a row.  Full audit: every. */}
+      <div className="mb-4">
+        <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40">
           <button
             type="button"
-            onClick={() => runScan()}
-            disabled={scanning || !scanInput.trim()}
-            className="btn btn-primary px-4"
+            onClick={() => { setAuditMode('quick') }}
+            className={`px-4 py-2 text-sm rounded-md transition flex items-center gap-1.5 ${auditMode === 'quick' ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}
           >
-            {scanning ? <Loader2 size={16} className="animate-spin" /> : 'Compare'}
+            <Search size={14} /> Quick scan
+          </button>
+          <button
+            type="button"
+            onClick={() => { setAuditMode('batch') }}
+            className={`px-4 py-2 text-sm rounded-md transition flex items-center gap-1.5 ${auditMode === 'batch' ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}
+          >
+            <ScanLine size={14} /> Batch scan {batchOrder.length > 0 && <span className="text-[10px]">({batchOrder.length})</span>}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setAuditMode('full') }}
+            className={`px-4 py-2 text-sm rounded-md transition flex items-center gap-1.5 ${auditMode === 'full' ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}
+          >
+            <FileSearch size={14} /> Full audit
           </button>
         </div>
+      </div>
 
-        {scanResult && (
-          <div className="mt-4 space-y-3">
-            <ScanResult result={scanResult} idLabel={idLabel} pushToSheet={pushToSheet} pushingId={pushingId} />
+      {/* ─── Quick scan mode (one card) ─────────────────────────────── */}
+      {auditMode === 'quick' && (
+        <div className="card mb-5">
+          <h2 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
+            <Search size={18} /> Quick scan
+          </h2>
+          <p className="text-xs text-gray-500 mb-3">Scan one card to see a detailed side-by-side comparison.</p>
+          <div className="flex items-stretch gap-2">
+            <input
+              ref={inputRef}
+              type="text"
+              value={scanInput}
+              onChange={(e) => setScanInput(e.target.value)}
+              onKeyDown={onScanKey}
+              placeholder={`Scan or type a ${idLabel}…`}
+              disabled={scanning}
+              className="flex-1 px-3 py-2 text-sm font-mono"
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={() => runScan()}
+              disabled={scanning || !scanInput.trim()}
+              className="btn btn-primary px-4"
+            >
+              {scanning ? <Loader2 size={16} className="animate-spin" /> : 'Compare'}
+            </button>
           </div>
-        )}
-      </div>
 
-      {/* Full audit */}
-      <div className="card mb-5">
-        <h2 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
-          <FileSearch size={18} /> Full audit
-        </h2>
-        <div className="flex items-center justify-between gap-3 mb-3">
-          <p className="text-sm text-gray-400">
-            Pulls every {kind === 'single' ? 'single' : 'slab'} from the app + every row from the sheet and lists discrepancies.
-          </p>
-          <button
-            type="button"
-            onClick={runFull}
-            disabled={fullRunning}
-            className="btn btn-primary px-4 flex items-center gap-2"
-          >
-            {fullRunning ? <><Loader2 size={16} className="animate-spin" /> Auditing…</> : <><RefreshCw size={16} /> Run full audit</>}
-          </button>
+          {scanResult && (
+            <div className="mt-4 space-y-3">
+              <ScanResult result={scanResult} idLabel={idLabel} pushToSheet={pushToSheet} pushingId={pushingId} />
+            </div>
+          )}
         </div>
+      )}
 
-        {fullResult && (
-          <FullAuditResults
-            result={fullResult}
-            kind={kind}
-            idLabel={idLabel}
-            filterCode={filterCode}
-            setFilterCode={setFilterCode}
-            pushToSheet={pushToSheet}
-            pushingId={pushingId}
-          />
-        )}
-      </div>
+      {/* ─── Batch scan mode (scan many in a row) ──────────────────── */}
+      {auditMode === 'batch' && (
+        <div className="card mb-5">
+          <h2 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
+            <ScanLine size={18} /> Batch scan
+          </h2>
+          <p className="text-xs text-gray-500 mb-3">
+            Scan one card after another. Each scan auto-checks DB vs sheet and adds a row below.
+            Same card scanned twice = the newer result replaces the older row.
+          </p>
+          <div className="flex items-stretch gap-2">
+            <input
+              ref={inputRef}
+              type="text"
+              value={scanInput}
+              onChange={(e) => setScanInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); runBatchScan() }
+              }}
+              placeholder={`Scan a ${idLabel} and press Enter — repeats with each new scan…`}
+              disabled={scanning}
+              className="flex-1 px-3 py-2 text-sm font-mono"
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={() => runBatchScan()}
+              disabled={scanning || !scanInput.trim()}
+              className="btn btn-secondary px-4"
+            >
+              {scanning ? <Loader2 size={16} className="animate-spin" /> : 'Add to batch'}
+            </button>
+          </div>
+
+          {batchOrder.length > 0 && (
+            <BatchResults
+              batchById={batchById}
+              batchOrder={batchOrder}
+              batchExpanded={batchExpanded}
+              setBatchExpanded={setBatchExpanded}
+              idLabel={idLabel}
+              clearBatch={clearBatch}
+              removeBatchEntry={removeBatchEntry}
+              pushToSheet={pushToSheet}
+              pushingId={pushingId}
+              pushAllBatchFixable={pushAllBatchFixable}
+              batchPushAllRunning={batchPushAllRunning}
+            />
+          )}
+        </div>
+      )}
+
+      {/* ─── Full audit mode (every card) ──────────────────────────── */}
+      {auditMode === 'full' && (
+        <div className="card mb-5">
+          <h2 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
+            <FileSearch size={18} /> Full audit
+          </h2>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <p className="text-sm text-gray-400">
+              Pulls every {kind === 'single' ? 'single' : 'slab'} from the app + every row from the sheet and lists discrepancies.
+            </p>
+            <button
+              type="button"
+              onClick={runFull}
+              disabled={fullRunning}
+              className="btn btn-primary px-4 flex items-center gap-2"
+            >
+              {fullRunning ? <><Loader2 size={16} className="animate-spin" /> Auditing…</> : <><RefreshCw size={16} /> Run full audit</>}
+            </button>
+          </div>
+
+          {fullResult && (
+            <FullAuditResults
+              result={fullResult}
+              kind={kind}
+              idLabel={idLabel}
+              filterCode={filterCode}
+              setFilterCode={setFilterCode}
+              pushToSheet={pushToSheet}
+              pushingId={pushingId}
+            />
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -461,6 +659,109 @@ function IssueRow({ issue, idLabel = 'ID', pushToSheet, pushingId }) {
             Push to sheet
           </button>
         )}
+      </div>
+    </div>
+  )
+}
+
+function BatchResults({
+  batchById, batchOrder, batchExpanded, setBatchExpanded,
+  idLabel, clearBatch, removeBatchEntry,
+  pushToSheet, pushingId, pushAllBatchFixable, batchPushAllRunning,
+}) {
+  // Tally stats once across the whole batch — small list, no perf concern.
+  let clean = 0, withIssues = 0, totalIssues = 0, fixable = 0
+  for (const id of batchOrder) {
+    const r = batchById[id]
+    if (!r) continue
+    const n = r.issues?.length || 0
+    if (n === 0) clean++
+    else { withIssues++; totalIssues += n }
+    for (const iss of r.issues || []) {
+      if (iss.suggested_action) fixable++
+    }
+  }
+  return (
+    <div className="mt-4">
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 text-xs">
+        <Stat label="Scanned" value={batchOrder.length} />
+        <Stat label="Clean" value={clean} />
+        <Stat label="With issues" value={withIssues} highlight={withIssues > 0} />
+        <Stat label="Fixable now" value={fixable} />
+      </div>
+
+      {/* Bulk actions */}
+      <div className="flex flex-wrap items-center justify-end gap-2 mb-3">
+        {fixable > 0 && (
+          <button
+            type="button"
+            onClick={pushAllBatchFixable}
+            disabled={batchPushAllRunning}
+            className="text-xs px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold flex items-center gap-1"
+          >
+            {batchPushAllRunning
+              ? <><Loader2 size={12} className="animate-spin" /> Pushing…</>
+              : <><ExternalLink size={12} /> Push all fixable ({fixable})</>}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={clearBatch}
+          className="text-xs px-3 py-1.5 text-gray-300 hover:text-red-400 border border-vault-border rounded flex items-center gap-1"
+        >
+          <Trash2 size={12} /> Clear batch
+        </button>
+      </div>
+
+      {/* Per-card rows (newest first) */}
+      <div className="space-y-1 max-h-[60vh] overflow-y-auto pr-1">
+        {batchOrder.map(id => {
+          const r = batchById[id]
+          if (!r) return null
+          const issueCount = r.issues?.length || 0
+          const isExpanded = !!batchExpanded[id]
+          return (
+            <div
+              key={id}
+              className={`border rounded ${issueCount === 0 ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-amber-500/30 bg-amber-500/5'}`}
+            >
+              <div className="flex items-center gap-2 px-3 py-2">
+                <button
+                  type="button"
+                  onClick={() => setBatchExpanded(prev => ({ ...prev, [id]: !prev[id] }))}
+                  className="text-gray-400 hover:text-white"
+                  title={isExpanded ? 'Collapse' : 'Expand'}
+                >
+                  {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
+                <span className="font-mono text-xs text-white flex-shrink-0">{id}</span>
+                {issueCount === 0 ? (
+                  <span className="text-xs text-emerald-300 flex items-center gap-1">
+                    <CheckCircle size={12} /> Matches
+                  </span>
+                ) : (
+                  <span className="text-xs text-amber-300 truncate flex-1">
+                    {issueCount} issue{issueCount === 1 ? '' : 's'}: {r.issues.map(i => CODE_LABELS[i.code] || i.code).join(' · ')}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeBatchEntry(id)}
+                  className="text-gray-500 hover:text-red-400 flex-shrink-0"
+                  title="Remove from batch"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+              {isExpanded && (
+                <div className="p-3 border-t border-vault-border/40">
+                  <ScanResult result={r} idLabel={idLabel} pushToSheet={pushToSheet} pushingId={pushingId} />
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
