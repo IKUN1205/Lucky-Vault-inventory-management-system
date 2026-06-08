@@ -51,6 +51,7 @@ export default function CardsAudit() {
   const [fullResult, setFullResult] = useState(null)
   const [filterCode, setFilterCode] = useState('')   // '' = show all
   const [pushingId, setPushingId] = useState(null)
+  const [pushAllFullRunning, setPushAllFullRunning] = useState(false)
   // Batch scan state — keyed by id so re-scanning the same card just
   // replaces the prior result instead of stacking duplicates. Order
   // tracked separately so the most-recently-scanned floats to the top.
@@ -159,6 +160,64 @@ export default function CardsAudit() {
     setBatchById(prev => { const n = { ...prev }; delete n[id]; return n })
     setBatchOrder(prev => prev.filter(x => x !== id))
     setBatchExpanded(prev => { const n = { ...prev }; delete n[id]; return n })
+  }
+
+  // Bulk-push every fixable issue from the FULL audit results to the
+  // sheet. Mirrors the batch-scan version, but operates on fullResult.
+  // Dedupes by id so a card with multiple fixable issues only triggers
+  // one /api/sheet-mark-sold call — the endpoint pushes the full DB
+  // truth (status + qty) in one shot.
+  const pushAllFullFixable = async () => {
+    if (!fullResult) return
+    const seen = new Set()
+    const fixable = []
+    for (const iss of fullResult.issues || []) {
+      if (!iss.suggested_action) continue
+      if (!iss.db?.row_ids?.length) continue
+      if (seen.has(iss.id)) continue
+      seen.add(iss.id)
+      fixable.push({ id: iss.id, dbRowId: iss.db.row_ids[0] })
+    }
+    if (fixable.length === 0) {
+      addToast('No fixable issues in the audit', 'info')
+      return
+    }
+    if (!confirm(`Push ${fixable.length} fix${fixable.length === 1 ? '' : 'es'} to the sheet?\n\n` +
+                 `Each one writes the app's truth into the sheet (qty or sold status).\n` +
+                 `Issues that need human review aren't touched.`)) return
+    setPushAllFullRunning(true)
+    let ok = 0, failed = 0
+    for (const f of fixable) {
+      try {
+        const r = await fetch('/api/sheet-mark-sold', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind, id: f.dbRowId }),
+        })
+        const body = await r.json()
+        if (body.ok) {
+          ok++
+          // Drop every fixable issue with this id from the full result.
+          setFullResult(prev => prev ? ({
+            ...prev,
+            issues: prev.issues.filter(i => !(i.id === f.id && i.suggested_action)),
+            summary: {
+              ...prev.summary,
+              total_issues: Math.max(0, prev.summary.total_issues - 1),
+            },
+          }) : prev)
+        } else {
+          failed++
+        }
+      } catch {
+        failed++
+      }
+    }
+    setPushAllFullRunning(false)
+    addToast(
+      `Pushed ${ok} fix${ok === 1 ? '' : 'es'}${failed ? ` · ${failed} failed` : ''}`,
+      failed ? 'info' : 'success'
+    )
   }
 
   // "Push all fixable" — iterate the batch, find issues with
@@ -302,11 +361,31 @@ export default function CardsAudit() {
 
       <Instructions>
         <div className="space-y-3 text-gray-300">
-          <p className="font-medium text-white">Two ways to use this page:</p>
+          <p className="font-medium text-white">Three ways to use this page:</p>
           <ol className="list-decimal list-inside space-y-2 ml-2">
-            <li><span className="text-vault-gold">Quick scan</span> — scan or paste a {idLabel} to see side-by-side what the app says vs what the sheet says.</li>
-            <li><span className="text-vault-gold">Full audit</span> — finds every discrepancy across all cards (takes ~10-30s for ~2000 rows).</li>
+            <li><span className="text-vault-gold">Quick scan</span> — scan or paste one {idLabel} to see a detailed side-by-side comparison.</li>
+            <li><span className="text-vault-gold">Batch scan</span> — scan many cards in a row; each scan adds a row to the list. "Push all fixable" applies them in bulk.</li>
+            <li><span className="text-vault-gold">Full audit</span> — finds every discrepancy across all cards (10-30s for ~2000 rows). "Push all fixable" too.</li>
           </ol>
+
+          <div className="mt-3 p-3 bg-vault-darker/40 border border-vault-border rounded">
+            <p className="font-medium text-white mb-2">Who's right when the two disagree?</p>
+            <ul className="space-y-1.5 text-xs">
+              <li className="flex items-start gap-2">
+                <span className="text-[9px] px-1.5 py-0.5 rounded-sm uppercase tracking-wider text-vault-gold bg-vault-gold/15 border border-vault-gold/40 flex-shrink-0 mt-0.5">App → Sheet</span>
+                <span><b className="text-white">App wins.</b> Sales and movements happen in the app, so when the app says "sold" or "qty 4", that's truth. Click <i>Push to sheet</i> and the sheet gets fixed.</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-[9px] px-1.5 py-0.5 rounded-sm uppercase tracking-wider text-amber-300 bg-amber-500/10 border border-amber-500/40 flex-shrink-0 mt-0.5">Review</span>
+                <span><b className="text-white">Could be either side.</b> Usually because the sheet was manually edited (boss marked something sold for a reason we don't know, or wrote a different location). No one-click — investigate, then update whichever side is wrong.</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-[9px] px-1.5 py-0.5 rounded-sm uppercase tracking-wider text-gray-400 bg-vault-darker border border-vault-border flex-shrink-0 mt-0.5">Info only</span>
+                <span><b className="text-white">Nothing broken.</b> e.g. card was added in-app and never went through the sheet, or the price hasn't synced yet — the hourly sheet→app sync will catch up on its own.</span>
+              </li>
+            </ul>
+          </div>
+
           <p className="text-cyan-400 text-xs mt-3">💡 Singles read from <span className="font-mono text-vault-gold">Master Singles</span> only (New Singles is a staging area). Pick a location below to audit qty + location together for that room.</p>
         </div>
       </Instructions>
@@ -498,6 +577,8 @@ export default function CardsAudit() {
               setFilterCode={setFilterCode}
               pushToSheet={pushToSheet}
               pushingId={pushingId}
+              pushAllFullFixable={pushAllFullFixable}
+              pushAllFullRunning={pushAllFullRunning}
             />
           )}
         </div>
@@ -583,29 +664,54 @@ function ScanResult({ result, idLabel, pushToSheet, pushingId }) {
   )
 }
 
-function FullAuditResults({ result, kind, idLabel, filterCode, setFilterCode, pushToSheet, pushingId }) {
+function FullAuditResults({
+  result, kind, idLabel,
+  filterCode, setFilterCode,
+  pushToSheet, pushingId,
+  pushAllFullFixable, pushAllFullRunning,
+}) {
   const { summary, issues } = result
   const filtered = filterCode ? issues.filter(i => i.code === filterCode) : issues
+  // Count fixable across the entire audit (dedup by id), not just the
+  // current filter — that's what the "Push all fixable" button writes.
+  const fixableIds = new Set()
+  for (const iss of issues) {
+    if (iss.suggested_action && iss.db?.row_ids?.length) fixableIds.add(iss.id)
+  }
   return (
     <div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 text-xs">
         <Stat label="App ids" value={summary.total_db_ids} />
         <Stat label="Sheet ids" value={summary.total_sheet_ids} />
         <Stat label="Issues found" value={summary.total_issues} highlight={summary.total_issues > 0} />
-        <Stat label="Clean" value={Math.max(0, summary.total_db_ids - new Set(issues.map(i => i.id)).size)} />
+        <Stat label="Fixable now" value={fixableIds.size} highlight={fixableIds.size > 0} />
       </div>
 
-      {/* Filter chips */}
-      {Object.keys(summary.by_code).length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-3">
-          <FilterChip active={filterCode === ''} onClick={() => setFilterCode('')}>All ({summary.total_issues})</FilterChip>
-          {Object.entries(summary.by_code).map(([code, count]) => (
-            <FilterChip key={code} active={filterCode === code} onClick={() => setFilterCode(code)}>
-              {CODE_LABELS[code] || code} ({count})
-            </FilterChip>
-          ))}
-        </div>
-      )}
+      {/* Filter chips + bulk action */}
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        {Object.keys(summary.by_code).length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            <FilterChip active={filterCode === ''} onClick={() => setFilterCode('')}>All ({summary.total_issues})</FilterChip>
+            {Object.entries(summary.by_code).map(([code, count]) => (
+              <FilterChip key={code} active={filterCode === code} onClick={() => setFilterCode(code)}>
+                {CODE_LABELS[code] || code} ({count})
+              </FilterChip>
+            ))}
+          </div>
+        )}
+        {fixableIds.size > 0 && (
+          <button
+            type="button"
+            onClick={pushAllFullFixable}
+            disabled={pushAllFullRunning}
+            className="text-xs px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold flex items-center gap-1 whitespace-nowrap"
+          >
+            {pushAllFullRunning
+              ? <><Loader2 size={12} className="animate-spin" /> Pushing…</>
+              : <><ExternalLink size={12} /> Push all fixable ({fixableIds.size})</>}
+          </button>
+        )}
+      </div>
 
       {filtered.length === 0 ? (
         <p className="text-emerald-300 text-sm flex items-center gap-2 py-3">
@@ -622,23 +728,64 @@ function FullAuditResults({ result, kind, idLabel, filterCode, setFilterCode, pu
   )
 }
 
+// Per-issue trust-tag: who is the source of truth for this kind of issue,
+// and what's the recommended action? Three buckets:
+//   db_wins   → App database is right; the sheet hasn't caught up. One-click
+//               push will write the app's truth into the sheet.
+//   review    → Either could be right; need a human to decide. We DON'T
+//               offer a one-click action — the staff must investigate.
+//   info_only → Nothing to do programmatically (e.g. card was added in-app
+//               and never went through the sheet; or price drift below
+//               tolerance — hourly sync will catch up).
+const TRUST_BUCKET = {
+  // App (DB) is the truth. Sales happen in the app, so when DB says sold
+  // or qty=N, that's reality. Push to sheet is safe.
+  sold_but_sheet_shows_available:        { bucket: 'db_wins', label: 'App says: sold. Sheet will be updated.' },
+  qty_mismatch:                          { bucket: 'db_wins', label: 'App qty wins. Sheet will be updated.' },
+  qty_mismatch_at_location:              { bucket: 'db_wins', label: 'App qty at this location wins. Sheet will be updated.' },
+  // Ambiguous — sheet says something the app disagrees with, but the
+  // sheet may have been manually edited by boss for a reason we don't
+  // know. Surface for human decision.
+  sheet_says_sold_but_inventory_remains: { bucket: 'review',  label: 'Needs review — was the sheet manually marked sold? Or did the app lose a sale event?' },
+  sheet_says_sold_but_app_says_available:{ bucket: 'review',  label: 'Needs review — likely a manual sheet edit. Check before changing either side.' },
+  not_at_this_location:                  { bucket: 'review',  label: 'Needs review — physically locate the card, then update either side.' },
+  location_mismatch:                     { bucket: 'review',  label: 'Needs review — verify where the card really is.' },
+  missing_in_db:                         { bucket: 'review',  label: 'Needs review — has the hourly sheet→app sync run? Or was the row deleted?' },
+  // Informational — not actually broken.
+  missing_in_sheet:                      { bucket: 'info_only', label: 'Normal — card was added in-app, never went through the sheet.' },
+  location_missing_in_sheet:             { bucket: 'info_only', label: 'Sheet location is blank. Optional: fill it in for clarity.' },
+  price_mismatch:                        { bucket: 'info_only', label: 'Hourly sheet→app sync will catch up.' },
+}
+
+const BUCKET_STYLES = {
+  db_wins:   { tag: 'App → Sheet',  color: 'text-vault-gold bg-vault-gold/15 border border-vault-gold/40' },
+  review:    { tag: 'Review',       color: 'text-amber-300 bg-amber-500/10 border border-amber-500/40' },
+  info_only: { tag: 'Info only',    color: 'text-gray-400 bg-vault-darker border border-vault-border' },
+}
+
 function IssueRow({ issue, idLabel = 'ID', pushToSheet, pushingId }) {
   const sev = SEVERITY[issue.severity] || SEVERITY.info
   const Icon = sev.icon
   const isPushing = pushingId === issue.id
+  const trust = TRUST_BUCKET[issue.code] || { bucket: 'review', label: 'Unknown — review manually.' }
+  const trustStyle = BUCKET_STYLES[trust.bucket]
   return (
     <div className={`p-3 rounded border ${sev.border} ${sev.bg}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-2 min-w-0">
           <Icon size={16} className={`${sev.color} flex-shrink-0 mt-0.5`} />
           <div className="min-w-0">
-            <div className="flex items-baseline gap-2 mb-1">
+            <div className="flex items-baseline gap-2 mb-1 flex-wrap">
               <span className={`text-xs uppercase tracking-wider ${sev.color}`}>
                 {CODE_LABELS[issue.code] || issue.code}
               </span>
               <span className="text-white font-mono text-xs">{idLabel}: {issue.id}</span>
+              <span className={`text-[9px] px-1.5 py-0.5 rounded-sm uppercase tracking-wider ${trustStyle.color}`}>
+                {trustStyle.tag}
+              </span>
             </div>
             <p className="text-xs text-gray-300">{issue.message}</p>
+            <p className="text-[10px] text-gray-500 mt-1 italic">{trust.label}</p>
             {issue.sheet && (
               <p className="text-[10px] text-gray-500 mt-1">
                 Sheet: {issue.sheet.tab} row {issue.sheet.sheet_row}
