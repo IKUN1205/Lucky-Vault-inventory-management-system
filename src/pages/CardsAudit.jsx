@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react'
+import { fetchLocations } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import {
   Scale, Search, RefreshCw, AlertTriangle, AlertCircle, Info,
-  CheckCircle, ExternalLink, Loader2, FileSearch,
+  CheckCircle, ExternalLink, Loader2, FileSearch, MapPin,
 } from 'lucide-react'
 
 // Cards Audit — reconcile DB vs Google Sheet for singles + slabs.
@@ -26,6 +27,10 @@ const CODE_LABELS = {
   sheet_says_sold_but_inventory_remains: 'Sheet says sold but inventory remains',
   sheet_says_sold_but_app_says_available:'Sheet says sold but app says available',
   qty_mismatch:                          'Qty mismatch',
+  qty_mismatch_at_location:              'Qty mismatch at this location',
+  not_at_this_location:                  'Not at this location',
+  location_mismatch:                     'Location mismatch',
+  location_missing_in_sheet:             'Sheet missing location info',
   missing_in_sheet:                      'Missing in sheet',
   missing_in_db:                         'Missing in app',
   price_mismatch:                        'Price mismatch',
@@ -41,11 +46,29 @@ export default function CardsAudit() {
   const [fullResult, setFullResult] = useState(null)
   const [filterCode, setFilterCode] = useState('')   // '' = show all
   const [pushingId, setPushingId] = useState(null)
+  // Location scope (singles only). '' = audit across all locations.
+  const [locationName, setLocationName] = useState('')
+  const [locations, setLocations] = useState([])
   const inputRef = useRef(null)
 
   useEffect(() => {
     inputRef.current?.focus()
   }, [kind])
+
+  useEffect(() => {
+    fetchLocations('Physical')
+      .then(setLocations)
+      .catch(err => console.error('[audit] fetch locations failed:', err))
+  }, [])
+
+  // Location filter only applies to singles right now (slabs don't audit
+  // by location because the slab sheet doesn't carry that column).
+  const effectiveLocation = kind === 'single' && locationName ? locationName : ''
+  const qs = () => {
+    const p = new URLSearchParams({ kind })
+    if (effectiveLocation) p.set('location', effectiveLocation)
+    return p
+  }
 
   const runScan = async (idOverride) => {
     const id = String(idOverride ?? scanInput).trim()
@@ -56,7 +79,8 @@ export default function CardsAudit() {
     setScanning(true)
     setScanResult(null)
     try {
-      const r = await fetch(`/api/audit-cards?kind=${kind}&mode=scan&id=${encodeURIComponent(id)}`)
+      const p = qs(); p.set('mode', 'scan'); p.set('id', id)
+      const r = await fetch(`/api/audit-cards?${p}`)
       const body = await r.json()
       if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`)
       setScanResult(body)
@@ -81,12 +105,16 @@ export default function CardsAudit() {
     setFullRunning(true)
     setFullResult(null)
     try {
-      const r = await fetch(`/api/audit-cards?kind=${kind}&mode=full`)
+      const p = qs(); p.set('mode', 'full')
+      const r = await fetch(`/api/audit-cards?${p}`)
       const body = await r.json()
       if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`)
       setFullResult(body)
+      const scope = body.location_filter
+        ? ` at ${body.location_filter.name}`
+        : ''
       addToast(
-        `Audit done: ${body.summary.total_issues} issue${body.summary.total_issues === 1 ? '' : 's'} across ${body.summary.total_db_ids} app ids + ${body.summary.total_sheet_ids} sheet ids`,
+        `Audit done${scope}: ${body.summary.total_issues} issue${body.summary.total_issues === 1 ? '' : 's'} across ${body.summary.total_db_ids} app ids + ${body.summary.total_sheet_ids} sheet ids`,
         body.summary.total_issues === 0 ? 'success' : 'info'
       )
     } catch (err) {
@@ -166,12 +194,12 @@ export default function CardsAudit() {
             <li><span className="text-vault-gold">Quick scan</span> — scan or paste a {idLabel} to see side-by-side what the app says vs what the sheet says.</li>
             <li><span className="text-vault-gold">Full audit</span> — finds every discrepancy across all cards (takes ~10-30s for ~2000 rows).</li>
           </ol>
-          <p className="text-cyan-400 text-xs mt-3">💡 The "Push to sheet" button uses the same /api/sheet-mark-sold endpoint as the live sales — it handles qty&gt;1 correctly (decrements instead of marking sold).</p>
+          <p className="text-cyan-400 text-xs mt-3">💡 Singles read from <span className="font-mono text-vault-gold">Master Singles</span> only (New Singles is a staging area). Pick a location below to audit qty + location together for that room.</p>
         </div>
       </Instructions>
 
-      {/* Kind toggle */}
-      <div className="mb-4">
+      {/* Kind toggle + (singles only) location selector — sits together on one row */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40">
           <button
             type="button"
@@ -188,6 +216,27 @@ export default function CardsAudit() {
             💎 Slabs
           </button>
         </div>
+
+        {kind === 'single' && (
+          <div className="flex items-center gap-2">
+            <MapPin size={14} className="text-gray-500" />
+            <select
+              value={locationName}
+              onChange={(e) => { setLocationName(e.target.value); setScanResult(null); setFullResult(null); }}
+              className="text-sm py-1.5 px-2 bg-vault-darker/40 border border-vault-border rounded-md text-white"
+            >
+              <option value="">All locations</option>
+              {locations.map(l => (
+                <option key={l.id} value={l.name}>{l.name}</option>
+              ))}
+            </select>
+            {locationName && (
+              <span className="text-[10px] text-gray-500">
+                comparing qty + location at this room
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Scan box */}
@@ -260,13 +309,16 @@ export default function CardsAudit() {
 }
 
 function ScanResult({ result, idLabel, pushToSheet, pushingId }) {
-  const { sheet, db, issues, id } = result
+  const { sheet, db, issues, id, location_filter } = result
   return (
     <div className={`p-3 rounded-lg border ${issues.length === 0 ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-vault-border bg-vault-darker/40'}`}>
       <div className="flex items-center justify-between mb-3">
         <div className="text-sm">
           <span className="text-gray-400">Scanned {idLabel}: </span>
           <span className="text-white font-mono font-semibold">{id}</span>
+          {location_filter && (
+            <span className="ml-2 text-xs text-vault-gold/80">@ {location_filter.name}</span>
+          )}
         </div>
         {issues.length === 0 && (
           <span className="text-xs text-emerald-300 flex items-center gap-1">
@@ -281,9 +333,22 @@ function ScanResult({ result, idLabel, pushToSheet, pushingId }) {
           {db ? (
             <dl className="space-y-1">
               <Pair k="Status" v={db.status || '—'} />
-              <Pair k="Remaining qty" v={db.remaining_qty} />
+              <Pair k="Remaining qty (total)" v={db.remaining_qty} />
+              {location_filter && (
+                <Pair
+                  k={`Qty @ ${location_filter.name}`}
+                  v={db.qty_at_filter ?? 0}
+                  highlight={db.qty_at_filter > 0 ? 'gold' : 'red'}
+                />
+              )}
               <Pair k="Sold qty (history)" v={db.sold_qty} />
               {db.price != null && <Pair k="Price" v={`$${db.price.toFixed(2)}`} />}
+              {db.locations?.length > 0 && (
+                <Pair
+                  k="Held at"
+                  v={db.locations.map(l => `${l.qty} × ${l.name}`).join(', ')}
+                />
+              )}
               <Pair k="Rows in DB" v={db.row_ids.length} />
             </dl>
           ) : (
@@ -298,6 +363,9 @@ function ScanResult({ result, idLabel, pushToSheet, pushingId }) {
               <Pair k="Row" v={sheet.sheet_row} />
               {sheet.qty != null && <Pair k="Qty" v={sheet.qty} />}
               <Pair k="Status" v={sheet.status || '(empty)'} />
+              {'location' in sheet && (
+                <Pair k="Location" v={sheet.location || '(empty)'} />
+              )}
               {sheet.price != null && <Pair k="Price" v={`$${sheet.price.toFixed(2)}`} />}
             </dl>
           ) : (
@@ -398,11 +466,15 @@ function IssueRow({ issue, idLabel = 'ID', pushToSheet, pushingId }) {
   )
 }
 
-function Pair({ k, v }) {
+function Pair({ k, v, highlight }) {
+  const cls =
+    highlight === 'gold' ? 'text-vault-gold font-semibold'
+    : highlight === 'red' ? 'text-red-300'
+    : 'text-gray-200'
   return (
     <div className="flex justify-between gap-2">
       <dt className="text-gray-500">{k}:</dt>
-      <dd className="text-gray-200 font-mono">{String(v)}</dd>
+      <dd className={`${cls} font-mono`}>{String(v)}</dd>
     </div>
   )
 }
