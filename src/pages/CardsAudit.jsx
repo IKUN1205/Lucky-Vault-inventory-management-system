@@ -75,6 +75,9 @@ export default function CardsAudit() {
   const [physicalLoading, setPhysicalLoading] = useState(false)
   const [physicalLocationId, setPhysicalLocationId] = useState(null)
   const [physicalResolving, setPhysicalResolving] = useState(null) // id currently being moved
+  // Sheet snapshot for this physical count — lets the review compare
+  // Physical / App / Sheet three-way without an extra round-trip.
+  const [physicalSheetById, setPhysicalSheetById] = useState({})
   // Location scope (singles only). '' = audit across all locations.
   const [locationName, setLocationName] = useState('')
   const [locations, setLocations] = useState([])
@@ -382,9 +385,10 @@ export default function CardsAudit() {
       setPhysicalScanned(new Map())
       setPhysicalExtras([])
       setPhysicalLocationId(body.location?.id || null)
+      setPhysicalSheetById(body.sheet_by_id || {})
       setPhysicalState('scanning')
       addToast(
-        `Counting at ${body.location.name}: ${body.summary.unique_ids} unique ${kind === 'single' ? 'TCG IDs' : 'slabs'} expected (${body.summary.total_units} total units)`,
+        `Counting at ${body.location.name}: ${body.summary.unique_ids} unique ${kind === 'single' ? 'TCG IDs' : 'slabs'} expected (${body.summary.total_units} total units · ${body.summary.sheet_rows ?? 0} sheet rows loaded)`,
         'info'
       )
       setTimeout(() => inputRef.current?.focus(), 50)
@@ -478,6 +482,44 @@ export default function CardsAudit() {
       setPhysicalExtras(prev => prev.filter(e => e.id !== extra.id))
     } catch (err) {
       addToast(`Move failed: ${err.message}`, 'error')
+    } finally {
+      setPhysicalResolving(null)
+    }
+  }
+
+  // Push sheet to match the app's current truth for an id. Used for the
+  // "sheet out of date" case — physical and app agree, sheet hasn't
+  // caught up yet. Hits the same /api/sheet-mark-sold endpoint as the
+  // other audit modes (it handles qty>1 / sold / location all in one).
+  const pushPhysicalToSheet = async (id, dbRowId) => {
+    if (!dbRowId) {
+      addToast(`Can't push: no app row for ${id}`, 'error')
+      return
+    }
+    setPhysicalResolving(id)
+    try {
+      const r = await fetch('/api/sheet-mark-sold', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, id: dbRowId }),
+      })
+      const body = await r.json()
+      if (body.ok) {
+        addToast(body.message || `Pushed ${id} to sheet`, 'success')
+        // Update the local sheet snapshot so the row re-renders as clean.
+        // We approximate by clearing the sheet entry — next sheet read
+        // would pull the new value, but for now the green ✓ on the row
+        // is enough confirmation.
+        setPhysicalSheetById(prev => {
+          const next = { ...prev }
+          if (next[id]) next[id] = { ...next[id], _just_pushed: true }
+          return next
+        })
+      } else {
+        addToast(`Push failed: ${body.message || body.outcome}`, 'error')
+      }
+    } catch (err) {
+      addToast(`Push failed: ${err.message}`, 'error')
     } finally {
       setPhysicalResolving(null)
     }
@@ -778,8 +820,10 @@ export default function CardsAudit() {
               expected={physicalExpected}
               scanned={physicalScanned}
               extras={physicalExtras}
+              sheetById={physicalSheetById}
               resetCount={resetPhysicalCount}
               resolveExtraMoveHere={resolveExtraMoveHere}
+              pushPhysicalToSheet={pushPhysicalToSheet}
               physicalResolving={physicalResolving}
               backToScanning={() => setPhysicalState('scanning')}
             />
@@ -1286,29 +1330,40 @@ function PhysicalScanning({
 
 function PhysicalReview({
   kind, idLabel, locationName,
-  expected, scanned, extras,
-  resetCount, resolveExtraMoveHere, physicalResolving,
-  backToScanning,
+  expected, scanned, extras, sheetById,
+  resetCount, resolveExtraMoveHere, pushPhysicalToSheet,
+  physicalResolving, backToScanning,
 }) {
-  // Categorize every id into one of:
-  //   matched — scanned >= expected (qty satisfied)
-  //   partial — scanned > 0 but < expected
-  //   missing — scanned == 0
-  //   extras  — scanned but not in expected (already in `extras` array)
-  const matched = []
-  const partial = []
-  const missing = []
+  // Categorize every id, and separately detect "sheet out of date" cases
+  // by comparing sheet snapshot to physical + app truth.
+  const matched = []        // physical == app
+  const sheetStale = []     // physical == app, but sheet differs (push-to-sheet candidates)
+  const partial = []        // physical < app
+  const missing = []        // physical == 0, app > 0
   for (const [id, info] of expected) {
-    const sc = scanned.get(id) || 0
-    if (sc >= info.expected_qty) matched.push({ id, info, scanned: sc })
-    else if (sc === 0) missing.push({ id, info, scanned: 0 })
-    else partial.push({ id, info, scanned: sc })
+    const physical = scanned.get(id) || 0
+    const sheetInfo = sheetById[id] || null
+    const sheetQty = sheetInfo?.qty
+    const sheetStatus = sheetInfo?.status
+    const appQty = info.expected_qty
+    const row = { id, info, physical, app: appQty, sheet: sheetInfo }
+
+    if (physical >= appQty) {
+      matched.push(row)
+      // Subset: physical == app but sheet is wrong (qty diff or sheet says sold).
+      if (sheetInfo && !sheetInfo._just_pushed) {
+        const sheetWrong = (sheetQty != null && sheetQty !== appQty)
+                       || (sheetStatus === 'sold')   // app has units, sheet says sold
+        if (sheetWrong) sheetStale.push(row)
+      }
+    } else if (physical === 0) missing.push(row)
+    else partial.push(row)
   }
 
-  const nameOf = (item) => {
-    if (!item?.info) return ''
-    if (kind === 'single') return [item.info.card_name, item.info.card_number].filter(Boolean).join(' ')
-    return [item.info.item_name, item.info.grading_company].filter(Boolean).join(' · ')
+  const nameOf = (info) => {
+    if (!info) return ''
+    if (kind === 'single') return [info.card_name, info.card_number].filter(Boolean).join(' ')
+    return [info.item_name, info.grading_company].filter(Boolean).join(' · ')
   }
 
   return (
@@ -1316,43 +1371,52 @@ function PhysicalReview({
       <div className="mb-3 text-xs text-gray-400 flex flex-wrap items-center gap-2">
         <MapPin size={12} className="text-gray-500" />
         <span>Review for <span className="text-vault-gold font-semibold">{locationName}</span></span>
+        <span className="text-gray-600">·</span>
+        <span>showing 3-way comparison: <span className="text-emerald-300">Physical</span> · <span className="text-vault-gold">App</span> · <span className="text-cyan-300">Sheet</span></span>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 text-xs">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3 text-xs">
         <Stat label="Matched ✓" value={matched.length} highlight={matched.length > 0 ? 'gold' : null} />
         <Stat label="Partial" value={partial.length} highlight={partial.length > 0} />
         <Stat label="Missing" value={missing.length} highlight={missing.length > 0} />
         <Stat label="Extras" value={extras.length} highlight={extras.length > 0} />
+        <Stat label="Sheet stale" value={sheetStale.length} highlight={sheetStale.length > 0} />
       </div>
 
       {/* Missing */}
-      <ReviewSection
+      <ThreeWaySection
         title="Missing — system says these should be here, you didn't scan them"
         bucket="missing"
         items={missing.map(m => ({
-          id: m.id, name: nameOf(m), badge: `expected ${m.info.expected_qty}`,
+          id: m.id, name: nameOf(m.info),
+          physical: m.physical, app: m.app, sheet: m.sheet,
+          severity: 'critical',
         }))}
         emptyText="Nothing missing! Every expected card was scanned."
       />
 
-      {/* Partial — scanned some but not all */}
-      <ReviewSection
+      {/* Partial */}
+      <ThreeWaySection
         title="Partial — scanned fewer than expected"
         bucket="partial"
         items={partial.map(p => ({
-          id: p.id, name: nameOf(p),
-          badge: `scanned ${p.scanned} of ${p.info.expected_qty}`,
+          id: p.id, name: nameOf(p.info),
+          physical: p.physical, app: p.app, sheet: p.sheet,
+          severity: 'warning',
         }))}
         emptyText="No partial counts."
       />
 
-      {/* Extras — scanned but not in expected */}
-      <ReviewSection
-        title="Extras — you scanned these but system didn't expect them here"
+      {/* Extras — scanned but not in app at this location.
+          Each extra is enriched on the fly with its sheet snapshot so
+          staff can see if the sheet thinks it belongs here. */}
+      <ThreeWaySection
+        title="Extras — you scanned these but app didn't expect them here"
         bucket="extras"
         items={extras.map(e => ({
           id: e.id, name: '',
-          badge: e.scanned_count > 1 ? `× ${e.scanned_count}` : '',
+          physical: e.scanned_count, app: 0, sheet: sheetById[e.id] || null,
+          severity: 'warning',
           action: (
             <button
               type="button"
@@ -1362,26 +1426,53 @@ function PhysicalReview({
             >
               {physicalResolving === e.id
                 ? <Loader2 size={10} className="animate-spin" />
-                : <><ArrowRightCircle size={10} /> Move to {locationName}</>}
+                : <><ArrowRightCircle size={10} /> Move app → {locationName}</>}
             </button>
           ),
         }))}
         emptyText="No surprise cards — everything you scanned was expected."
       />
 
-      {/* Matched — collapsed by default; staff usually doesn't need to see this */}
+      {/* Sheet out of date — physical and app agree but sheet wasn't pushed yet.
+          One-click Push to sheet using the existing /api/sheet-mark-sold. */}
+      <ThreeWaySection
+        title="Sheet out of date — physical and app agree, sheet hasn't caught up"
+        bucket="sheet_stale"
+        items={sheetStale.map(s => ({
+          id: s.id, name: nameOf(s.info),
+          physical: s.physical, app: s.app, sheet: s.sheet,
+          severity: 'info',
+          action: (
+            <button
+              type="button"
+              onClick={() => pushPhysicalToSheet(s.id, s.info.db_row_ids?.[0])}
+              disabled={physicalResolving === s.id}
+              className="text-[10px] px-2 py-1 bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 rounded hover:bg-cyan-500/30 disabled:opacity-50 flex items-center gap-1 whitespace-nowrap"
+            >
+              {physicalResolving === s.id
+                ? <Loader2 size={10} className="animate-spin" />
+                : <><ExternalLink size={10} /> Push to sheet</>}
+            </button>
+          ),
+        }))}
+        emptyText="Sheet is in sync with reality on every matched card."
+      />
+
+      {/* Matched — collapsed; just the 3-way values for confidence */}
       <details className="mb-3">
         <summary className="cursor-pointer text-xs text-emerald-300 hover:text-emerald-200">
-          ✓ Matched ({matched.length}) — click to expand
+          ✓ Fully matched ({matched.length - sheetStale.length}) — click to expand
         </summary>
         <div className="mt-2 bg-vault-darker rounded p-2 max-h-48 overflow-y-auto text-xs">
-          {matched.map(m => (
+          {matched.filter(m => !sheetStale.some(s => s.id === m.id)).map(m => (
             <div key={m.id} className="flex justify-between gap-2">
               <span className="text-gray-300 truncate">
                 <span className="font-mono">{m.id}</span>
-                {nameOf(m) && <span className="text-gray-500 ml-2">{nameOf(m)}</span>}
+                {nameOf(m.info) && <span className="text-gray-500 ml-2">{nameOf(m.info)}</span>}
               </span>
-              <span className="text-emerald-300">{m.scanned} of {m.info.expected_qty}</span>
+              <span className="text-emerald-300 font-mono whitespace-nowrap">
+                P{m.physical} · A{m.app}{m.sheet?.qty != null && ` · S${m.sheet.qty}`}
+              </span>
             </div>
           ))}
         </div>
@@ -1404,6 +1495,67 @@ function PhysicalReview({
         </button>
       </div>
     </div>
+  )
+}
+
+// ThreeWaySection — replaces ReviewSection. Each row shows Physical / App /
+// Sheet values with discrepancies highlighted, plus an optional action button.
+function ThreeWaySection({ title, bucket, items, emptyText }) {
+  const tone = bucket === 'missing'     ? 'border-red-500/40 bg-red-500/5 text-red-300'
+            : bucket === 'partial'     ? 'border-amber-500/40 bg-amber-500/5 text-amber-300'
+            : bucket === 'extras'      ? 'border-amber-500/40 bg-amber-500/5 text-amber-300'
+            : bucket === 'sheet_stale' ? 'border-cyan-500/40 bg-cyan-500/5 text-cyan-300'
+            :                            'border-emerald-500/40 bg-emerald-500/5 text-emerald-300'
+  return (
+    <div className={`p-3 rounded border ${tone} mb-3`}>
+      <div className="text-xs font-semibold mb-2">{title} — {items.length}</div>
+      {items.length === 0 ? (
+        <p className="text-[11px] text-gray-500 italic">{emptyText}</p>
+      ) : (
+        <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
+          {items.map(it => (
+            <div key={it.id} className="flex items-center justify-between gap-2 bg-vault-darker rounded px-2 py-1.5 text-xs">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-2">
+                  <span className="font-mono text-gray-300">{it.id}</span>
+                  {it.name && <span className="text-gray-500 truncate">{it.name}</span>}
+                </div>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <ThreeWayValue label="P" value={it.physical} tone="emerald" />
+                  <ThreeWayValue label="A" value={it.app}      tone="gold" diffWith={it.physical} />
+                  <ThreeWayValue label="S"
+                                 value={it.sheet?.qty ?? (it.sheet?.status ? `"${it.sheet.status}"` : '—')}
+                                 tone="cyan" diffWith={it.app} />
+                  {it.sheet?.location && (
+                    <span className="text-[10px] text-gray-500">
+                      sheet loc: <span className="text-cyan-300">{it.sheet.location}</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+              {it.action}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ThreeWayValue({ label, value, tone, diffWith }) {
+  // Highlight if this column disagrees with diffWith — but only when both
+  // are numeric (status strings + missing values don't make a clean diff).
+  const isNum = typeof value === 'number' && typeof diffWith === 'number'
+  const mismatch = isNum && value !== diffWith
+  const baseCls =
+    tone === 'emerald' ? 'text-emerald-300'
+    : tone === 'gold'  ? 'text-vault-gold'
+    : tone === 'cyan'  ? 'text-cyan-300'
+    : 'text-gray-300'
+  return (
+    <span className={`text-[11px] font-mono ${mismatch ? 'underline decoration-red-400 decoration-dotted' : ''} ${baseCls}`}>
+      {label}{value == null || value === '' ? '—' : value}
+    </span>
   )
 }
 
