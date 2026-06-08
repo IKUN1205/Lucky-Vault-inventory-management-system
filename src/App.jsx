@@ -40,6 +40,7 @@ import SlabsScan from './pages/SlabsScan'
 import Inventory from './pages/Inventory'
 import CardsScan from './pages/CardsScan'
 import CardsLog from './pages/CardsLog'
+import CardsAudit from './pages/CardsAudit'
 import JapanInventory from './pages/JapanInventory'
 import JapanAcquisitions from './pages/JapanAcquisitions'
 import JapanStreamSales from './pages/JapanStreamSales'
@@ -193,6 +194,9 @@ function AppRoutes() {
       } />
       <Route path="/cards/log" element={
         <ProtectedRoute path="/singles"><Layout><CardsLog /></Layout></ProtectedRoute>
+      } />
+      <Route path="/cards/audit" element={
+        <ProtectedRoute path="/cards/audit"><Layout><CardsAudit /></Layout></ProtectedRoute>
       } />
       {/* Japan inventory system — see scripts/add_japan_inventory_system.sql */}
       <Route path="/jp/inventory" element={

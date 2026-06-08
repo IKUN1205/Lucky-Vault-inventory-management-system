@@ -57,6 +57,7 @@ const PAGE_SECTIONS = [
     { path: '/cards', label: 'Cards Inventory' },
     { path: '/cards/scan', label: 'Cards Scan' },
     { path: '/cards/log', label: 'Cards Activity Log' },
+    { path: '/cards/audit', label: 'Cards Sheet Audit' },
   ]},
   // Japan 🇯🇵 — lightweight branch, shared DB.
   // See scripts/add_japan_inventory_system.sql.

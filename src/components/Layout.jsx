@@ -35,7 +35,8 @@ import {
   History as HistoryIcon,
   ChevronLeft,
   ChevronRight,
-  Tv2
+  Tv2,
+  Scale
 } from 'lucide-react'
 
 // localStorage key for the icon-only-vs-expanded sidebar preference.
@@ -114,6 +115,7 @@ const navSections = [
       { path: '/cards',        label: 'Inventory',    icon: Layers },
       { path: '/cards/scan',   label: 'Scan',         icon: ScanLine },
       { path: '/cards/log',    label: 'Activity Log', icon: HistoryIcon },
+      { path: '/cards/audit',  label: 'Sheet Audit',  icon: Scale },
     ]
   },
   {

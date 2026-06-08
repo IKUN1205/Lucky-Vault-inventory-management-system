@@ -1,0 +1,433 @@
+import React, { useState, useRef, useEffect } from 'react'
+import { ToastContainer, useToast } from '../components/Toast'
+import Instructions from '../components/Instructions'
+import {
+  Scale, Search, RefreshCw, AlertTriangle, AlertCircle, Info,
+  CheckCircle, ExternalLink, Loader2, FileSearch,
+} from 'lucide-react'
+
+// Cards Audit — reconcile DB vs Google Sheet for singles + slabs.
+// Two flows: scan a single TCG/Cert to compare it side-by-side, or run
+// a full audit that flags every discrepancy (sold-but-not-in-sheet, qty
+// mismatch, missing from one side, etc).
+//
+// Read-only by default — the only mutation is the "Push to sheet" button
+// which calls /api/sheet-mark-sold (already battle-tested). Staff can't
+// accidentally clobber data by clicking around.
+
+const SEVERITY = {
+  critical: { color: 'text-red-300',    bg: 'bg-red-500/10',    border: 'border-red-500/40',    icon: AlertCircle },
+  warning:  { color: 'text-amber-300',  bg: 'bg-amber-500/10',  border: 'border-amber-500/40',  icon: AlertTriangle },
+  info:     { color: 'text-cyan-300',   bg: 'bg-cyan-500/10',   border: 'border-cyan-500/40',   icon: Info },
+}
+
+const CODE_LABELS = {
+  sold_but_sheet_shows_available:        'Sold in app, not in sheet',
+  sheet_says_sold_but_inventory_remains: 'Sheet says sold but inventory remains',
+  sheet_says_sold_but_app_says_available:'Sheet says sold but app says available',
+  qty_mismatch:                          'Qty mismatch',
+  missing_in_sheet:                      'Missing in sheet',
+  missing_in_db:                         'Missing in app',
+  price_mismatch:                        'Price mismatch',
+}
+
+export default function CardsAudit() {
+  const { toasts, addToast, removeToast } = useToast()
+  const [kind, setKind] = useState('single')   // 'single' | 'slab'
+  const [scanInput, setScanInput] = useState('')
+  const [scanResult, setScanResult] = useState(null)
+  const [scanning, setScanning] = useState(false)
+  const [fullRunning, setFullRunning] = useState(false)
+  const [fullResult, setFullResult] = useState(null)
+  const [filterCode, setFilterCode] = useState('')   // '' = show all
+  const [pushingId, setPushingId] = useState(null)
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [kind])
+
+  const runScan = async (idOverride) => {
+    const id = String(idOverride ?? scanInput).trim()
+    if (!id) {
+      addToast('Type or scan a TCG ID / Cert first', 'error')
+      return
+    }
+    setScanning(true)
+    setScanResult(null)
+    try {
+      const r = await fetch(`/api/audit-cards?kind=${kind}&mode=scan&id=${encodeURIComponent(id)}`)
+      const body = await r.json()
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`)
+      setScanResult(body)
+      if (body.issues?.length === 0) {
+        addToast(`${id} matches — DB and sheet agree`, 'success')
+      } else {
+        addToast(`${id}: ${body.issues.length} issue${body.issues.length === 1 ? '' : 's'} found`, 'info')
+      }
+    } catch (err) {
+      console.error('[audit] scan failed:', err)
+      addToast(`Scan failed: ${err.message}`, 'error')
+    } finally {
+      setScanning(false)
+      setScanInput('')
+      // Re-focus so the next scan/Enter just works.
+      setTimeout(() => inputRef.current?.focus(), 50)
+    }
+  }
+
+  const runFull = async () => {
+    if (fullRunning) return
+    setFullRunning(true)
+    setFullResult(null)
+    try {
+      const r = await fetch(`/api/audit-cards?kind=${kind}&mode=full`)
+      const body = await r.json()
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`)
+      setFullResult(body)
+      addToast(
+        `Audit done: ${body.summary.total_issues} issue${body.summary.total_issues === 1 ? '' : 's'} across ${body.summary.total_db_ids} app ids + ${body.summary.total_sheet_ids} sheet ids`,
+        body.summary.total_issues === 0 ? 'success' : 'info'
+      )
+    } catch (err) {
+      console.error('[audit] full audit failed:', err)
+      addToast(`Audit failed: ${err.message}`, 'error')
+    } finally {
+      setFullRunning(false)
+    }
+  }
+
+  // For "Push to sheet" — find the DB row id for this card and call the
+  // existing /api/sheet-mark-sold endpoint. It already handles qty>1
+  // (decrement instead of mark sold). For missing_in_db items there's
+  // nothing to push — those are surfaced for visibility only.
+  const pushToSheet = async (issue) => {
+    const dbId = issue.db?.row_ids?.[0]
+    if (!dbId) {
+      addToast(`Can't push: no app row for ${issue.id}`, 'error')
+      return
+    }
+    setPushingId(issue.id)
+    try {
+      const r = await fetch('/api/sheet-mark-sold', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, id: dbId }),
+      })
+      const body = await r.json()
+      if (body.ok) {
+        addToast(body.message || 'Pushed to sheet', 'success')
+        // Optimistically remove this issue from the full-audit list.
+        if (fullResult) {
+          setFullResult({
+            ...fullResult,
+            issues: fullResult.issues.filter(i => i.id !== issue.id || i.code !== issue.code),
+            summary: {
+              ...fullResult.summary,
+              total_issues: Math.max(0, fullResult.summary.total_issues - 1),
+            },
+          })
+        }
+      } else {
+        addToast(`Push failed: ${body.message || body.outcome}`, 'error')
+      }
+    } catch (err) {
+      addToast(`Push failed: ${err.message}`, 'error')
+    } finally {
+      setPushingId(null)
+    }
+  }
+
+  const onScanKey = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      runScan()
+    }
+  }
+
+  const idLabel = kind === 'single' ? 'TCG ID' : 'Cert #'
+
+  return (
+    <div className="fade-in">
+      <ToastContainer toasts={toasts} removeToast={removeToast} />
+
+      <div className="mb-6">
+        <h1 className="font-display text-2xl font-bold text-white flex items-center gap-3">
+          <Scale className="text-vault-gold" />
+          Cards Audit
+        </h1>
+        <p className="text-gray-400 mt-1">Compare app database vs Google Sheet — find what's out of sync.</p>
+      </div>
+
+      <Instructions>
+        <div className="space-y-3 text-gray-300">
+          <p className="font-medium text-white">Two ways to use this page:</p>
+          <ol className="list-decimal list-inside space-y-2 ml-2">
+            <li><span className="text-vault-gold">Quick scan</span> — scan or paste a {idLabel} to see side-by-side what the app says vs what the sheet says.</li>
+            <li><span className="text-vault-gold">Full audit</span> — finds every discrepancy across all cards (takes ~10-30s for ~2000 rows).</li>
+          </ol>
+          <p className="text-cyan-400 text-xs mt-3">💡 The "Push to sheet" button uses the same /api/sheet-mark-sold endpoint as the live sales — it handles qty&gt;1 correctly (decrements instead of marking sold).</p>
+        </div>
+      </Instructions>
+
+      {/* Kind toggle */}
+      <div className="mb-4">
+        <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40">
+          <button
+            type="button"
+            onClick={() => { setKind('single'); setScanResult(null); setFullResult(null); }}
+            className={`px-4 py-2 text-sm rounded-md transition ${kind === 'single' ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}
+          >
+            🎴 Singles
+          </button>
+          <button
+            type="button"
+            onClick={() => { setKind('slab'); setScanResult(null); setFullResult(null); }}
+            className={`px-4 py-2 text-sm rounded-md transition ${kind === 'slab' ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}
+          >
+            💎 Slabs
+          </button>
+        </div>
+      </div>
+
+      {/* Scan box */}
+      <div className="card mb-5">
+        <h2 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
+          <Search size={18} /> Quick scan
+        </h2>
+        <div className="flex items-stretch gap-2">
+          <input
+            ref={inputRef}
+            type="text"
+            value={scanInput}
+            onChange={(e) => setScanInput(e.target.value)}
+            onKeyDown={onScanKey}
+            placeholder={`Scan or type a ${idLabel}…`}
+            disabled={scanning}
+            className="flex-1 px-3 py-2 text-sm font-mono"
+            autoFocus
+          />
+          <button
+            type="button"
+            onClick={() => runScan()}
+            disabled={scanning || !scanInput.trim()}
+            className="btn btn-primary px-4"
+          >
+            {scanning ? <Loader2 size={16} className="animate-spin" /> : 'Compare'}
+          </button>
+        </div>
+
+        {scanResult && (
+          <div className="mt-4 space-y-3">
+            <ScanResult result={scanResult} idLabel={idLabel} pushToSheet={pushToSheet} pushingId={pushingId} />
+          </div>
+        )}
+      </div>
+
+      {/* Full audit */}
+      <div className="card mb-5">
+        <h2 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
+          <FileSearch size={18} /> Full audit
+        </h2>
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <p className="text-sm text-gray-400">
+            Pulls every {kind === 'single' ? 'single' : 'slab'} from the app + every row from the sheet and lists discrepancies.
+          </p>
+          <button
+            type="button"
+            onClick={runFull}
+            disabled={fullRunning}
+            className="btn btn-primary px-4 flex items-center gap-2"
+          >
+            {fullRunning ? <><Loader2 size={16} className="animate-spin" /> Auditing…</> : <><RefreshCw size={16} /> Run full audit</>}
+          </button>
+        </div>
+
+        {fullResult && (
+          <FullAuditResults
+            result={fullResult}
+            kind={kind}
+            idLabel={idLabel}
+            filterCode={filterCode}
+            setFilterCode={setFilterCode}
+            pushToSheet={pushToSheet}
+            pushingId={pushingId}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ScanResult({ result, idLabel, pushToSheet, pushingId }) {
+  const { sheet, db, issues, id } = result
+  return (
+    <div className={`p-3 rounded-lg border ${issues.length === 0 ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-vault-border bg-vault-darker/40'}`}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-sm">
+          <span className="text-gray-400">Scanned {idLabel}: </span>
+          <span className="text-white font-mono font-semibold">{id}</span>
+        </div>
+        {issues.length === 0 && (
+          <span className="text-xs text-emerald-300 flex items-center gap-1">
+            <CheckCircle size={14} /> Matches
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+        <div className="bg-vault-darker rounded p-3">
+          <div className="text-gray-500 uppercase tracking-wider mb-2">App (Supabase)</div>
+          {db ? (
+            <dl className="space-y-1">
+              <Pair k="Status" v={db.status || '—'} />
+              <Pair k="Remaining qty" v={db.remaining_qty} />
+              <Pair k="Sold qty (history)" v={db.sold_qty} />
+              {db.price != null && <Pair k="Price" v={`$${db.price.toFixed(2)}`} />}
+              <Pair k="Rows in DB" v={db.row_ids.length} />
+            </dl>
+          ) : (
+            <p className="text-gray-500 italic">No row with this {idLabel} in the app.</p>
+          )}
+        </div>
+        <div className="bg-vault-darker rounded p-3">
+          <div className="text-gray-500 uppercase tracking-wider mb-2">Sheet (Google)</div>
+          {sheet ? (
+            <dl className="space-y-1">
+              <Pair k="Tab" v={sheet.tab} />
+              <Pair k="Row" v={sheet.sheet_row} />
+              {sheet.qty != null && <Pair k="Qty" v={sheet.qty} />}
+              <Pair k="Status" v={sheet.status || '(empty)'} />
+              {sheet.price != null && <Pair k="Price" v={`$${sheet.price.toFixed(2)}`} />}
+            </dl>
+          ) : (
+            <p className="text-gray-500 italic">No row with this {idLabel} in the sheet.</p>
+          )}
+        </div>
+      </div>
+
+      {issues.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {issues.map((iss, i) => (
+            <IssueRow key={i} issue={{ ...iss, id, db, sheet }} pushToSheet={pushToSheet} pushingId={pushingId} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function FullAuditResults({ result, kind, idLabel, filterCode, setFilterCode, pushToSheet, pushingId }) {
+  const { summary, issues } = result
+  const filtered = filterCode ? issues.filter(i => i.code === filterCode) : issues
+  return (
+    <div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 text-xs">
+        <Stat label="App ids" value={summary.total_db_ids} />
+        <Stat label="Sheet ids" value={summary.total_sheet_ids} />
+        <Stat label="Issues found" value={summary.total_issues} highlight={summary.total_issues > 0} />
+        <Stat label="Clean" value={Math.max(0, summary.total_db_ids - new Set(issues.map(i => i.id)).size)} />
+      </div>
+
+      {/* Filter chips */}
+      {Object.keys(summary.by_code).length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          <FilterChip active={filterCode === ''} onClick={() => setFilterCode('')}>All ({summary.total_issues})</FilterChip>
+          {Object.entries(summary.by_code).map(([code, count]) => (
+            <FilterChip key={code} active={filterCode === code} onClick={() => setFilterCode(code)}>
+              {CODE_LABELS[code] || code} ({count})
+            </FilterChip>
+          ))}
+        </div>
+      )}
+
+      {filtered.length === 0 ? (
+        <p className="text-emerald-300 text-sm flex items-center gap-2 py-3">
+          <CheckCircle size={16} /> No issues {filterCode ? 'in this category' : ''}.
+        </p>
+      ) : (
+        <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+          {filtered.map((iss, i) => (
+            <IssueRow key={i} issue={iss} idLabel={idLabel} pushToSheet={pushToSheet} pushingId={pushingId} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function IssueRow({ issue, idLabel = 'ID', pushToSheet, pushingId }) {
+  const sev = SEVERITY[issue.severity] || SEVERITY.info
+  const Icon = sev.icon
+  const isPushing = pushingId === issue.id
+  return (
+    <div className={`p-3 rounded border ${sev.border} ${sev.bg}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2 min-w-0">
+          <Icon size={16} className={`${sev.color} flex-shrink-0 mt-0.5`} />
+          <div className="min-w-0">
+            <div className="flex items-baseline gap-2 mb-1">
+              <span className={`text-xs uppercase tracking-wider ${sev.color}`}>
+                {CODE_LABELS[issue.code] || issue.code}
+              </span>
+              <span className="text-white font-mono text-xs">{idLabel}: {issue.id}</span>
+            </div>
+            <p className="text-xs text-gray-300">{issue.message}</p>
+            {issue.sheet && (
+              <p className="text-[10px] text-gray-500 mt-1">
+                Sheet: {issue.sheet.tab} row {issue.sheet.sheet_row}
+                {issue.sheet.qty != null && ` · qty ${issue.sheet.qty}`}
+                {issue.sheet.status && ` · status "${issue.sheet.status}"`}
+              </p>
+            )}
+          </div>
+        </div>
+        {issue.suggested_action && issue.db && (
+          <button
+            type="button"
+            onClick={() => pushToSheet(issue)}
+            disabled={isPushing}
+            className="text-xs px-2 py-1 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 whitespace-nowrap flex items-center gap-1"
+          >
+            {isPushing ? <Loader2 size={12} className="animate-spin" /> : <ExternalLink size={12} />}
+            Push to sheet
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Pair({ k, v }) {
+  return (
+    <div className="flex justify-between gap-2">
+      <dt className="text-gray-500">{k}:</dt>
+      <dd className="text-gray-200 font-mono">{String(v)}</dd>
+    </div>
+  )
+}
+
+function Stat({ label, value, highlight }) {
+  return (
+    <div className={`bg-vault-darker rounded p-2 text-center ${highlight ? 'border border-red-500/40' : ''}`}>
+      <div className={`text-lg font-bold ${highlight ? 'text-red-300' : 'text-vault-gold'}`}>{value}</div>
+      <div className="text-[10px] text-gray-500 uppercase tracking-wider">{label}</div>
+    </div>
+  )
+}
+
+function FilterChip({ active, onClick, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-[10px] px-2 py-1 rounded border whitespace-nowrap ${
+        active
+          ? 'bg-vault-gold/25 border-vault-gold/50 text-vault-gold font-semibold'
+          : 'bg-vault-darker border-vault-border text-gray-400 hover:text-white'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
