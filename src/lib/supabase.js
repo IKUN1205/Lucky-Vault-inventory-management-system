@@ -1284,6 +1284,15 @@ export const markSingleAsSold = async (id, saleData) => {
     payload: { sale: saleData, card: data },
     acted_by_id: saleData.sold_by_id
   })
+  // Fire-and-forget back-sync to the Singles Google Sheet — push
+  // Status = "sold" so the sheet reflects reality. Failures are
+  // swallowed; the hourly safety-net sync (sync-singles-sheet) will
+  // catch any item that didn't make it.
+  fetch('/api/sheet-mark-sold', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'single', id: data.id }),
+  }).catch(err => console.warn('[sheet-mark-sold single] non-fatal:', err))
   return data
 }
 
@@ -1703,6 +1712,13 @@ export const markSlabAsSold = async (id, saleData) => {
     payload: { sale: saleData, slab: data },
     acted_by_id: saleData.sold_by_id
   })
+  // Fire-and-forget back-sync to the Slabs Google Sheet — same shape as
+  // singles: push Status = "sold" + hourly safety-net catches any miss.
+  fetch('/api/sheet-mark-sold', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'slab', id: data.id }),
+  }).catch(err => console.warn('[sheet-mark-sold slab] non-fatal:', err))
   return data
 }
 

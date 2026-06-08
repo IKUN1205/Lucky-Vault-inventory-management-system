@@ -20,6 +20,7 @@
 // Vercel attaches Authorization: Bearer ${CRON_SECRET} when invoking.
 
 import { createClient } from '@supabase/supabase-js'
+import { backsyncSoldStatus } from './_lib/google-sheets.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -187,11 +188,39 @@ export default async function handler(req, res) {
       else ins += batch.length
     }
 
+    // Hourly safety-net back-sync — see twin block in sync-singles-sheet.js
+    // for rationale. Pulls every Supabase slab with status='sold' and
+    // pushes Status='sold' to the matching cert in the sheet if it's
+    // not already there.
+    let backsync = { skipped: 'env not set' }
+    try {
+      const { data: soldRows } = await supabase
+        .from('slabs')
+        .select('cert_number')
+        .eq('status', 'sold')
+        .eq('deleted', false)
+        .not('cert_number', 'is', null)
+      const soldIds = new Set((soldRows || []).map(r => String(r.cert_number).trim()).filter(Boolean))
+      backsync = await backsyncSoldStatus({
+        spreadsheetId: SHEET_ID,
+        tabs: SHEET_TABS,
+        idColumn: 0,         // Cert is col A
+        statusColumn: 11,    // Status is col L
+        soldIdsInDb: soldIds,
+      })
+    } catch (e) {
+      console.warn('[sync-slabs-sheet] back-sync threw (non-fatal):', e.message)
+      backsync = { error: e.message }
+    }
+
     const durationMs = Date.now() - startedAt
     const summary = {
       ok: true, tabs: tabSummary, unique_certs: items.length, skipped,
       existing_in_db: existing.size, prices_changed: upd, prices_unchanged: updSkip,
-      price_errors: updErr, new_inserted: ins, insert_errors: insErr, duration_ms: durationMs,
+      price_errors: updErr, new_inserted: ins, insert_errors: insErr,
+      backsync_sold_to_sheet: backsync.written ?? 0,
+      backsync_detail: backsync,
+      duration_ms: durationMs,
     }
     console.log('[sync-slabs-sheet] OK', summary)
 

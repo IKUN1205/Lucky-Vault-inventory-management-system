@@ -20,6 +20,7 @@
 // could do is replay prices, no destructive side effects).
 
 import { createClient } from '@supabase/supabase-js'
+import { backsyncSoldStatus } from './_lib/google-sheets.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -343,6 +344,32 @@ export default async function handler(req, res) {
       }
     }
 
+    // Hourly safety-net back-sync: any single that Supabase says is sold
+    // but the sheet still shows as available gets Status='sold' pushed
+    // back. The frontend's fire-and-forget /api/sheet-mark-sold call after
+    // each sale handles the immediate case; this catches any sale where
+    // that fetch failed (network blip, function cold-start timeout, etc).
+    let backsync = { skipped: 'env not set' }
+    try {
+      const { data: soldRows } = await supabase
+        .from('singles')
+        .select('tcg_id')
+        .eq('status', 'sold')
+        .eq('deleted', false)
+        .not('tcg_id', 'is', null)
+      const soldIds = new Set((soldRows || []).map(r => String(r.tcg_id).trim()).filter(Boolean))
+      backsync = await backsyncSoldStatus({
+        spreadsheetId: SHEET_ID,
+        tabs: SHEET_TABS.map(t => t.name),
+        idColumn: 5,         // TCG ID is col F
+        statusColumn: 11,    // Status is col L (matches slabs layout)
+        soldIdsInDb: soldIds,
+      })
+    } catch (e) {
+      console.warn('[sync-singles-sheet] back-sync threw (non-fatal):', e.message)
+      backsync = { error: e.message }
+    }
+
     const durationMs = Date.now() - startedAt
     const summary = {
       ok: true,
@@ -357,6 +384,8 @@ export default async function handler(req, res) {
       new_rows_inserted: insertedOk,
       new_row_errors: insertedErr,
       sets_auto_created: setsCreated,
+      backsync_sold_to_sheet: backsync.written ?? 0,
+      backsync_detail: backsync,
       duration_ms: durationMs,
     }
     console.log('[sync-singles-sheet] OK', summary)
