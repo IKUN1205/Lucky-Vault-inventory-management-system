@@ -362,7 +362,8 @@ export default async function handler(req, res) {
         spreadsheetId: SHEET_ID,
         tabs: SHEET_TABS.map(t => t.name),
         idColumn: 5,         // TCG ID is col F
-        statusColumn: 11,    // Status is col L (matches slabs layout)
+        statusColumn: 8,     // Status is col I (added 2026-06-04 — singles
+                             // sheet only goes A..H natively + I=Status now)
         soldIdsInDb: soldIds,
       })
     } catch (e) {

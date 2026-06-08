@@ -30,24 +30,27 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 // index = where we WRITE "sold". ID column = which column to scan for
 // the cert / tcg id when locating the row.
 //
-// Singles sheet (id 14nuc6ckt5iPRAFkm7P6NAupbn_uXLwGyUsuVzQGFw80):
-//   col 5 = TCG ID; col 11 = Status (matches the slabs layout).
-// Slabs sheet (id 1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI):
-//   col 0 = Cert; col 11 = Status.
-//
-// If a tab's actual Status column moves, change it here — the rest of
-// the file uses cellA1() so the A1 letters auto-adjust.
+// Verified against live sheet headers via service account read on
+// 2026-06-04:
+// - Singles (id 14nuc6ckt5iPRAFkm7P6NAupbn_uXLwGyUsuVzQGFw80):
+//     A=Name B=Set C=Market$ D=Prices E=Qty F=TCG ID G=Location H=Date
+//     I=Status (added 2026-06-04 by this commit's setup script).
+//     idColumn=5 (F=TCG ID), statusColumn=8 (I=Status).
+// - Slabs (id 1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI):
+//     Pokemon Master + One Piece Master both have Status in col L (idx 11).
+//     Other tabs (OP NEW, New Input, Highend) skipped per boss directive —
+//     back-sync only touches the two canonical Master tabs.
 const SHEET_CONFIG = {
   single: {
     spreadsheetId: '14nuc6ckt5iPRAFkm7P6NAupbn_uXLwGyUsuVzQGFw80',
     tabs: ['Master Singles', 'New Singles '],
     idColumn: 5,
     idAttr: 'tcg_id',
-    statusColumn: 11,
+    statusColumn: 8,
   },
   slab: {
     spreadsheetId: '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI',
-    tabs: ['Pokemon Master', 'One Piece Master', 'New Slabs'],
+    tabs: ['Pokemon Master', 'One Piece Master'],
     idColumn: 0,
     idAttr: 'cert_number',
     statusColumn: 11,

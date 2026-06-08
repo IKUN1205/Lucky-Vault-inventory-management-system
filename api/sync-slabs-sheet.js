@@ -203,7 +203,10 @@ export default async function handler(req, res) {
       const soldIds = new Set((soldRows || []).map(r => String(r.cert_number).trim()).filter(Boolean))
       backsync = await backsyncSoldStatus({
         spreadsheetId: SHEET_ID,
-        tabs: SHEET_TABS,
+        // Back-sync ONLY into the two canonical Master tabs per boss
+        // directive 2026-06-04. The new-arrival tabs (OP NEW / New Input)
+        // are for fresh slabs that haven't sold yet — no point scanning.
+        tabs: ['Pokemon Master', 'One Piece Master'],
         idColumn: 0,         // Cert is col A
         statusColumn: 11,    // Status is col L
         soldIdsInDb: soldIds,
