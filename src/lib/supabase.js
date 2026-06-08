@@ -1194,6 +1194,41 @@ export const fetchSingleByIdentifier = async (idString) => {
 // prefer fetchSingleByIdentifier.
 export const fetchSingleByCert = fetchSingleByIdentifier
 
+// Fire the back-sync to the Google Sheet AND parse the response so the
+// browser console shows a human-readable line instead of a silent 404
+// or a cryptic "noop:true" payload. Truly fire-and-forget — we never
+// await (caller doesn't block on the sheet write) and a network error
+// just becomes a console warning.
+//
+// The Vercel function logs the same human message server-side (see
+// api/sheet-mark-sold.js → respond() helper) so DevTools and Vercel
+// dashboard tell the same story. Use the response's `trace.sheet_url`
+// (when present) to jump straight to the affected cell.
+async function reportSheetSyncResult(kind, dbId) {
+  try {
+    const r = await fetch('/api/sheet-mark-sold', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, id: dbId }),
+    })
+    let body
+    try { body = await r.json() }
+    catch { body = { outcome: 'unparseable', message: `HTTP ${r.status} with non-JSON body` } }
+    const prefix = `[sheet sync · ${kind}]`
+    if (r.ok && body.outcome === 'marked_sold') {
+      console.log(`${prefix} ✓ ${body.message}`, body.trace?.sheet_url || '')
+    } else if (r.ok && body.outcome === 'already_sold') {
+      console.log(`${prefix} (already sold) ${body.message}`)
+    } else if (r.ok && body.outcome === 'not_in_sheet') {
+      console.info(`${prefix} (not in sheet — fine) ${body.message}`)
+    } else {
+      console.warn(`${prefix} ⚠ ${body.outcome || `HTTP ${r.status}`}: ${body.message || '(no message)'}`, body.trace || '')
+    }
+  } catch (netErr) {
+    console.warn(`[sheet sync · ${kind}] network error reaching /api/sheet-mark-sold:`, netErr.message)
+  }
+}
+
 // Mark a single as sold — records the sale price + channel + date + fees +
 // buyer (all optional except sale_price_usd, enforced in the caller form)
 // and flips status to 'sold'. Backed by the sale_* columns added by
@@ -1287,12 +1322,10 @@ export const markSingleAsSold = async (id, saleData) => {
   // Fire-and-forget back-sync to the Singles Google Sheet — push
   // Status = "sold" so the sheet reflects reality. Failures are
   // swallowed; the hourly safety-net sync (sync-singles-sheet) will
-  // catch any item that didn't make it.
-  fetch('/api/sheet-mark-sold', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'single', id: data.id }),
-  }).catch(err => console.warn('[sheet-mark-sold single] non-fatal:', err))
+  // catch any item that didn't make it. Response shape is documented
+  // in api/sheet-mark-sold.js — we forward the human `message` to the
+  // browser console so staff or anyone debugging can see what happened.
+  reportSheetSyncResult('single', data.id)
   return data
 }
 
@@ -1714,11 +1747,7 @@ export const markSlabAsSold = async (id, saleData) => {
   })
   // Fire-and-forget back-sync to the Slabs Google Sheet — same shape as
   // singles: push Status = "sold" + hourly safety-net catches any miss.
-  fetch('/api/sheet-mark-sold', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'slab', id: data.id }),
-  }).catch(err => console.warn('[sheet-mark-sold slab] non-fatal:', err))
+  reportSheetSyncResult('slab', data.id)
   return data
 }
 

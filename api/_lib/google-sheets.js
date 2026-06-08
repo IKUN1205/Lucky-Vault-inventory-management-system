@@ -178,7 +178,13 @@ export async function backsyncSoldStatus({
     }
     perTab.push({ tab, scanned, queued: written })
   }
-  if (updates.length === 0) return { written: 0, perTab }
+  if (updates.length === 0) {
+    return {
+      written: 0,
+      perTab,
+      message: 'Every sold item is already marked sold in the sheet — nothing to write.',
+    }
+  }
   // Chunk to keep the request well under the 100 MB limit (we won't hit
   // it but a sanity cap means a future 10,000-row sheet doesn't blow up).
   let totalWritten = 0
@@ -187,7 +193,16 @@ export async function backsyncSoldStatus({
     const r = await batchUpdateValues(spreadsheetId, chunk)
     totalWritten += r.totalUpdatedCells ?? chunk.length
   }
-  return { written: totalWritten, perTab }
+  const tabSummary = perTab
+    .filter(t => t.queued > 0)
+    .map(t => `${t.queued} in "${t.tab}"`)
+    .join(', ')
+  return {
+    written: totalWritten,
+    perTab,
+    message: `Marked ${totalWritten} row${totalWritten === 1 ? '' : 's'} as sold` +
+             (tabSummary ? ` (${tabSummary}).` : '.'),
+  }
 }
 
 // Column index → A1 letter ("A", "B", …, "Z", "AA", "AB", …). Inputs are

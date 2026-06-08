@@ -59,16 +59,78 @@ const SHEET_CONFIG = {
 
 export const config = { maxDuration: 15 }
 
+// Every response body uses this shape so the caller (and the Vercel
+// function logs) always sees plain English plus a structured trace for
+// debugging. `outcome` is one of:
+//   marked_sold       — wrote 'sold' to the sheet (the happy path)
+//   already_sold      — sheet already said sold; nothing to write
+//   not_in_sheet      — id exists in DB-as-sold but isn't in any sheet tab
+//   not_yet_sold      — caller asked us but DB still says in_inventory
+//   not_in_db         — no row with that id in singles/slabs
+//   missing_identity  — DB row has no tcg/cert (can't locate in sheet)
+//   bad_request       — caller sent invalid body
+//   not_configured    — server missing GOOGLE_SERVICE_ACCOUNT_JSON or supabase key
+//   server_error      — unexpected throw
+//
+// HTTP status:
+//   200  for marked_sold / already_sold (work succeeded or was a no-op)
+//   200  for not_in_sheet too (common when card was added in-app and
+//        never had a sheet row — caller shouldn't treat this as an error)
+//   400  bad_request
+//   404  not_in_db
+//   409  not_yet_sold
+//   422  missing_identity
+//   500  server_error / not_configured
+//
+// The fire-and-forget caller in src/lib/supabase.js reads `outcome` and
+// `message` and logs a one-line console summary — no more mystery 404s.
+function respond(res, status, outcome, message, trace) {
+  const body = {
+    ok: status < 400,
+    outcome,
+    message,
+    trace: { at: new Date().toISOString(), ...trace },
+  }
+  // Console line gets picked up by Vercel function logs (the right place
+  // to look when something silently fails in prod). Tagged so it's
+  // greppable across functions.
+  const lvl = status < 400
+    ? (outcome === 'marked_sold' ? 'log' : 'log')
+    : (status >= 500 ? 'error' : 'warn')
+  console[lvl](`[sheet-mark-sold] ${outcome}: ${message}`, trace)
+  return res.status(status).json(body)
+}
+
+const kindNoun = (k) => k === 'single' ? 'Single' : 'Slab'
+const idLabel  = (k) => k === 'single' ? 'TCG ID' : 'Cert #'
+
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
+  if (req.method !== 'POST') {
+    return respond(res, 405, 'bad_request',
+      `Only POST is supported here (got ${req.method}).`, { method: req.method })
+  }
   const { kind, id } = (req.body && typeof req.body === 'object') ? req.body : {}
   const cfg = SHEET_CONFIG[kind]
-  if (!cfg) return res.status(400).json({ error: `unknown kind: ${kind}` })
-  if (!id) return res.status(400).json({ error: 'id required' })
+  if (!cfg) {
+    return respond(res, 400, 'bad_request',
+      `Don't know how to handle kind="${kind}" — expected "single" or "slab".`,
+      { kind, id })
+  }
+  if (!id) {
+    return respond(res, 400, 'bad_request',
+      `Missing "id" in request body — the supabase row id is required.`,
+      { kind })
+  }
 
-  if (!SUPABASE_KEY) return res.status(500).json({ error: 'Supabase key not configured' })
+  if (!SUPABASE_KEY) {
+    return respond(res, 500, 'not_configured',
+      `Server is missing the Supabase service-role key, so I can't verify the sale before writing to the sheet.`,
+      { kind, id })
+  }
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    return res.status(500).json({ error: 'GOOGLE_SERVICE_ACCOUNT_JSON not configured' })
+    return respond(res, 500, 'not_configured',
+      `Server is missing GOOGLE_SERVICE_ACCOUNT_JSON env var — Google Sheets API isn't reachable yet. Add the service account JSON in Vercel env vars.`,
+      { kind, id })
   }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } })
@@ -83,15 +145,21 @@ export default async function handler(req, res) {
       .eq('id', id)
       .maybeSingle()
     if (error) throw error
-    if (!data) return res.status(404).json({ error: `${kind} ${id} not found` })
+    if (!data) {
+      return respond(res, 404, 'not_in_db',
+        `No ${kindNoun(kind).toLowerCase()} with database id ${id} exists in Supabase. (Was the row deleted? Or was the id mistyped?)`,
+        { kind, db_id: id })
+    }
     if (data.status !== 'sold') {
-      return res.status(409).json({
-        error: `${kind} is not sold (status=${data.status}) — refusing to write`,
-      })
+      return respond(res, 409, 'not_yet_sold',
+        `Refusing to write: the ${kindNoun(kind).toLowerCase()} in Supabase has status="${data.status}", not "sold". The sale didn't actually go through, or it was undone — the sheet stays as-is.`,
+        { kind, db_id: id, db_status: data.status })
     }
     const idValue = String(data[cfg.idAttr] || '').trim()
     if (!idValue) {
-      return res.status(422).json({ error: `${kind} has no ${cfg.idAttr}, can't locate in sheet` })
+      return respond(res, 422, 'missing_identity',
+        `${kindNoun(kind)} ${id} is sold in Supabase but has no ${idLabel(kind)} on it, so I can't find its row in the sheet. (Edit the row in the app and add its ${idLabel(kind)}, then we'll catch it on the next hourly sync.)`,
+        { kind, db_id: id })
     }
 
     // 2. For each tab in the sheet, read the id column and find the row
@@ -99,26 +167,24 @@ export default async function handler(req, res) {
     //    first hit). Singles can appear in either Master Singles OR
     //    New Singles, slabs in any of the three tabs — search all.
     let found = null   // { tab, rowIndex (0-based), currentStatus }
+    const tabsScanned = []
     for (const tab of cfg.tabs) {
       // Pull the id column + status column together so we can decide
       // whether to write OR no-op (idempotent).
-      const idCol = colLetter(cfg.idColumn)
-      const statusCol = colLetter(cfg.statusColumn)
-      // Read both columns as separate ranges in one round-trip via the
-      // values:batchGet endpoint would be nicer, but a single read of
-      // A:Z is simpler and still cheap on these sheets (< 1000 rows).
       const range = `${tab}!A1:${maxCol(cfg.statusColumn)}5000`
       let rows
       try {
         rows = await readRange(cfg.spreadsheetId, range)
       } catch (e) {
-        // A missing tab returns 400 — skip it.
-        if (String(e.message).includes('Unable to parse range')) continue
+        // A missing tab returns 400 — note + skip.
+        if (String(e.message).includes('Unable to parse range')) {
+          tabsScanned.push({ tab, skipped: 'tab missing' })
+          continue
+        }
         throw e
       }
-      // Skip header row(s) — match by exact string compare on the id.
-      // Row index from the API is 0-based for our `rows` array, so
-      // rowIndex 0 = sheet row 1.
+      tabsScanned.push({ tab, rows: rows.length })
+      // Match by exact string compare on the id column.
       for (let r = 0; r < rows.length; r++) {
         const cell = rows[r][cfg.idColumn]
         if (cell == null) continue
@@ -131,34 +197,49 @@ export default async function handler(req, res) {
     }
 
     if (!found) {
-      return res.status(404).json({
-        error: `${cfg.idAttr}=${idValue} not found in any ${kind} sheet tab`,
-      })
+      // Treated as a 200 (not 4xx) because this is a normal, expected
+      // case — a card added directly in-app without ever going through
+      // the sheet. We don't want the caller treating it as a failure.
+      return respond(res, 200, 'not_in_sheet',
+        `${kindNoun(kind)} with ${idLabel(kind)} ${idValue} is sold in the app but no matching row exists in the ${kindNoun(kind).toLowerCase()}s sheet. (That's normal if the ${kindNoun(kind).toLowerCase()} was added in-app and never synced from the sheet — no sheet update needed.)`,
+        { kind, db_id: id, id_value: idValue, tabs_scanned: tabsScanned })
     }
+
+    const targetCell = cellA1(found.tab, found.rowIndex, cfg.statusColumn)
+    const sheetUrl = `https://docs.google.com/spreadsheets/d/${cfg.spreadsheetId}/edit#gid=0&range=${encodeURIComponent(targetCell)}`
 
     // 3. Idempotent: if the sheet already says "sold", nothing to do.
     if (String(found.currentStatus || '').trim().toLowerCase() === 'sold') {
-      return res.status(200).json({ ok: true, noop: true, tab: found.tab, row: found.rowIndex + 1 })
+      return respond(res, 200, 'already_sold',
+        `Sheet row for ${kindNoun(kind).toLowerCase()} ${idLabel(kind)} ${idValue} already says "sold" in ${found.tab} row ${found.rowIndex + 1}. Nothing to write.`,
+        {
+          kind, db_id: id, id_value: idValue,
+          sheet_tab: found.tab,
+          sheet_row: found.rowIndex + 1,
+          sheet_cell: targetCell,
+          sheet_url: sheetUrl,
+        })
     }
 
     // 4. Write "sold" to the Status cell on that row.
-    const targetCell = cellA1(found.tab, found.rowIndex, cfg.statusColumn)
     const result = await batchUpdateValues(cfg.spreadsheetId, [
       { range: targetCell, values: [['sold']] },
     ])
 
-    return res.status(200).json({
-      ok: true,
-      kind,
-      idAttr: cfg.idAttr,
-      idValue,
-      tab: found.tab,
-      sheet_row: found.rowIndex + 1,
-      updatedCells: result.totalUpdatedCells ?? result.updatedCells ?? 1,
-    })
+    return respond(res, 200, 'marked_sold',
+      `Wrote "sold" to ${kindNoun(kind).toLowerCase()} ${idLabel(kind)} ${idValue} → ${found.tab} cell ${targetCell.split('!')[1]}.`,
+      {
+        kind, db_id: id, id_value: idValue,
+        sheet_tab: found.tab,
+        sheet_row: found.rowIndex + 1,
+        sheet_cell: targetCell,
+        sheet_url: sheetUrl,
+        cells_updated: result.totalUpdatedCells ?? result.updatedCells ?? 1,
+      })
   } catch (err) {
-    console.error('[sheet-mark-sold]', kind, id, err)
-    return res.status(500).json({ error: err.message || String(err) })
+    return respond(res, 500, 'server_error',
+      `Something threw on the server: ${err.message || String(err)}. Check Vercel function logs for the stack.`,
+      { kind, db_id: id, error: err.message || String(err) })
   }
 }
 
