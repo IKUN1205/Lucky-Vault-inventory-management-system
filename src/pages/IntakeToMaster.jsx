@@ -18,7 +18,7 @@ import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
 import BarcodeScanner from '../components/BarcodeScanner'
 import Instructions from '../components/Instructions'
-import { Package, Check, AlertTriangle, Loader2 } from 'lucide-react'
+import { Package, Check, AlertTriangle, Loader2, Search, X } from 'lucide-react'
 
 // Helper to extract Launch Name from full product name
 const extractLaunchName = (fullName, category) => {
@@ -335,9 +335,12 @@ export default function IntakeToMaster() {
           time there are pending acquisitions to filter through (skip the
           empty-state). The unknown-barcode modal lets warehouse staff
           associate a freshly-arrived box's UPC with the matching product
-          on the fly. */}
+          on the fly. Below the scanner, a text search lets staff type a
+          product name instead of scanning — useful when the UPC is
+          scuffed, the scanner's dead, or the box hasn't been labeled
+          yet. Both paths land on the same handleScanMatch. */}
       {pendingAcquisitions.length > 0 && (
-        <div className="mb-4">
+        <div className="mb-4 space-y-3">
           <BarcodeScanner
             products={products}
             onMatched={handleScanMatch}
@@ -348,6 +351,10 @@ export default function IntakeToMaster() {
             }}
             addToast={addToast}
             hint="Scan a box's UPC to jump to its pending order below."
+          />
+          <PendingSearch
+            pendingAcquisitions={pendingAcquisitions}
+            onPick={handleScanMatch}
           />
         </div>
       )}
@@ -428,6 +435,149 @@ export default function IntakeToMaster() {
           reload={loadData}
         />
       )}
+    </div>
+  )
+}
+
+// Text-search box that complements the BarcodeScanner. Builds a deduped
+// list of products that still have a pending acquisition, filters as the
+// user types, and on pick fires the same onMatched callback that the
+// scanner uses — so the scroll-to + highlight behavior is consistent
+// between scan and type. Closes on outside click + escape; submits on
+// Enter (picks the top match).
+function PendingSearch({ pendingAcquisitions, onPick }) {
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const [hoverIdx, setHoverIdx] = useState(0)
+  const boxRef = useRef(null)
+
+  // Dedup pending acquisitions down to unique products (a single batch
+  // can have multiple line items for different SKUs; we want one row
+  // per product).
+  const products = useMemo(() => {
+    const byId = new Map()
+    for (const a of pendingAcquisitions) {
+      const p = a.product
+      if (!p?.id) continue
+      if (!byId.has(p.id)) byId.set(p.id, { ...p, _pending_count: 1 })
+      else byId.get(p.id)._pending_count++
+    }
+    return [...byId.values()]
+  }, [pendingAcquisitions])
+
+  const q = query.trim().toLowerCase()
+  const matches = useMemo(() => {
+    if (!q) return []
+    const tokens = q.split(/\s+/).filter(Boolean)
+    return products
+      .map(p => {
+        const hay = [p.name, p.brand, p.category, p.language].filter(Boolean).join(' ').toLowerCase()
+        const hits = tokens.filter(t => hay.includes(t)).length
+        return { p, hits, hay }
+      })
+      .filter(m => m.hits === tokens.length)
+      // Prefer matches that start with the first token (better feeling).
+      .sort((a, b) => {
+        const t = tokens[0]
+        const aStart = a.hay.indexOf(t)
+        const bStart = b.hay.indexOf(t)
+        return aStart - bStart
+      })
+      .slice(0, 8)
+      .map(m => m.p)
+  }, [q, products])
+
+  // Reset highlight when results change.
+  useEffect(() => { setHoverIdx(0) }, [matches.length])
+
+  // Close on outside click.
+  useEffect(() => {
+    const h = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  const pick = (p) => {
+    onPick(p)
+    setQuery('')
+    setOpen(false)
+  }
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { setOpen(false); return }
+    if (!matches.length) return
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHoverIdx(i => Math.min(i + 1, matches.length - 1)); return }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); setHoverIdx(i => Math.max(i - 1, 0)); return }
+    if (e.key === 'Enter')     { e.preventDefault(); pick(matches[hoverIdx]); return }
+  }
+
+  return (
+    <div ref={boxRef} className="relative">
+      <div className="card !p-3">
+        <div className="flex items-center gap-2">
+          <Search size={16} className="text-gray-500 flex-shrink-0" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); setOpen(true) }}
+            onFocus={() => setOpen(true)}
+            onKeyDown={onKey}
+            placeholder="…or type a product name to find its pending order"
+            className="flex-1 bg-transparent border-0 outline-none text-sm py-1"
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => { setQuery(''); setOpen(false) }}
+              className="text-gray-400 hover:text-white"
+              aria-label="Clear search"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        {q && open && (
+          <div className="mt-2 -mx-3 -mb-3 max-h-72 overflow-y-auto border-t border-vault-border">
+            {matches.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-gray-500 italic">
+                No pending orders match "{query}".
+              </p>
+            ) : (
+              matches.map((p, i) => {
+                const lname = extractLaunchName(p.name, p.category)
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onMouseEnter={() => setHoverIdx(i)}
+                    onClick={() => pick(p)}
+                    className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between gap-3 ${
+                      hoverIdx === i ? 'bg-vault-gold/15' : 'hover:bg-vault-darker/60'
+                    }`}
+                  >
+                    <span className="min-w-0 flex-1 truncate">
+                      <span className="text-vault-gold">{p.brand}</span>
+                      <span className="text-gray-500"> · </span>
+                      <span className="text-white">{lname}</span>
+                      <span className="text-gray-500"> · </span>
+                      <span className="text-gray-300">{p.category || p.type}</span>
+                      {p.language && <>
+                        <span className="text-gray-500"> · </span>
+                        <span className="text-blue-400">{p.language}</span>
+                      </>}
+                    </span>
+                    {p._pending_count > 1 && (
+                      <span className="text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5 flex-shrink-0">
+                        {p._pending_count} pending
+                      </span>
+                    )}
+                  </button>
+                )
+              })
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
