@@ -1,20 +1,30 @@
 // api/sheet-mark-sold.js
-// Called fire-and-forget from markSingleAsSold / markSlabAsSold (the
-// frontend) every time a single or slab flips status to 'sold'. We push
-// the new status back to the Google Sheet so the next time staff or boss
-// looks at the sheet they see reality, not a graveyard of "available" rows
-// that are actually sold.
+// Pushes the app's current truth for one single / slab back to its row
+// in the Google Sheet. Two callers:
+//   1. markSingleAsSold / markSlabAsSold (fire-and-forget right after a
+//      sale) — used when status flipped to 'sold'. We push 'sold'.
+//   2. Cards Audit "Push to sheet" buttons — used when the staff member
+//      wants to sync any kind of stale sheet value: qty mismatch, sold
+//      not-yet-pushed, etc. The status can be 'sold' OR 'in_inventory'
+//      OR 'listed' depending on the situation.
 //
-// Trust model: the endpoint is reachable from the browser (the frontend
-// fires it without an auth header). To prevent a malicious caller from
-// marking unrelated rows as sold, we re-verify in Supabase that the
-// referenced single/slab really IS sold before writing anything to the
-// sheet. Worst case for an unauthenticated call: a single API round-trip
-// per item that's already legitimately sold.
+// What we actually write is decided by the app's state, not the caller:
+//   - If app's TOTAL non-sold qty for this tcg/cert is 0 → write 'sold'
+//     to the Status column (singles also write 0 to Qty).
+//   - If app's total non-sold qty > 0 → write that number to the Qty
+//     column. Status column is NOT touched.
+//   - Slabs (no qty) → write 'sold' whenever the row's status='sold'.
 //
-// The endpoint is idempotent — if the sheet row already shows "sold",
-// we no-op. So repeated calls (e.g. retries, racing with the hourly
-// safety-net sync) are safe.
+// Trust model: the endpoint is reachable from the browser (no auth
+// header). To stop a malicious caller from corrupting random sheet
+// rows, we look the row up in Supabase first and confirm its status
+// is one of the known LIVE states (sold / in_inventory / listed). Any
+// other status → 409 unknown_status. Worst case for an unauthenticated
+// call: a single sheet-row update reflecting the app's actual data.
+//
+// The endpoint is idempotent — if the sheet already shows the value
+// we'd write, we no-op. So repeated calls (retries, the hourly
+// safety-net racing the on-sale call, the audit racing both) are safe.
 
 import { createClient } from '@supabase/supabase-js'
 import { readRange, batchUpdateValues, cellA1 } from './_lib/google-sheets.js'
@@ -156,16 +166,24 @@ export default async function handler(req, res) {
         `No ${kindNoun(kind).toLowerCase()} with database id ${id} exists in Supabase. (Was the row deleted? Or was the id mistyped?)`,
         { kind, db_id: id })
     }
-    if (data.status !== 'sold') {
-      return respond(res, 409, 'not_yet_sold',
-        `Refusing to write: the ${kindNoun(kind).toLowerCase()} in Supabase has status="${data.status}", not "sold". The sale didn't actually go through, or it was undone — the sheet stays as-is.`,
+    // Accept any LIVE status — the endpoint syncs the app's current
+    // truth to the sheet, whether that truth is "sold" or "still in
+    // inventory at qty N". The post-sale flow uses status='sold' and
+    // results in 'sold' being written; the audit's "Push to sheet"
+    // button uses status='in_inventory'/'listed' and results in the
+    // correct qty being written (computed below). Refuse only on
+    // statuses we don't understand so a typo can't corrupt the sheet.
+    const LIVE_STATUSES = new Set(['sold', 'in_inventory', 'listed'])
+    if (!LIVE_STATUSES.has(data.status)) {
+      return respond(res, 409, 'unknown_status',
+        `Refusing to write: the ${kindNoun(kind).toLowerCase()} in Supabase has status="${data.status}", which isn't one of the known live states (sold / in_inventory / listed). Please investigate the row manually before pushing anything to the sheet.`,
         { kind, db_id: id, db_status: data.status })
     }
     const idValue = String(data[cfg.idAttr] || '').trim()
     if (!idValue) {
       return respond(res, 422, 'missing_identity',
-        `${kindNoun(kind)} ${id} is sold in Supabase but has no ${idLabel(kind)} on it, so I can't find its row in the sheet. (Edit the row in the app and add its ${idLabel(kind)}, then we'll catch it on the next hourly sync.)`,
-        { kind, db_id: id })
+        `${kindNoun(kind)} ${id} (status="${data.status}") has no ${idLabel(kind)} on it, so I can't find its row in the sheet. (Edit the row in the app and add its ${idLabel(kind)}, then we'll catch it on the next hourly sync.)`,
+        { kind, db_id: id, db_status: data.status })
     }
 
     // For singles: sum remaining (non-sold) quantity for this TCG ID.

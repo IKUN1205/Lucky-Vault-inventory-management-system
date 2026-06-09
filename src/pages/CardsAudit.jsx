@@ -487,6 +487,44 @@ export default function CardsAudit() {
     }
   }
 
+  // Bulk-push every "Sheet out of date" entry in the physical-count
+  // review. Same per-row endpoint as pushPhysicalToSheet, sequential
+  // so we don't hammer Google's API and so the staffer sees the
+  // count tick down. Each successful push marks the local snapshot
+  // as _just_pushed so the row drops from the section.
+  const [pushAllStaleRunning, setPushAllStaleRunning] = useState(false)
+  const pushAllSheetStale = async (entries) => {
+    if (!entries || entries.length === 0) return
+    if (!confirm(`Push ${entries.length} row${entries.length === 1 ? '' : 's'} of stale sheet data to match the app?`)) return
+    setPushAllStaleRunning(true)
+    let ok = 0, failed = 0
+    for (const entry of entries) {
+      const dbRowId = entry.info?.db_row_ids?.[0]
+      if (!dbRowId) { failed++; continue }
+      try {
+        const r = await fetch('/api/sheet-mark-sold', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind, id: dbRowId }),
+        })
+        const body = await r.json()
+        if (body.ok) {
+          ok++
+          setPhysicalSheetById(prev => {
+            const next = { ...prev }
+            if (next[entry.id]) next[entry.id] = { ...next[entry.id], _just_pushed: true }
+            return next
+          })
+        } else {
+          failed++
+        }
+      } catch { failed++ }
+    }
+    setPushAllStaleRunning(false)
+    addToast(`Pushed ${ok} row${ok === 1 ? '' : 's'}${failed ? ` · ${failed} failed` : ''}`,
+             failed ? 'info' : 'success')
+  }
+
   // Push sheet to match the app's current truth for an id. Used for the
   // "sheet out of date" case — physical and app agree, sheet hasn't
   // caught up yet. Hits the same /api/sheet-mark-sold endpoint as the
@@ -824,6 +862,8 @@ export default function CardsAudit() {
               resetCount={resetPhysicalCount}
               resolveExtraMoveHere={resolveExtraMoveHere}
               pushPhysicalToSheet={pushPhysicalToSheet}
+              pushAllSheetStale={pushAllSheetStale}
+              pushAllStaleRunning={pushAllStaleRunning}
               physicalResolving={physicalResolving}
               backToScanning={() => setPhysicalState('scanning')}
             />
@@ -1332,6 +1372,7 @@ function PhysicalReview({
   kind, idLabel, locationName,
   expected, scanned, extras, sheetById,
   resetCount, resolveExtraMoveHere, pushPhysicalToSheet,
+  pushAllSheetStale, pushAllStaleRunning,
   physicalResolving, backToScanning,
 }) {
   // Categorize every id, and separately detect "sheet out of date" cases
@@ -1434,7 +1475,22 @@ function PhysicalReview({
       />
 
       {/* Sheet out of date — physical and app agree but sheet wasn't pushed yet.
-          One-click Push to sheet using the existing /api/sheet-mark-sold. */}
+          One-click Push to sheet per row using the existing /api/sheet-mark-sold,
+          plus a header "Push all" so 295 stale rows can be cleared in one click. */}
+      {sheetStale.length > 1 && (
+        <div className="mb-1 flex justify-end">
+          <button
+            type="button"
+            onClick={() => pushAllSheetStale(sheetStale)}
+            disabled={pushAllStaleRunning}
+            className="text-xs px-3 py-1.5 bg-cyan-500/25 border border-cyan-500/50 text-cyan-300 rounded hover:bg-cyan-500/35 disabled:opacity-50 font-semibold flex items-center gap-1"
+          >
+            {pushAllStaleRunning
+              ? <><Loader2 size={12} className="animate-spin" /> Pushing…</>
+              : <><ExternalLink size={12} /> Push all {sheetStale.length} stale rows to sheet</>}
+          </button>
+        </div>
+      )}
       <ThreeWaySection
         title="Sheet out of date — physical and app agree, sheet hasn't caught up"
         bucket="sheet_stale"
@@ -1446,7 +1502,7 @@ function PhysicalReview({
             <button
               type="button"
               onClick={() => pushPhysicalToSheet(s.id, s.info.db_row_ids?.[0])}
-              disabled={physicalResolving === s.id}
+              disabled={physicalResolving === s.id || pushAllStaleRunning}
               className="text-[10px] px-2 py-1 bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 rounded hover:bg-cyan-500/30 disabled:opacity-50 flex items-center gap-1 whitespace-nowrap"
             >
               {physicalResolving === s.id
