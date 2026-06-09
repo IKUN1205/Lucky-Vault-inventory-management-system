@@ -4,6 +4,7 @@ import {
   lookupScannedCode,
   submitStorefrontTransaction,
   fetchStorefrontDailySummary,
+  updateStorefrontTransaction,
   searchProductsForStorefront,
   searchSinglesForStorefront,
   searchSlabsForStorefront,
@@ -15,6 +16,7 @@ import {
   ScanLine, X, Trash2, Loader2, Package, Diamond, Layers,
   AlertTriangle, CreditCard, Save, ShoppingCart, TrendingUp, RefreshCw,
   ChevronDown, ChevronUp, ArrowLeftRight, Coins, Search, Plus,
+  Edit2,
 } from 'lucide-react'
 
 // ============================================================================
@@ -136,6 +138,10 @@ export default function StorefrontSale() {
   // widget always reflects today's running totals.
   const [summary, setSummary] = useState(null)
   const [summaryLoading, setSummaryLoading] = useState(true)
+
+  // Edit-transaction modal state — null when closed; the full txn object
+  // when staff clicks the pencil on a row.
+  const [editTxn, setEditTxn] = useState(null)
 
   const inputRef = useRef(null)
 
@@ -671,6 +677,7 @@ export default function StorefrontSale() {
       <DailySummaryCard
         summary={summary}
         loading={summaryLoading}
+        onEditTransaction={(txn) => setEditTxn(txn)}
         onRefresh={() => loadSummary(saleDate)}
       />
 
@@ -1168,6 +1175,19 @@ export default function StorefrontSale() {
           onCancel={() => setManualLineDraft(null)}
         />
       )}
+
+      {editTxn && (
+        <EditTransactionModal
+          txn={editTxn}
+          paymentMethods={paymentMethods}
+          onClose={() => setEditTxn(null)}
+          onSaved={() => {
+            setEditTxn(null)
+            loadSummary(saleDate)
+          }}
+          addToast={addToast}
+        />
+      )}
     </div>
   )
 }
@@ -1514,7 +1534,7 @@ function ManualResultRow({ row, onPick, disabled, isBuy }) {
 // Refreshes after each successful submit. Manual refresh button for the
 // rare case where another tab on another machine wrote rows.
 // ============================================================================
-function DailySummaryCard({ summary, loading, onRefresh }) {
+function DailySummaryCard({ summary, loading, onRefresh, onEditTransaction }) {
   // Toggle for the collapsible per-transaction breakdown. Default
   // collapsed so the card stays compact; one click expands to show
   // every sale/trade/buy with its items.
@@ -1662,7 +1682,11 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
           {showDetails && (
             <div className="mt-3 space-y-2">
               {transactions.map((t) => (
-                <TransactionDetail key={t.transaction_id} txn={t} />
+                <TransactionDetail
+                  key={t.transaction_id}
+                  txn={t}
+                  onEdit={onEditTransaction}
+                />
               ))}
             </div>
           )}
@@ -1674,7 +1698,7 @@ function DailySummaryCard({ summary, loading, onRefresh }) {
 
 // One row in the expanded daily-summary details: header with type +
 // payment method + time + signed net cash, then the item bullets.
-function TransactionDetail({ txn }) {
+function TransactionDetail({ txn, onEdit }) {
   const KIND_ICON_TXT = {
     sealed: '📦', slab: '💎', single: '🎴',
     slab_manual: '💎', single_manual: '🎴',
@@ -1752,6 +1776,16 @@ function TransactionDetail({ txn }) {
         <div className="flex items-baseline gap-1.5 flex-shrink-0">
           <span className={`font-semibold ${headerMeta.netColor}`}>{headerMeta.money}</span>
           {headerMeta.sub && <span className="text-[10px] text-gray-500">({headerMeta.sub})</span>}
+          {onEdit && (
+            <button
+              type="button"
+              onClick={() => onEdit(txn)}
+              className="ml-1.5 p-1 text-gray-500 hover:text-vault-gold hover:bg-vault-gold/10 rounded"
+              title="Fix payment method, total, or trade-in"
+            >
+              <Edit2 size={12} />
+            </button>
+          )}
         </div>
       </div>
       {txn.items && txn.items.length > 0 && (
@@ -1776,6 +1810,196 @@ function TransactionDetail({ txn }) {
           Customer brought ${Number(txn.trade_in_value).toFixed(2)} in trade-in
         </div>
       )}
+    </div>
+  )
+}
+
+// ============================================================================
+// EditTransactionModal — fix a logged transaction's payment method, total,
+// or trade-in value. Backed by updateStorefrontTransaction in supabase.js.
+// We can't edit transaction type or the cart items themselves (would
+// require reversing inventory effects) — those need delete + redo.
+// ============================================================================
+function EditTransactionModal({ txn, paymentMethods, onClose, onSaved, addToast }) {
+  // Current state read off the txn passed in. payment_method_id comes
+  // from the legacy header column (always set when a single method was
+  // picked at checkout). If the txn was a split-payment, paymentName
+  // shows the multi-method label and we warn before overwriting.
+  const wasSplit = Array.isArray(txn.payments) && txn.payments.length >= 2
+  const initialMethodId = (() => {
+    if (!wasSplit && Array.isArray(txn.payments) && txn.payments[0]?.payment_method_id) {
+      return txn.payments[0].payment_method_id
+    }
+    return txn.payment_method_id || ''
+  })()
+  const isTrade = txn.type === 'trade'
+  const isBuy = txn.type === 'buy'
+
+  const initialTotal = (() => {
+    // For sale / buy the total = absolute net_cash. For trade the
+    // "items going to customer" total = net_cash + trade_in_value.
+    const nc = Math.abs(Number(txn.net_cash) || 0)
+    if (isTrade) return nc + (Number(txn.trade_in_value) || 0)
+    return nc
+  })()
+
+  const [paymentMethodId, setPaymentMethodId] = useState(initialMethodId)
+  const [total, setTotal] = useState(String(initialTotal.toFixed(2)))
+  const [tradeIn, setTradeIn] = useState(isTrade ? String(Number(txn.trade_in_value || 0).toFixed(2)) : '')
+  const [saving, setSaving] = useState(false)
+
+  const onSave = async () => {
+    const totalNum = Number(total)
+    if (!Number.isFinite(totalNum) || totalNum < 0) {
+      addToast('Total must be a non-negative number', 'error')
+      return
+    }
+    if (isTrade) {
+      const tNum = Number(tradeIn)
+      if (!Number.isFinite(tNum) || tNum < 0) {
+        addToast('Trade-in value must be a non-negative number', 'error')
+        return
+      }
+    }
+    if (wasSplit && paymentMethodId && paymentMethodId !== initialMethodId) {
+      if (!confirm('This transaction had a SPLIT payment. Saving will collapse it into a single payment method. Continue?')) return
+    }
+    setSaving(true)
+    try {
+      const patch = {}
+      if (paymentMethodId !== initialMethodId) patch.payment_method_id = paymentMethodId || null
+      if (Math.abs(totalNum - initialTotal) > 0.005) patch.total = totalNum
+      if (isTrade) {
+        const tNum = Number(tradeIn) || 0
+        if (Math.abs(tNum - (Number(txn.trade_in_value) || 0)) > 0.005) patch.trade_in_value = tNum
+      }
+      if (Object.keys(patch).length === 0) {
+        addToast('No changes to save', 'info')
+        setSaving(false)
+        return
+      }
+      const result = await updateStorefrontTransaction(txn.transaction_id, patch)
+      addToast(`Updated ${result.affected_rows} row${result.affected_rows === 1 ? '' : 's'} · new net $${(result.new_net_cash || 0).toFixed(2)}`, 'success')
+      onSaved()
+    } catch (err) {
+      console.error('[edit-txn] save failed:', err)
+      addToast(`Save failed: ${err.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const txTypeLabel = isBuy ? 'Buy' : isTrade ? 'Trade' : 'Sale'
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-y-auto"
+      onClick={onClose}
+    >
+      <div
+        className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-md w-full p-5 shadow-2xl my-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h3 className="font-semibold text-base text-white">Edit {txTypeLabel}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xs">close</button>
+        </div>
+        <p className="text-[11px] text-gray-500 mb-4 font-mono">
+          TXN <span className="text-gray-400">{String(txn.transaction_id || '').slice(0, 8)}…</span>
+        </p>
+
+        {wasSplit && (
+          <div className="mb-3 p-2 bg-amber-500/10 border border-amber-500/30 rounded text-[11px] text-amber-300">
+            ⚠ This was a split payment. Editing here will collapse it into a single payment method.
+          </div>
+        )}
+
+        <div className="space-y-4">
+          {/* Payment method */}
+          <div>
+            <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
+              Payment method
+            </label>
+            <select
+              value={paymentMethodId}
+              onChange={(e) => setPaymentMethodId(e.target.value)}
+              disabled={saving}
+              className="w-full text-sm py-2 px-2"
+            >
+              <option value="">— pick a method —</option>
+              {paymentMethods.map(pm => (
+                <option key={pm.id} value={pm.id}>{pm.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Total */}
+          <div>
+            <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
+              {isBuy ? 'Total we paid' : isTrade ? 'Cart value (items going to customer)' : 'Customer paid'}
+            </label>
+            <div className="relative">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">$</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={total}
+                onChange={(e) => setTotal(e.target.value)}
+                disabled={saving}
+                className="w-full pl-5 text-sm font-mono py-2"
+              />
+            </div>
+            <p className="text-[10px] text-gray-500 mt-1">
+              Was {fmtUsd(initialTotal)}. Changing this scales every cart line proportionally.
+            </p>
+          </div>
+
+          {/* Trade-in (only for trade) */}
+          {isTrade && (
+            <div>
+              <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
+                Trade-in value (what customer brought)
+              </label>
+              <div className="relative">
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">$</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={tradeIn}
+                  onChange={(e) => setTradeIn(e.target.value)}
+                  disabled={saving}
+                  className="w-full pl-5 text-sm font-mono py-2"
+                />
+              </div>
+            </div>
+          )}
+
+          <p className="text-[11px] text-gray-500">
+            Can't edit transaction type (sale/trade/buy) or the items — that needs delete + re-create. Inventory effects from the original transaction stay as they were.
+          </p>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5 pt-3 border-t border-vault-border/50">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="text-xs px-3 py-1.5 text-gray-300 hover:text-white border border-vault-border rounded"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving}
+            className="text-xs px-4 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold flex items-center gap-1"
+          >
+            {saving ? <><Loader2 size={12} className="animate-spin" /> Saving…</> : <><Save size={12} /> Save changes</>}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -3210,6 +3210,166 @@ export const submitStorefrontTransaction = async ({
 
 // (cash-drawer alert helper removed — moved to /api/cash-alert-eod cron)
 
+// Edit a logged storefront transaction. Used by the DailySummary's
+// "Edit" button when the cashier picked the wrong payment method
+// (Cash vs Zelle is the most common bug), got the total wrong, or
+// needs to fix the trade-in value. Walks the same three tables that
+// submitStorefrontTransaction wrote to (storefront_sales / singles /
+// slabs) PLUS the split-ledger (storefront_payments) and rewrites the
+// metadata fields for every row carrying this transaction_id.
+//
+// Patch fields (all optional):
+//   payment_method_id  — flips the legacy single-method column on
+//                        every row AND wipes+reinserts a single-row
+//                        storefront_payments ledger (split-payment
+//                        editing isn't supported yet — the modal only
+//                        shows one method dropdown).
+//   total              — new absolute cart total. Each line's
+//                        sale_price is scaled proportionally so the
+//                        sum equals the new total. net_cash_usd
+//                        recomputes based on the transaction_type:
+//                        sale = +total, buy = -total, trade = total
+//                        - trade_in_value.
+//   trade_in_value     — only meaningful for trade transactions.
+//                        Updates trade_in_value_usd and recomputes
+//                        net_cash_usd as gross − trade_in.
+//   notes              — replaces the notes column on every row.
+//
+// Returns { transaction_id, affected_rows: N, new_net_cash }.
+export const updateStorefrontTransaction = async (transactionId, patch = {}) => {
+  if (!transactionId) throw new Error('transactionId required')
+
+  // 1. Pull every row sharing this transaction_id from all three tables
+  //    so we know the current gross + line prices + type. We need the
+  //    cart-line breakdown to scale prices when total changes.
+  const [ssRes, singlesRes, slabsRes] = await Promise.all([
+    supabase.from('storefront_sales')
+      .select('id, sale_price, quantity, transaction_type, trade_in_value_usd')
+      .eq('transaction_id', transactionId),
+    supabase.from('singles')
+      .select('id, sale_price_usd, transaction_type, trade_in_value_usd')
+      .eq('transaction_id', transactionId),
+    supabase.from('slabs')
+      .select('id, sale_price_usd, transaction_type, trade_in_value_usd')
+      .eq('transaction_id', transactionId),
+  ])
+  if (ssRes.error) throw ssRes.error
+  if (singlesRes.error) throw singlesRes.error
+  if (slabsRes.error) throw slabsRes.error
+  const ssRows = ssRes.data || []
+  const singlesRows = singlesRes.data || []
+  const slabsRows = slabsRes.data || []
+  const totalRows = ssRows.length + singlesRows.length + slabsRows.length
+  if (totalRows === 0) throw new Error('Transaction not found')
+
+  // Read the type + trade-in off any row (they're all the same).
+  const sampleRow = ssRows[0] || singlesRows[0] || slabsRows[0]
+  const txType = sampleRow.transaction_type || 'sale'
+  const currentTradeIn = Number(sampleRow.trade_in_value_usd ?? 0)
+
+  // 2. Compute current gross (line totals sum). storefront_sales.sale_price
+  //    is per-line subtotal; singles/slabs.sale_price_usd is per-unit but
+  //    for those rows quantity is always 1.
+  const currentGross =
+    ssRows.reduce((s, r) => s + (Number(r.sale_price) || 0), 0) +
+    singlesRows.reduce((s, r) => s + (Number(r.sale_price_usd) || 0), 0) +
+    slabsRows.reduce((s, r) => s + (Number(r.sale_price_usd) || 0), 0)
+
+  // 3. Decide new gross + scale factor. If `total` wasn't in the patch,
+  //    leave prices alone.
+  const newGross = patch.total != null ? Math.abs(Number(patch.total) || 0) : currentGross
+  const scale = currentGross > 0 && newGross !== currentGross
+    ? newGross / currentGross
+    : 1
+
+  // 4. Resolve new trade-in + net cash.
+  const newTradeIn = patch.trade_in_value != null
+    ? Number(patch.trade_in_value) || 0
+    : currentTradeIn
+  let newNetCash
+  if (txType === 'buy') newNetCash = -newGross
+  else if (txType === 'trade') newNetCash = newGross - newTradeIn
+  else newNetCash = newGross
+
+  // 5. Build common patch (applied to every row).
+  const commonPatch = {}
+  if ('payment_method_id' in patch) commonPatch.payment_method_id = patch.payment_method_id || null
+  if ('notes' in patch) commonPatch.notes = patch.notes || null
+  if (newNetCash !== sampleRow.net_cash_usd) commonPatch.net_cash_usd = newNetCash
+  if (txType === 'trade' && newTradeIn !== currentTradeIn) {
+    commonPatch.trade_in_value_usd = newTradeIn
+  }
+
+  // 6. Apply per-row updates. We scale prices PER ROW so each line's
+  //    proportion of the cart is preserved. R2 to keep cents clean.
+  const R2 = (n) => Math.round(n * 100) / 100
+  let affected = 0
+
+  if (ssRows.length > 0) {
+    for (const r of ssRows) {
+      const rowPatch = { ...commonPatch }
+      if (scale !== 1) rowPatch.sale_price = R2((Number(r.sale_price) || 0) * scale)
+      const { error } = await supabase
+        .from('storefront_sales').update(rowPatch).eq('id', r.id)
+      if (error) throw error
+      affected++
+    }
+  }
+  if (singlesRows.length > 0) {
+    for (const r of singlesRows) {
+      const rowPatch = { ...commonPatch }
+      if (scale !== 1) rowPatch.sale_price_usd = R2((Number(r.sale_price_usd) || 0) * scale)
+      const { error } = await supabase
+        .from('singles').update(rowPatch).eq('id', r.id)
+      if (error) throw error
+      affected++
+    }
+  }
+  if (slabsRows.length > 0) {
+    for (const r of slabsRows) {
+      const rowPatch = { ...commonPatch }
+      if (scale !== 1) rowPatch.sale_price_usd = R2((Number(r.sale_price_usd) || 0) * scale)
+      const { error } = await supabase
+        .from('slabs').update(rowPatch).eq('id', r.id)
+      if (error) throw error
+      affected++
+    }
+  }
+
+  // 7. Rewrite the storefront_payments ledger. The Edit modal only
+  //    exposes a single payment method, so split-payment txns lose
+  //    their split when edited — we warn the user before they save.
+  //    Always delete-then-insert so we don't end up with stale rows.
+  if ('payment_method_id' in patch || patch.total != null) {
+    await supabase.from('storefront_payments').delete().eq('transaction_id', transactionId)
+    const methodForLedger = ('payment_method_id' in patch)
+      ? patch.payment_method_id
+      : null
+    if (methodForLedger) {
+      const ledgerAmount = txType === 'sale' ? newGross
+                       : txType === 'trade' ? Math.max(0, newNetCash)
+                       : 0   // buy doesn't get a customer-paid ledger row
+      if (ledgerAmount > 0) {
+        const { error: payErr } = await supabase
+          .from('storefront_payments')
+          .insert([{
+            transaction_id: transactionId,
+            payment_method_id: methodForLedger,
+            amount_usd: ledgerAmount,
+          }])
+        if (payErr) console.warn('[updateStorefrontTransaction] payments insert failed:', payErr.message)
+      }
+    }
+  }
+
+  return {
+    transaction_id: transactionId,
+    affected_rows: affected,
+    new_net_cash: newNetCash,
+    new_gross: newGross,
+  }
+}
+
 // Fetch a daily storefront summary across all 3 sale tables. Dedupes by
 // transaction_id (each transaction may span sealed + single + slab rows,
 // but they all share the same header values). Returns:
