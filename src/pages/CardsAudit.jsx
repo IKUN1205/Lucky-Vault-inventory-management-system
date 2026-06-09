@@ -487,6 +487,108 @@ export default function CardsAudit() {
     }
   }
 
+  // Bulk-move all "Missing" cards to another location. Used when staff
+  // realizes the missing cards aren't actually in the room they're
+  // counting — they got moved (sold without record, moved to another
+  // room without a Move entry, etc). One DB UPDATE per item so each
+  // can fail independently and we can track per-item results.
+  const [bulkMoveMissingRunning, setBulkMoveMissingRunning] = useState(false)
+  const bulkMoveMissingTo = async (missingItems, targetLocationId, targetLocationName) => {
+    if (!missingItems || missingItems.length === 0) return
+    if (!targetLocationId) {
+      addToast('Pick a destination location first', 'error')
+      return
+    }
+    if (!confirm(
+      `Move ${missingItems.length} missing card${missingItems.length === 1 ? '' : 's'} → ${targetLocationName}?\n\n` +
+      `These are cards the app thought were at ${locationName} but you didn't scan. Moving them sets their location_id in the app to ${targetLocationName}.`
+    )) return
+    setBulkMoveMissingRunning(true)
+    let ok = 0, failed = 0
+    const table = kind === 'single' ? 'singles' : 'slabs'
+    const removedIds = new Set()
+    for (const m of missingItems) {
+      const rowIds = m.info?.db_row_ids || []
+      if (rowIds.length === 0) { failed++; continue }
+      try {
+        const { error } = await supabase
+          .from(table)
+          .update({ location_id: targetLocationId })
+          .in('id', rowIds)
+        if (error) throw error
+        ok += rowIds.length
+        removedIds.add(m.id)
+      } catch (e) {
+        console.warn('[bulk-move-missing] failed', m.id, e.message)
+        failed++
+      }
+    }
+    // Drop them from the expected map so the review re-renders without
+    // them (they're no longer "missing at this location" — they live
+    // elsewhere now).
+    if (removedIds.size > 0) {
+      setPhysicalExpected(prev => {
+        const next = new Map(prev)
+        for (const id of removedIds) next.delete(id)
+        return next
+      })
+    }
+    setBulkMoveMissingRunning(false)
+    addToast(
+      `Moved ${ok} row${ok === 1 ? '' : 's'} → ${targetLocationName}${failed ? ` · ${failed} failed` : ''}`,
+      failed ? 'info' : 'success'
+    )
+  }
+
+  // Bulk-move all "Extras" to the current location. One round trip
+  // per extra. After each success the extra is dropped from the list.
+  const [bulkMoveExtrasRunning, setBulkMoveExtrasRunning] = useState(false)
+  const bulkMoveExtrasHere = async () => {
+    if (!physicalLocationId) {
+      addToast('No physical location id — internal error', 'error')
+      return
+    }
+    if (physicalExtras.length === 0) return
+    if (!confirm(
+      `Move all ${physicalExtras.length} extra card${physicalExtras.length === 1 ? '' : 's'} → ${locationName}?\n\n` +
+      `These are cards you scanned that the app thought were elsewhere. Moving them updates their location_id in the app to ${locationName}.`
+    )) return
+    setBulkMoveExtrasRunning(true)
+    let ok = 0, failed = 0
+    const table = kind === 'single' ? 'singles' : 'slabs'
+    const idCol = kind === 'single' ? 'tcg_id' : 'cert_number'
+    const survivors = []
+    for (const e of physicalExtras) {
+      try {
+        const { data, error: findErr } = await supabase
+          .from(table)
+          .select('id')
+          .eq(idCol, e.id)
+          .neq('status', 'sold')
+          .eq('deleted', false)
+          .limit(50)
+        if (findErr) throw findErr
+        if (!data || data.length === 0) { failed++; survivors.push(e); continue }
+        const { error: updErr } = await supabase
+          .from(table)
+          .update({ location_id: physicalLocationId })
+          .in('id', data.map(r => r.id))
+        if (updErr) throw updErr
+        ok++
+      } catch (err) {
+        console.warn('[bulk-move-extras] failed', e.id, err.message)
+        failed++
+        survivors.push(e)
+      }
+    }
+    setPhysicalExtras(survivors)
+    setBulkMoveExtrasRunning(false)
+    addToast(
+      `Moved ${ok} card${ok === 1 ? '' : 's'} → ${locationName}${failed ? ` · ${failed} failed` : ''}`,
+      failed ? 'info' : 'success'
+    )
+  }
+
   // Bulk-push every "Sheet out of date" entry in the physical-count
   // review. Same per-row endpoint as pushPhysicalToSheet, sequential
   // so we don't hammer Google's API and so the staffer sees the
@@ -855,6 +957,8 @@ export default function CardsAudit() {
               kind={kind}
               idLabel={idLabel}
               locationName={locationName}
+              locations={locations}
+              physicalLocationId={physicalLocationId}
               expected={physicalExpected}
               scanned={physicalScanned}
               extras={physicalExtras}
@@ -864,6 +968,10 @@ export default function CardsAudit() {
               pushPhysicalToSheet={pushPhysicalToSheet}
               pushAllSheetStale={pushAllSheetStale}
               pushAllStaleRunning={pushAllStaleRunning}
+              bulkMoveMissingTo={bulkMoveMissingTo}
+              bulkMoveMissingRunning={bulkMoveMissingRunning}
+              bulkMoveExtrasHere={bulkMoveExtrasHere}
+              bulkMoveExtrasRunning={bulkMoveExtrasRunning}
               physicalResolving={physicalResolving}
               backToScanning={() => setPhysicalState('scanning')}
             />
@@ -1369,12 +1477,20 @@ function PhysicalScanning({
 }
 
 function PhysicalReview({
-  kind, idLabel, locationName,
+  kind, idLabel, locationName, locations, physicalLocationId,
   expected, scanned, extras, sheetById,
   resetCount, resolveExtraMoveHere, pushPhysicalToSheet,
   pushAllSheetStale, pushAllStaleRunning,
+  bulkMoveMissingTo, bulkMoveMissingRunning,
+  bulkMoveExtrasHere, bulkMoveExtrasRunning,
   physicalResolving, backToScanning,
 }) {
+  // Local state for the missing-bulk destination picker. Defaults to
+  // Master Inventory if present — the most common case for "where did
+  // these missing cards probably go?"
+  const masterLoc = (locations || []).find(l => l.name === 'Master Inventory')
+  const otherLocations = (locations || []).filter(l => l.id !== physicalLocationId)
+  const [missingDestinationId, setMissingDestinationId] = useState(masterLoc?.id || otherLocations[0]?.id || '')
   // Categorize every id, and separately detect "sheet out of date" cases
   // by comparing sheet snapshot to physical + app truth.
   const matched = []        // physical == app
@@ -1424,7 +1540,38 @@ function PhysicalReview({
         <Stat label="Sheet stale" value={sheetStale.length} highlight={sheetStale.length > 0} />
       </div>
 
-      {/* Missing */}
+      {/* Missing — system says here, you didn't scan. If staff just
+          finished scanning the whole room, these probably aren't here
+          at all; bulk-move them to wherever they likely went. */}
+      {missing.length > 1 && (
+        <div className="mb-1 flex flex-wrap items-center justify-end gap-2 text-xs">
+          <span className="text-gray-400">If these aren't here, move them to:</span>
+          <select
+            value={missingDestinationId}
+            onChange={(e) => setMissingDestinationId(e.target.value)}
+            className="text-xs py-1 px-2 bg-vault-darker/40 border border-vault-border rounded text-white"
+            disabled={bulkMoveMissingRunning}
+          >
+            {otherLocations.map(l => (
+              <option key={l.id} value={l.id}>{l.name}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => bulkMoveMissingTo(
+              missing,
+              missingDestinationId,
+              otherLocations.find(l => l.id === missingDestinationId)?.name || ''
+            )}
+            disabled={bulkMoveMissingRunning || !missingDestinationId}
+            className="px-3 py-1.5 bg-red-500/25 border border-red-500/50 text-red-300 rounded hover:bg-red-500/35 disabled:opacity-50 font-semibold flex items-center gap-1"
+          >
+            {bulkMoveMissingRunning
+              ? <><Loader2 size={12} className="animate-spin" /> Moving…</>
+              : <><ArrowRightCircle size={12} /> Bulk move {missing.length}</>}
+          </button>
+        </div>
+      )}
       <ThreeWaySection
         title="Missing — system says these should be here, you didn't scan them"
         bucket="missing"
@@ -1450,7 +1597,22 @@ function PhysicalReview({
 
       {/* Extras — scanned but not in app at this location.
           Each extra is enriched on the fly with its sheet snapshot so
-          staff can see if the sheet thinks it belongs here. */}
+          staff can see if the sheet thinks it belongs here.
+          Bulk-move-all-here button at top so 116 extras don't need 116 clicks. */}
+      {extras.length > 1 && (
+        <div className="mb-1 flex justify-end">
+          <button
+            type="button"
+            onClick={bulkMoveExtrasHere}
+            disabled={bulkMoveExtrasRunning}
+            className="text-xs px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold flex items-center gap-1"
+          >
+            {bulkMoveExtrasRunning
+              ? <><Loader2 size={12} className="animate-spin" /> Moving…</>
+              : <><ArrowRightCircle size={12} /> Move all {extras.length} app → {locationName}</>}
+          </button>
+        </div>
+      )}
       <ThreeWaySection
         title="Extras — you scanned these but app didn't expect them here"
         bucket="extras"
