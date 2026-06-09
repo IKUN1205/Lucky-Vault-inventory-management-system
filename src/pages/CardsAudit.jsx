@@ -431,6 +431,29 @@ export default function CardsAudit() {
     if (e.key === 'Enter') { e.preventDefault(); onPhysicalScan() }
   }
 
+  // Undo a single scan on an expected card. Count drops by 1; if it
+  // hits 0 the entry is removed entirely (matches the "never scanned"
+  // → Missing bucket logic in review). Used when a barcode scanner
+  // double-triggers or staff scans the wrong card and wants to back
+  // out without restarting the count.
+  const undoOnePhysicalScan = (id) => {
+    setPhysicalScanned(prev => {
+      const n = new Map(prev)
+      const cur = n.get(id) || 0
+      if (cur <= 1) n.delete(id)
+      else n.set(id, cur - 1)
+      return n
+    })
+  }
+  // Same for extras (cards that aren't in expected at all). When count
+  // reaches 0 we drop the row from extras entirely.
+  const undoOneExtraScan = (id) => {
+    setPhysicalExtras(prev => prev
+      .map(e => e.id === id ? { ...e, scanned_count: e.scanned_count - 1 } : e)
+      .filter(e => e.scanned_count > 0)
+    )
+  }
+
   const stopPhysicalCount = () => {
     setPhysicalState('review')
   }
@@ -947,6 +970,8 @@ export default function CardsAudit() {
               inputRef={inputRef}
               onScan={onPhysicalScan}
               onKey={onPhysicalScanKey}
+              undoOneScanned={undoOnePhysicalScan}
+              undoOneExtra={undoOneExtraScan}
               stopCount={stopPhysicalCount}
               resetCount={resetPhysicalCount}
             />
@@ -1346,6 +1371,7 @@ function PhysicalScanning({
   kind, idLabel, locationName,
   expected, scanned, extras,
   scanInput, setScanInput, inputRef, onScan, onKey,
+  undoOneScanned, undoOneExtra,
   stopCount, resetCount,
 }) {
   // Derive running counts. A card with expected_qty=5 counts as 1 unique
@@ -1415,11 +1441,12 @@ function PhysicalScanning({
         <div className="text-[10px] text-gray-500 mt-0.5 text-right">{progressPct}% scanned</div>
       </div>
 
-      {/* Recent activity — just so staff can confirm last few scans landed */}
+      {/* Recent activity — staff can confirm last few scans landed AND
+          undo accidental double-scans without restarting the count. */}
       {(scanned.size > 0 || extras.length > 0) && (
         <details className="mb-3">
           <summary className="cursor-pointer text-xs text-gray-400 hover:text-white">
-            Activity ({scanned.size + extras.length})
+            Activity ({scanned.size + extras.length}) — click −1 to undo a wrong scan
           </summary>
           <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
             <div>
@@ -1428,11 +1455,24 @@ function PhysicalScanning({
                 {[...scanned.entries()].map(([id, count]) => {
                   const info = expected.get(id)
                   const exp = info?.expected_qty || 0
-                  const status = count >= exp ? '✓' : count > 0 ? `${count}/${exp}` : ''
+                  const status = count > exp ? `${count}/${exp} ⚠ over`
+                              : count >= exp ? '✓'
+                              : count > 0 ? `${count}/${exp}` : ''
+                  const tone = count > exp ? 'text-red-300'
+                            : count >= exp ? 'text-emerald-300'
+                            : 'text-amber-300'
                   return (
-                    <div key={id} className="flex justify-between gap-2">
-                      <span className="text-gray-300 truncate font-mono">{id}</span>
-                      <span className={count >= exp ? 'text-emerald-300' : 'text-amber-300'}>{status}</span>
+                    <div key={id} className="flex items-center justify-between gap-2 py-0.5">
+                      <span className="text-gray-300 truncate font-mono flex-1">{id}</span>
+                      <span className={`${tone} whitespace-nowrap`}>{status}</span>
+                      <button
+                        type="button"
+                        onClick={() => undoOneScanned(id)}
+                        className="text-[10px] px-1.5 py-0.5 text-gray-400 hover:text-red-300 hover:bg-red-500/10 border border-vault-border rounded"
+                        title="Undo one scan of this card"
+                      >
+                        −1
+                      </button>
                     </div>
                   )
                 })}
@@ -1444,9 +1484,17 @@ function PhysicalScanning({
                 {extras.length === 0 ? (
                   <span className="text-gray-600 italic">None yet</span>
                 ) : extras.map(e => (
-                  <div key={e.id} className="flex justify-between gap-2">
-                    <span className="text-amber-300 font-mono truncate">{e.id}</span>
-                    {e.scanned_count > 1 && <span className="text-gray-500">×{e.scanned_count}</span>}
+                  <div key={e.id} className="flex items-center justify-between gap-2 py-0.5">
+                    <span className="text-amber-300 font-mono truncate flex-1">{e.id}</span>
+                    {e.scanned_count > 1 && <span className="text-gray-500 whitespace-nowrap">×{e.scanned_count}</span>}
+                    <button
+                      type="button"
+                      onClick={() => undoOneExtra(e.id)}
+                      className="text-[10px] px-1.5 py-0.5 text-gray-400 hover:text-red-300 hover:bg-red-500/10 border border-vault-border rounded"
+                      title="Undo one scan of this card"
+                    >
+                      −1
+                    </button>
                   </div>
                 ))}
               </div>
@@ -1493,9 +1541,10 @@ function PhysicalReview({
   const [missingDestinationId, setMissingDestinationId] = useState(masterLoc?.id || otherLocations[0]?.id || '')
   // Categorize every id, and separately detect "sheet out of date" cases
   // by comparing sheet snapshot to physical + app truth.
-  const matched = []        // physical == app
+  const matched = []        // physical == app (exactly)
+  const overCount = []      // physical > app — accidental double-scan, or app qty too low
   const sheetStale = []     // physical == app, but sheet differs (push-to-sheet candidates)
-  const partial = []        // physical < app
+  const partial = []        // physical < app, physical > 0
   const missing = []        // physical == 0, app > 0
   for (const [id, info] of expected) {
     const physical = scanned.get(id) || 0
@@ -1505,7 +1554,13 @@ function PhysicalReview({
     const appQty = info.expected_qty
     const row = { id, info, physical, app: appQty, sheet: sheetInfo }
 
-    if (physical >= appQty) {
+    if (physical > appQty) {
+      // Most likely: a double-trigger from the scanner, or staff scanned
+      // the same card twice by accident. Slight chance: real life has
+      // more copies than app thought (intake mis-recorded). Either way
+      // staff should investigate before we let it count as matched.
+      overCount.push(row)
+    } else if (physical === appQty) {
       matched.push(row)
       // Subset: physical == app but sheet is wrong (qty diff or sheet says sold).
       if (sheetInfo && !sheetInfo._just_pushed) {
@@ -1532,10 +1587,11 @@ function PhysicalReview({
         <span>showing 3-way comparison: <span className="text-emerald-300">Physical</span> · <span className="text-vault-gold">App</span> · <span className="text-cyan-300">Sheet</span></span>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3 text-xs">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3 text-xs">
         <Stat label="Matched ✓" value={matched.length} highlight={matched.length > 0 ? 'gold' : null} />
         <Stat label="Partial" value={partial.length} highlight={partial.length > 0} />
         <Stat label="Missing" value={missing.length} highlight={missing.length > 0} />
+        <Stat label="Over-scanned" value={overCount.length} highlight={overCount.length > 0} />
         <Stat label="Extras" value={extras.length} highlight={extras.length > 0} />
         <Stat label="Sheet stale" value={sheetStale.length} highlight={sheetStale.length > 0} />
       </div>
@@ -1593,6 +1649,20 @@ function PhysicalReview({
           severity: 'warning',
         }))}
         emptyText="No partial counts."
+      />
+
+      {/* Over-scanned — you found MORE than app expected. Usually a
+          double-trigger from the scanner; staff should review and either
+          accept the higher count (app was wrong) or go back and undo. */}
+      <ThreeWaySection
+        title="Over-scanned — you scanned MORE than app expected (double-trigger? or app qty wrong?)"
+        bucket="over"
+        items={overCount.map(o => ({
+          id: o.id, name: nameOf(o.info),
+          physical: o.physical, app: o.app, sheet: o.sheet,
+          severity: 'warning',
+        }))}
+        emptyText="Nothing over-counted."
       />
 
       {/* Extras — scanned but not in app at this location.
@@ -1721,6 +1791,7 @@ function PhysicalReview({
 function ThreeWaySection({ title, bucket, items, emptyText }) {
   const tone = bucket === 'missing'     ? 'border-red-500/40 bg-red-500/5 text-red-300'
             : bucket === 'partial'     ? 'border-amber-500/40 bg-amber-500/5 text-amber-300'
+            : bucket === 'over'        ? 'border-red-500/40 bg-red-500/5 text-red-300'
             : bucket === 'extras'      ? 'border-amber-500/40 bg-amber-500/5 text-amber-300'
             : bucket === 'sheet_stale' ? 'border-cyan-500/40 bg-cyan-500/5 text-cyan-300'
             :                            'border-emerald-500/40 bg-emerald-500/5 text-emerald-300'
