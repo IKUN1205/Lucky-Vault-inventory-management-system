@@ -251,6 +251,9 @@ export default async function handler(req, res) {
         idColumn: 0,         // Cert is col A
         statusColumn: 11,    // Status is col L
         soldIdsInDb: soldIds,
+        // Boss convention 2026-06-08: sold rows get CROSSED OUT on the
+        // sheet (strikethrough), not just the Status text.
+        strikeRows: true,
       })
     } catch (e) {
       console.warn('[sync-slabs-sheet] back-sync threw (non-fatal):', e.message)

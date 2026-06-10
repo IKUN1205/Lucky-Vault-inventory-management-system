@@ -27,7 +27,10 @@
 // safety-net racing the on-sale call, the audit racing both) are safe.
 
 import { createClient } from '@supabase/supabase-js'
-import { readRange, batchUpdateValues, cellA1 } from './_lib/google-sheets.js'
+import {
+  readRange, batchUpdateValues, cellA1,
+  getSheetIds, applyRowStrikethrough,
+} from './_lib/google-sheets.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -325,12 +328,27 @@ export default async function handler(req, res) {
     const result = await batchUpdateValues(cfg.spreadsheetId, [
       { range: statusCell, values: [['sold']] },
     ])
+    // Boss convention 2026-06-08: sold slabs get the whole row CROSSED OUT
+    // on the sheet, not just Status text. Non-fatal if it fails — the
+    // hourly back-sync re-tries with the same idempotent strike.
+    let crossed = false
+    try {
+      const sheetIds = await getSheetIds(cfg.spreadsheetId)
+      const sid = sheetIds.get(found.tab)
+      if (sid != null) {
+        await applyRowStrikethrough(cfg.spreadsheetId, [{ sheetId: sid, rowIndex: found.rowIndex }])
+        crossed = true
+      }
+    } catch (e) {
+      console.warn('[sheet-mark-sold] strikethrough failed (non-fatal):', e.message)
+    }
     return respond(res, 200, 'marked_sold',
-      `Wrote "sold" to slab ${idLabel(kind)} ${idValue} → ${found.tab} cell ${statusCell.split('!')[1]}.`,
+      `Wrote "sold"${crossed ? ' and crossed out the row' : ''} for slab ${idLabel(kind)} ${idValue} → ${found.tab} row ${found.rowIndex + 1}.`,
       {
         kind, db_id: id, id_value: idValue,
         sheet_tab: found.tab, sheet_row: found.rowIndex + 1,
         sheet_cell: statusCell, sheet_url: sheetUrl,
+        row_crossed_out: crossed,
         cells_updated: result.totalUpdatedCells ?? result.updatedCells ?? 1,
       })
   } catch (err) {
