@@ -193,12 +193,13 @@ export default async function handler(req, res) {
       }
     }
 
-    // 4. Which certs exist? Pull current MP/LV/note too so we only PATCH deltas.
+    // 4. Which certs exist? Pull current MP/LV/note + name too so we only
+    //    PATCH deltas (item_name is needed for placeholder-name healing).
     const existing = new Map()
     const certs = items.map(i => i.cert_number)
     const existCols = hasNoteColumn
-      ? 'id, cert_number, market_price_usd, lv_price_usd, sheet_note'
-      : 'id, cert_number, market_price_usd, lv_price_usd'
+      ? 'id, cert_number, item_name, grading_company, market_price_usd, lv_price_usd, sheet_note'
+      : 'id, cert_number, item_name, grading_company, market_price_usd, lv_price_usd'
     for (let i = 0; i < certs.length; i += 150) {
       const { data, error } = await supabase
         .from('slabs')
@@ -227,6 +228,17 @@ export default async function handler(req, res) {
       if (priceDiff(ex.lv_price_usd, it.lv_price_usd))         patch.lv_price_usd = it.lv_price_usd
       if (hasNoteColumn && (it.sheet_note || null) !== (ex.sheet_note || null)) {
         patch.sheet_note = it.sheet_note   // null clears a note removed on the sheet
+      }
+      // Heal placeholder names: rows created in-app before the sheet had
+      // them (e.g. early Mystery Game scans) carry "(unnamed slab — cert
+      // N)". Once the boss fills the name into the sheet, adopt it. Only
+      // placeholder rows are touched — a deliberate in-app rename of a
+      // properly-named slab is never overwritten.
+      if (/^\(unnamed slab/.test(String(ex.item_name || '')) && !/^\(unnamed slab/.test(it.item_name)) {
+        patch.item_name = it.item_name
+        if ((!ex.grading_company || ex.grading_company === 'Other') && it.grading_company !== 'Other') {
+          patch.grading_company = it.grading_company
+        }
       }
       if (Object.keys(patch).length === 0) { updSkip++; continue }
       const { error } = await supabase.from('slabs')
