@@ -1,26 +1,44 @@
 // api/sync-slabs-sheet.js
-// Vercel cron — pulls the slabs Google Sheet (Pokemon Slabs + One Piece
-// Slabs tabs) and keeps the slabs table in sync. Twice a day, mirrors
-// api/sync-singles-sheet.js.
+// Vercel cron — pulls the slabs Google Sheet (Pokemon Master + One Piece
+// Master tabs) and keeps the slabs table in sync. Hourly at :30.
 //
-// Policy (directive 2026-05-28):
+// Policy (directive 2026-05-28, REVISED 2026-06-08):
 //   - price = MP column → market_price_usd (refreshed only when changed)
-//   - NEW certs are inserted at Master Inventory, status='in_inventory'
-//     (staff Move them out later). List/LV/LS/Cost Basis carried over.
+//   - CROSSED-OUT rows (strikethrough) = already sold per boss convention.
+//     They are NEVER imported and never price-refreshed. Same for rows
+//     whose Location column says "sold". (Revision 2026-06-08 — before
+//     this the sync read the gviz CSV, which can't see strikethrough, so
+//     sold slabs kept getting re-inserted as live inventory at Master.)
+//   - NEW certs are inserted at the location the sheet's Location column
+//     names: "lucky" → Stream Room - eBay LuckyVaultUS, "slabbie"/"patty"
+//     → Stream Room - eBay SlabbiePatty, anything else (shelf codes like
+//     H-01 / 2V-03, or blank) → Slab Room. (Was: always Master Inventory;
+//     revised 2026-06-08 because physically slabs live in the Slab Room
+//     and the Master default caused permanent location drift.)
 //   - existing certs: refresh market_price_usd only; location + status
 //     are managed in-app and never overwritten.
 //   - a cert with no Item Name imports with a placeholder name so it's
 //     still scannable; staff fills the real name later.
 //
-// Both tabs share the same column layout:
-//   0 Cert  1 Grade  2 Item Name  3 Pop  4 CL  5 MP  6 LS  7 List
-//   8 LV  9 Note  10 Days  11 Status  12 Listed  13 Last Alert
-//   14 Cost Basis  15 Location  16 Intake Date
+// The two Master tabs have DIFFERENT column layouts (verified live
+// 2026-06-08 — this also fixes a price-swap bug where the old shared
+// layout read LS into market_price_usd for Pokemon Master):
+//   Pokemon Master:   A Cert  B Grade  C Item  D Pop  E CL  F LS  G MP
+//                     H List  I Trend  J LV  K Note  L Status  M Location
+//                     N Days  O Intake  P Listed  Q LastAlert  R Cost
+//   One Piece Master: A Cert  B Grade  C Item  D Pop  E CL  F MP  G LS
+//                     H List  I LV  J Note  K Days  L Status  M Listed
+//                     N LastAlert  O Cost  P Location  Q Intake
+//
+// Reading goes through the Sheets API grid endpoint (service account via
+// GOOGLE_SERVICE_ACCOUNT_JSON) because formatting (strikethrough) is
+// invisible in CSV exports. No env var → loud 500 + Lark ping, since
+// silently falling back to CSV would resurrect the sold-slabs bug.
 //
 // Vercel attaches Authorization: Bearer ${CRON_SECRET} when invoking.
 
 import { createClient } from '@supabase/supabase-js'
-import { backsyncSoldStatus } from './_lib/google-sheets.js'
+import { backsyncSoldStatus, readGridWithFormat } from './_lib/google-sheets.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -33,39 +51,33 @@ const LARK_INVENTORY_IO = process.env.LARK_WEBHOOK_INVENTORY_IO
   || process.env.LARK_WEBHOOK_URL
 
 const SHEET_ID = '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI'
-// Tab names per directive 2026-05-29 — boss renamed them:
-//   "Pokemon Master" / "One Piece Master" = main inventory (was "* Slabs")
-//   "New Slabs" = staging zone for fresh arrivals (smaller column set; the
-//                 parser tolerates missing trailing cols via index lookups
-//                 that return undefined → null/default).
-const SHEET_TABS = ['Pokemon Master', 'One Piece Master', 'New Slabs']
-const buildSheetUrl = (tab) =>
-  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tab)}`
+
+// Per-tab column maps (0-based). See header comment for the layouts.
+// New-arrival staging tabs ("New Input" / "OP NEW") are intentionally NOT
+// synced — boss moves slabs into a Master tab when they're ready.
+const TAB_CONFIG = [
+  { tab: 'Pokemon Master',   mp: 6, ls: 5, list: 7, lv: 9, cost: 17, intake: 14, location: 12 },
+  { tab: 'One Piece Master', mp: 5, ls: 6, list: 7, lv: 8, cost: 14, intake: 16, location: 15 },
+]
+
+// Location-column routing for NEW inserts. Mirrors the rule used for the
+// 2026-06-08 bulk relocation: lucky → LuckyVaultUS stream room,
+// slabbie/patty → SlabbiePatty stream room, everything else (shelf codes,
+// blank) → Slab Room.
+const ROOM_NAMES = {
+  slabroom: 'Slab Room',
+  lucky:    'Stream Room - eBay LuckyVaultUS',
+  slabbie:  'Stream Room - eBay SlabbiePatty',
+}
+const routeLocation = (locText) => {
+  const t = String(locText || '').toLowerCase()
+  if (/lucky/.test(t)) return 'lucky'
+  if (/slabbie|slabby|patty/.test(t)) return 'slabbie'
+  return 'slabroom'
+}
 
 export const config = { maxDuration: 60 }
 
-function parseCSV(text) {
-  const rows = []; let row = []; let cell = ''; let q = false
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (q) {
-      if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; continue }
-      if (ch === '"') { q = false; continue }
-      cell += ch; continue
-    }
-    if (ch === '"') { q = true; continue }
-    if (ch === ',') { row.push(cell); cell = ''; continue }
-    if (ch === '\n' || ch === '\r') {
-      if (ch === '\r' && text[i + 1] === '\n') i++
-      row.push(cell); cell = ''
-      if (row.some(c => c.trim() !== '')) rows.push(row)
-      row = []; continue
-    }
-    cell += ch
-  }
-  if (cell !== '' || row.length) { row.push(cell); if (row.some(c => c.trim() !== '')) rows.push(row) }
-  return rows
-}
 const money = (s) => { if (!s) return null; const m = String(s).replace(/,/g, '').match(/-?[\d.]+/); return m ? Number(m[0]) : null }
 const dateOrNull = (s) => { const t = String(s || '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : null }
 
@@ -87,57 +99,82 @@ export default async function handler(req, res) {
     }
   }
   if (!SUPABASE_KEY) return res.status(500).json({ error: 'Supabase key not configured' })
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    await postLark('⚠️ Slabs sheet sync FAILED — GOOGLE_SERVICE_ACCOUNT_JSON not configured (grid read needs it; CSV fallback would resurrect sold slabs)')
+    return res.status(500).json({ error: 'GOOGLE_SERVICE_ACCOUNT_JSON not configured' })
+  }
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } })
   const today = new Date().toISOString().slice(0, 10)
   const startedAt = Date.now()
 
   try {
-    // 1. Pull both tabs.
+    // 1. Pull both Master tabs via the grid API (strikethrough-aware) and
+    //    parse + dedupe by cert in one pass. Crossed-out rows and rows
+    //    whose Location column says "sold" are skipped entirely — they're
+    //    sold; the app must not import or price-refresh them.
     const tabSummary = []
-    const allRows = []
-    for (const tab of SHEET_TABS) {
-      const r = await fetch(buildSheetUrl(tab))
-      if (!r.ok) {
-        const msg = `Sheet fetch failed for "${tab}": HTTP ${r.status}`
-        console.error('[sync-slabs-sheet]', msg)
-        await postLark(`⚠️ Slabs sheet sync FAILED — ${msg}`)
-        return res.status(502).json({ error: msg })
-      }
-      const rows = parseCSV(await r.text())
-      for (const row of rows) allRows.push(row)
-      tabSummary.push({ tab, rows: rows.length })
-    }
-
-    // 2. Parse + dedupe by cert (cert is always a digit string; that skips
-    //    every header variant — "Cert", "Cert #", "CERT" — plus junk rows).
     const byCert = new Map()
-    let skipped = 0
-    for (const r of allRows) {
-      const cert = (r[0] || '').trim()
-      if (!/^\d+$/.test(cert)) { skipped++; continue }
-      let itemName = (r[2] || '').trim()
-      if (!itemName) itemName = `(unnamed slab — cert ${cert})`
-      byCert.set(cert, {
-        cert_number: cert,
-        grading_company: (r[1] || '').trim() || 'Other',
-        item_name: itemName,
-        market_price_usd: money(r[5]),
-        last_sold_usd: money(r[6]),
-        list_price_usd: money(r[7]),
-        lv_price_usd: money(r[8]),
-        acquisition_cost_usd: money(r[14]),
-        date_acquired: dateOrNull(r[16]),
-      })
+    let skippedJunk = 0
+    for (const cfg of TAB_CONFIG) {
+      let gridRows
+      try {
+        gridRows = await readGridWithFormat(SHEET_ID, `${cfg.tab}!A1:R5000`)
+      } catch (e) {
+        if (String(e.message).includes('Unable to parse range')) {
+          tabSummary.push({ tab: cfg.tab, skipped: 'tab missing' })
+          continue
+        }
+        throw e
+      }
+      let kept = 0, crossed = 0, soldText = 0
+      for (const gr of gridRows) {
+        const cert = String(gr.cells[0] || '').trim()
+        if (!/^\d+$/.test(cert)) { skippedJunk++; continue }
+        // Crossed-out = strikethrough on the cert cell or the item-name
+        // cell (boss sometimes strikes only part of the row).
+        if (gr.struck[0] || gr.struck[2]) { crossed++; continue }
+        const locText = String(gr.cells[cfg.location] || '').trim()
+        if (locText.toLowerCase() === 'sold') { soldText++; continue }
+        let itemName = String(gr.cells[2] || '').trim()
+        if (!itemName) itemName = `(unnamed slab — cert ${cert})`
+        // First tab wins on duplicate certs (Pokemon Master processed
+        // before One Piece Master — they shouldn't overlap anyway).
+        if (byCert.has(cert)) continue
+        byCert.set(cert, {
+          cert_number: cert,
+          grading_company: String(gr.cells[1] || '').trim() || 'Other',
+          item_name: itemName,
+          market_price_usd: money(gr.cells[cfg.mp]),
+          last_sold_usd: money(gr.cells[cfg.ls]),
+          list_price_usd: money(gr.cells[cfg.list]),
+          lv_price_usd: money(gr.cells[cfg.lv]),
+          acquisition_cost_usd: money(gr.cells[cfg.cost]),
+          date_acquired: dateOrNull(gr.cells[cfg.intake]),
+          location_route: routeLocation(locText),
+        })
+        kept++
+      }
+      tabSummary.push({ tab: cfg.tab, rows: kept, skipped_crossed_out: crossed, skipped_sold_text: soldText })
     }
     const items = [...byCert.values()]
-    console.log('[sync-slabs-sheet] tabs:', tabSummary, '→ unique certs:', items.length)
+    console.log('[sync-slabs-sheet] tabs:', tabSummary, '→ unique live certs:', items.length)
 
-    // 3. Master Inventory id (all new slabs land here).
-    const { data: masterRow } = await supabase
-      .from('locations').select('id').eq('name', 'Master Inventory').maybeSingle()
-    const masterId = masterRow?.id || null
+    // 2. Resolve destination room ids. Slab Room missing = hard fail —
+    //    we never want a silent-NULL location on insert (that exact bug
+    //    produced the 2026-06-08 "orphan slabs" incident).
+    const { data: rooms, error: roomsErr } = await supabase
+      .from('locations').select('id, name')
+      .in('name', Object.values(ROOM_NAMES))
+    if (roomsErr) throw roomsErr
+    const roomIdByKey = {}
+    for (const [key, name] of Object.entries(ROOM_NAMES)) {
+      roomIdByKey[key] = (rooms || []).find(r => r.name === name)?.id || null
+    }
+    if (!roomIdByKey.slabroom) {
+      throw new Error(`Location "${ROOM_NAMES.slabroom}" not found — refusing to insert slabs with no location`)
+    }
 
-    // 4. Which certs exist? Pull current MP too so we only PATCH deltas.
+    // 3. Which certs exist? Pull current MP too so we only PATCH deltas.
     const existing = new Map()
     const certs = items.map(i => i.cert_number)
     for (let i = 0; i < certs.length; i += 150) {
@@ -150,7 +187,7 @@ export default async function handler(req, res) {
       for (const r of data || []) existing.set(String(r.cert_number), r)
     }
 
-    // 5. Update existing prices (changed only).
+    // 4. Update existing prices (changed only).
     let upd = 0, updErr = 0, updSkip = 0
     for (const it of items) {
       const ex = existing.get(it.cert_number)
@@ -164,13 +201,13 @@ export default async function handler(req, res) {
       else upd++
     }
 
-    // 6. Insert new certs at Master.
+    // 5. Insert new certs at the sheet-routed location (Slab Room default).
     const inserts = items.filter(it => !existing.has(it.cert_number)).map(it => ({
       cert_number: it.cert_number,
       grading_company: it.grading_company,
       item_name: it.item_name,
       status: 'in_inventory',
-      location_id: masterId,
+      location_id: roomIdByKey[it.location_route] || roomIdByKey.slabroom,
       market_price_usd: it.market_price_usd,
       last_sold_usd: it.last_sold_usd,
       list_price_usd: it.list_price_usd,
@@ -218,7 +255,8 @@ export default async function handler(req, res) {
 
     const durationMs = Date.now() - startedAt
     const summary = {
-      ok: true, tabs: tabSummary, unique_certs: items.length, skipped,
+      ok: true, tabs: tabSummary, unique_live_certs: items.length,
+      skipped_junk_rows: skippedJunk,
       existing_in_db: existing.size, prices_changed: upd, prices_unchanged: updSkip,
       price_errors: updErr, new_inserted: ins, insert_errors: insErr,
       backsync_sold_to_sheet: backsync.written ?? 0,

@@ -94,6 +94,35 @@ export async function readRange(spreadsheetId, range) {
 }
 
 /**
+ * Read a range INCLUDING text formatting — specifically strikethrough,
+ * which the gviz CSV export can't carry. Used by the slabs sync: boss's
+ * convention is that a crossed-out row = sold, so the sync must see the
+ * strikethrough to know which rows to skip.
+ *
+ * Returns an array of { cells: string[], struck: boolean[] } — one entry
+ * per sheet row, index-aligned with A1 row numbers (rows[0] = sheet row 1).
+ */
+export async function readGridWithFormat(spreadsheetId, rangeA1) {
+  const token = await getAccessToken()
+  const fields = 'sheets(data(rowData(values(formattedValue,effectiveFormat.textFormat.strikethrough))))'
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`
+    + `?ranges=${encodeURIComponent(rangeA1)}&includeGridData=true`
+    + `&fields=${encodeURIComponent(fields)}`
+  const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`readGridWithFormat failed (${resp.status}): ${text}`)
+  }
+  const data = await resp.json()
+  const rowData = data.sheets?.[0]?.data?.[0]?.rowData || []
+  return rowData.map(r => ({
+    cells: (r.values || []).map(v => v?.formattedValue ?? ''),
+    struck: (r.values || []).map(v => !!v?.effectiveFormat?.textFormat?.strikethrough),
+  }))
+}
+
+/**
  * Update multiple ranges in one call. `updates` = [{ range, values }],
  * where `values` is a 2D array. Uses USER_ENTERED so a string "sold"
  * stays a string rather than being parsed as anything weird.
