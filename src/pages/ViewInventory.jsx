@@ -97,19 +97,29 @@ export default function ViewInventory() {
   // rows are excluded.
   const loadCardsByLocation = async () => {
     try {
-      const [singlesRes, slabsRes] = await Promise.all([
+      const slabCols = (withNote) => `
+          id, item_name, grading_company, cert_number, market_price_usd, lv_price_usd,
+          ${withNote ? 'sheet_note, ' : ''}status,
+          location:locations(id, name)
+        `
+      const [singlesRes, slabsResFirst] = await Promise.all([
         supabase.from('singles').select(`
           id, card_name, card_number, condition, quantity, current_market_price_usd,
           tcg_id, status,
           set:card_sets(name),
           location:locations(id, name)
         `).eq('deleted', false).in('status', ['in_inventory', 'listed']),
-        supabase.from('slabs').select(`
-          id, item_name, grading_company, cert_number, market_price_usd, lv_price_usd,
-          status,
-          location:locations(id, name)
-        `).eq('deleted', false).in('status', ['in_inventory', 'listed']),
+        supabase.from('slabs').select(slabCols(true))
+          .eq('deleted', false).in('status', ['in_inventory', 'listed']),
       ])
+      // sheet_note lands via scripts/add_slabs_sheet_note.sql — until that
+      // migration runs, retry without the column so the sub-sections still
+      // render (just without notes).
+      let slabsRes = slabsResFirst
+      if (slabsRes.error && /sheet_note/.test(slabsRes.error.message || '')) {
+        slabsRes = await supabase.from('slabs').select(slabCols(false))
+          .eq('deleted', false).in('status', ['in_inventory', 'listed'])
+      }
       if (singlesRes.error) throw singlesRes.error
       if (slabsRes.error) throw slabsRes.error
       const sg = {}
@@ -709,7 +719,12 @@ function LocationCardsSubSections({
                     .sort((a, b) => (Number(b.market_price_usd) || 0) - (Number(a.market_price_usd) || 0))
                     .map(s => (
                       <tr key={s.id} className="hover:bg-vault-dark/30">
-                        <td className="py-1.5 text-white truncate max-w-md" title={s.item_name}>{s.item_name}</td>
+                        <td className="py-1.5 text-white max-w-md" title={s.item_name}>
+                          <div className="truncate">{s.item_name}</div>
+                          {s.sheet_note && (
+                            <div className="text-[11px] text-amber-300/80 truncate" title={s.sheet_note}>📝 {s.sheet_note}</div>
+                          )}
+                        </td>
                         <td className="py-1.5 text-gray-400">{s.grading_company || '—'}</td>
                         <td className="py-1.5 text-gray-500 text-xs">{s.cert_number || '—'}</td>
                         <td className="py-1.5 text-right text-gray-300">

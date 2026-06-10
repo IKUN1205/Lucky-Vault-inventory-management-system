@@ -964,6 +964,7 @@ function CartRow({ item, onQtyChange, onRemove, onSalePriceChange, mysteryGame, 
   } else {
     title = item.slab?.item_name || 'Slab'
     sub = `${item.slab?.grading_company || ''} · cert #${item.slab?.cert_number}`
+    if (item.slab?.sheet_note) sub += ` · 📝 ${item.slab.sheet_note}`
     max = 1
     qtyEditable = false
   }

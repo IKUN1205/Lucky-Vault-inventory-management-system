@@ -56,8 +56,8 @@ const SHEET_ID = '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI'
 // New-arrival staging tabs ("New Input" / "OP NEW") are intentionally NOT
 // synced — boss moves slabs into a Master tab when they're ready.
 const TAB_CONFIG = [
-  { tab: 'Pokemon Master',   mp: 6, ls: 5, list: 7, lv: 9, cost: 17, intake: 14, location: 12, status: 11 },
-  { tab: 'One Piece Master', mp: 5, ls: 6, list: 7, lv: 8, cost: 14, intake: 16, location: 15, status: 11 },
+  { tab: 'Pokemon Master',   mp: 6, ls: 5, list: 7, lv: 9, note: 10, cost: 17, intake: 14, location: 12, status: 11 },
+  { tab: 'One Piece Master', mp: 5, ls: 6, list: 7, lv: 8, note: 9,  cost: 14, intake: 16, location: 15, status: 11 },
 ]
 
 // Location-column routing for NEW inserts. Mirrors the rule used for the
@@ -152,6 +152,7 @@ export default async function handler(req, res) {
           last_sold_usd: money(gr.cells[cfg.ls]),
           list_price_usd: money(gr.cells[cfg.list]),
           lv_price_usd: money(gr.cells[cfg.lv]),
+          sheet_note: String(gr.cells[cfg.note] || '').trim() || null,
           acquisition_cost_usd: money(gr.cells[cfg.cost]),
           date_acquired: dateOrNull(gr.cells[cfg.intake]),
           location_route: routeLocation(locText),
@@ -178,49 +179,83 @@ export default async function handler(req, res) {
       throw new Error(`Location "${ROOM_NAMES.slabroom}" not found — refusing to insert slabs with no location`)
     }
 
-    // 3. Which certs exist? Pull current MP too so we only PATCH deltas.
+    // 3. Does the slabs table have the sheet_note column yet? It's added
+    //    by scripts/add_slabs_sheet_note.sql — probe once so the sync
+    //    degrades gracefully (skips note writes) instead of erroring on
+    //    every row if the migration hasn't run.
+    let hasNoteColumn = true
+    {
+      const { error: probeErr } = await supabase
+        .from('slabs').select('sheet_note').limit(1)
+      if (probeErr) {
+        hasNoteColumn = false
+        console.warn('[sync-slabs-sheet] sheet_note column missing — note sync skipped (run scripts/add_slabs_sheet_note.sql)')
+      }
+    }
+
+    // 4. Which certs exist? Pull current MP/LV/note too so we only PATCH deltas.
     const existing = new Map()
     const certs = items.map(i => i.cert_number)
+    const existCols = hasNoteColumn
+      ? 'id, cert_number, market_price_usd, lv_price_usd, sheet_note'
+      : 'id, cert_number, market_price_usd, lv_price_usd'
     for (let i = 0; i < certs.length; i += 150) {
       const { data, error } = await supabase
         .from('slabs')
-        .select('id, cert_number, market_price_usd')
+        .select(existCols)
         .in('cert_number', certs.slice(i, i + 150))
         .eq('deleted', false)
       if (error) throw error
       for (const r of data || []) existing.set(String(r.cert_number), r)
     }
 
-    // 4. Update existing prices (changed only).
+    // 5. Refresh existing rows — MP + LV + sheet note, changed fields only,
+    //    bundled into ONE PATCH per row. (Was MP-only; LV + note added
+    //    2026-06-08 per boss — zero extra reads since the grid fetch
+    //    already carries every column.)
+    const priceDiff = (a, b) => {
+      if (b == null) return false                 // sheet blank → keep app value
+      if (a == null) return true
+      return Math.abs(Number(a) - Number(b)) >= 0.005
+    }
     let upd = 0, updErr = 0, updSkip = 0
     for (const it of items) {
       const ex = existing.get(it.cert_number)
       if (!ex) continue
-      if (it.market_price_usd == null) { updSkip++; continue }
-      if (ex.market_price_usd != null && Math.abs(Number(ex.market_price_usd) - it.market_price_usd) < 0.005) { updSkip++; continue }
+      const patch = {}
+      if (priceDiff(ex.market_price_usd, it.market_price_usd)) patch.market_price_usd = it.market_price_usd
+      if (priceDiff(ex.lv_price_usd, it.lv_price_usd))         patch.lv_price_usd = it.lv_price_usd
+      if (hasNoteColumn && (it.sheet_note || null) !== (ex.sheet_note || null)) {
+        patch.sheet_note = it.sheet_note   // null clears a note removed on the sheet
+      }
+      if (Object.keys(patch).length === 0) { updSkip++; continue }
       const { error } = await supabase.from('slabs')
-        .update({ market_price_usd: it.market_price_usd })
+        .update(patch)
         .eq('id', ex.id)
       if (error) { console.error('[sync-slabs-sheet] PATCH fail', it.cert_number, error.message); updErr++ }
       else upd++
     }
 
-    // 5. Insert new certs at the sheet-routed location (Slab Room default).
-    const inserts = items.filter(it => !existing.has(it.cert_number)).map(it => ({
-      cert_number: it.cert_number,
-      grading_company: it.grading_company,
-      item_name: it.item_name,
-      status: 'in_inventory',
-      location_id: roomIdByKey[it.location_route] || roomIdByKey.slabroom,
-      market_price_usd: it.market_price_usd,
-      last_sold_usd: it.last_sold_usd,
-      list_price_usd: it.list_price_usd,
-      lv_price_usd: it.lv_price_usd,
-      acquisition_cost_usd: it.acquisition_cost_usd,
-      date_acquired: it.date_acquired || today,
-      notes: `Imported from slabs sheet on ${today} (auto-sync)`,
-      deleted: false,
-    }))
+    // 6. Insert new certs at the sheet-routed location (Slab Room default).
+    const inserts = items.filter(it => !existing.has(it.cert_number)).map(it => {
+      const row = {
+        cert_number: it.cert_number,
+        grading_company: it.grading_company,
+        item_name: it.item_name,
+        status: 'in_inventory',
+        location_id: roomIdByKey[it.location_route] || roomIdByKey.slabroom,
+        market_price_usd: it.market_price_usd,
+        last_sold_usd: it.last_sold_usd,
+        list_price_usd: it.list_price_usd,
+        lv_price_usd: it.lv_price_usd,
+        acquisition_cost_usd: it.acquisition_cost_usd,
+        date_acquired: it.date_acquired || today,
+        notes: `Imported from slabs sheet on ${today} (auto-sync)`,
+        deleted: false,
+      }
+      if (hasNoteColumn) row.sheet_note = it.sheet_note
+      return row
+    })
     let ins = 0, insErr = 0
     for (let i = 0; i < inserts.length; i += 100) {
       const batch = inserts.slice(i, i + 100)

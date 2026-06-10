@@ -1496,6 +1496,7 @@ function ManualResultRow({ row, onPick, disabled, isBuy }) {
     icon = Diamond; color = 'text-emerald-300'
     title = row.slab.item_name
     sub = `${row.slab.grading_company || '?'} · cert #${row.slab.cert_number}`
+    if (row.slab.sheet_note) sub += ` · 📝 ${row.slab.sheet_note}`
   } else {
     return null
   }
@@ -2023,6 +2024,7 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
   } else if (line.kind === 'slab') {
     title = line.slab.item_name
     sub = `${line.slab.grading_company} · cert #${line.slab.cert_number}`
+    if (line.slab.sheet_note) sub += ` · 📝 ${line.slab.sheet_note}`
     available = 1
     qtyEditable = false
   } else if (line.kind === 'single') {
