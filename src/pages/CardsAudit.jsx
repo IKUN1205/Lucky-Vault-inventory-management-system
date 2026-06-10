@@ -699,6 +699,73 @@ export default function CardsAudit() {
              failed ? 'info' : 'success')
   }
 
+  // Accept the PHYSICAL count for an over-scanned card: the staff member
+  // scanned more copies than the app recorded, confirmed they're real
+  // (not a scanner double-trigger), so the app's qty gets corrected UP
+  // to match reality (directive 2026-06-09 — physical wins). Bumps the
+  // largest live row's quantity by the deficit, updates the local
+  // expected snapshot so the row re-buckets as Matched, and pushes the
+  // new qty to the sheet via the existing endpoint.
+  const acceptPhysicalQty = async (row) => {
+    setPhysicalResolving(row.id)
+    try {
+      const { data: liveRows, error: findErr } = await supabase
+        .from('singles')
+        .select('id, quantity')
+        .eq('tcg_id', row.id)
+        .neq('status', 'sold')
+        .eq('deleted', false)
+        .order('quantity', { ascending: false })
+        .limit(20)
+      if (findErr) throw findErr
+      if (!liveRows || liveRows.length === 0) {
+        throw new Error(`No live row in app for ${row.id} — use the Extras re-add flow instead`)
+      }
+      const liveTotal = liveRows.reduce((s, r) => s + (Number(r.quantity) || 0), 0)
+      const deficit = row.physical - liveTotal
+      if (deficit > 0) {
+        const target = liveRows[0]
+        const { error: updErr } = await supabase
+          .from('singles')
+          .update({ quantity: (Number(target.quantity) || 0) + deficit })
+          .eq('id', target.id)
+        if (updErr) throw updErr
+      }
+      addToast(`Accepted physical count: ${row.id} app qty → ${row.physical}`, 'success')
+      // Re-bucket locally: expected now matches what was scanned.
+      setPhysicalExpected(prev => {
+        const next = new Map(prev)
+        const e = next.get(row.id)
+        if (e) next.set(row.id, { ...e, expected_qty: row.physical })
+        return next
+      })
+      // Push the corrected qty to the sheet (fire-and-forget; hourly
+      // sync catches it if this misses).
+      fetch('/api/sheet-mark-sold', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, id: liveRows[0].id }),
+      }).catch(() => {})
+    } catch (err) {
+      addToast(`Accept failed: ${err.message}`, 'error')
+    } finally {
+      setPhysicalResolving(null)
+    }
+  }
+  const [acceptAllRunning, setAcceptAllRunning] = useState(false)
+  const acceptAllPhysicalQty = async (rows) => {
+    if (!rows || rows.length === 0) return
+    if (!confirm(
+      `Accept the physical count for ${rows.length} over-scanned card${rows.length === 1 ? '' : 's'}?\n\n` +
+      `Each card's app quantity will be raised to what you actually scanned. Only do this if the extra scans were real copies (not scanner double-triggers).`
+    )) return
+    setAcceptAllRunning(true)
+    for (const row of rows) {
+      await acceptPhysicalQty(row)
+    }
+    setAcceptAllRunning(false)
+  }
+
   // Push sheet to match the app's current truth for an id. Used for the
   // "sheet out of date" case — physical and app agree, sheet hasn't
   // caught up yet. Hits the same /api/sheet-mark-sold endpoint as the
@@ -1042,6 +1109,9 @@ export default function CardsAudit() {
               pushPhysicalToSheet={pushPhysicalToSheet}
               pushAllSheetStale={pushAllSheetStale}
               pushAllStaleRunning={pushAllStaleRunning}
+              acceptPhysicalQty={acceptPhysicalQty}
+              acceptAllPhysicalQty={acceptAllPhysicalQty}
+              acceptAllRunning={acceptAllRunning}
               bulkMoveMissingTo={bulkMoveMissingTo}
               bulkMoveMissingRunning={bulkMoveMissingRunning}
               bulkMoveExtrasHere={bulkMoveExtrasHere}
@@ -1578,6 +1648,7 @@ function PhysicalReview({
   expected, scanned, extras, sheetById,
   resetCount, resolveExtraMoveHere, pushPhysicalToSheet,
   pushAllSheetStale, pushAllStaleRunning,
+  acceptPhysicalQty, acceptAllPhysicalQty, acceptAllRunning,
   bulkMoveMissingTo, bulkMoveMissingRunning,
   bulkMoveExtrasHere, bulkMoveExtrasRunning,
   physicalResolving, backToScanning,
@@ -1700,9 +1771,24 @@ function PhysicalReview({
         emptyText="No partial counts."
       />
 
-      {/* Over-scanned — you found MORE than app expected. Usually a
-          double-trigger from the scanner; staff should review and either
-          accept the higher count (app was wrong) or go back and undo. */}
+      {/* Over-scanned — you found MORE than app expected. Either a scanner
+          double-trigger (go back and −1) or the app's qty is simply too
+          low (the common case) — Accept buttons raise app qty to the
+          physically-scanned count and push the fix to the sheet. */}
+      {kind === 'single' && overCount.length > 1 && (
+        <div className="mb-1 flex justify-end">
+          <button
+            type="button"
+            onClick={() => acceptAllPhysicalQty(overCount)}
+            disabled={acceptAllRunning}
+            className="text-xs px-3 py-1.5 bg-red-500/25 border border-red-500/50 text-red-300 rounded hover:bg-red-500/35 disabled:opacity-50 font-semibold flex items-center gap-1"
+          >
+            {acceptAllRunning
+              ? <><Loader2 size={12} className="animate-spin" /> Accepting…</>
+              : <><CheckCircle size={12} /> Accept all {overCount.length} physical counts</>}
+          </button>
+        </div>
+      )}
       <ThreeWaySection
         title="Over-scanned — you scanned MORE than app expected (double-trigger? or app qty wrong?)"
         bucket="over"
@@ -1710,6 +1796,18 @@ function PhysicalReview({
           id: o.id, name: nameOf(o.info),
           physical: o.physical, app: o.app, sheet: o.sheet,
           severity: 'warning',
+          action: kind === 'single' ? (
+            <button
+              type="button"
+              onClick={() => acceptPhysicalQty(o)}
+              disabled={physicalResolving === o.id || acceptAllRunning}
+              className="text-[10px] px-2 py-1 bg-red-500/20 border border-red-500/40 text-red-300 rounded hover:bg-red-500/30 disabled:opacity-50 flex items-center gap-1 whitespace-nowrap"
+            >
+              {physicalResolving === o.id
+                ? <Loader2 size={10} className="animate-spin" />
+                : <><CheckCircle size={10} /> Accept qty {o.physical}</>}
+            </button>
+          ) : null,
         }))}
         emptyText="Nothing over-counted."
       />

@@ -2769,14 +2769,28 @@ const _sellSlabLine = async ({ slab, salePrice, paymentMethodId, cashierId, tran
 // Sell N units of a raw single. Handles the fungible-split case where
 // the source row has more units than we're selling — we don't flip the
 // whole row to sold, we decrement the source and insert a sold clone.
-const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {} }) => {
-  const isFungibleRaw = single.form === 'raw' && (single.quantity || 1) > 1
-  const sourceQty = single.quantity || 1
+const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {}, allowStockAdjust = false }) => {
+  let sourceQty = single.quantity || 1
   const sellQty = Math.max(1, Number(quantity) || 1)
 
   if (sellQty > sourceQty) {
-    throw new Error(`Only ${sourceQty} available — cannot sell ${sellQty}`)
+    if (!allowStockAdjust) {
+      throw new Error(`Only ${sourceQty} available — cannot sell ${sellQty}`)
+    }
+    // Cashier confirmed over-scan at the register: they're holding more
+    // physical copies than the app recorded (directive 2026-06-09 — the
+    // physical copy wins). Correct the row's quantity UP first so the
+    // normal sell math below stays whole; inventory ends at the right
+    // remaining count and the sold clone carries the true sold qty.
+    const { error: bumpErr } = await supabase
+      .from('singles')
+      .update({ quantity: sellQty })
+      .eq('id', single.id)
+    if (bumpErr) throw bumpErr
+    console.log(`[sell-single] stock auto-corrected: ${single.tcg_id} qty ${sourceQty} → ${sellQty} (cashier-confirmed physical count)`)
+    sourceQty = sellQty
   }
+  const isFungibleRaw = single.form === 'raw' && sourceQty > 1
 
   // Whole-row sale: just flip status. Existing markSingleAsSold handles it.
   if (!isFungibleRaw || sellQty === sourceQty) {
@@ -3142,6 +3156,9 @@ export const submitStorefrontTransaction = async ({
           paymentMethodId: rowPaymentMethodId, cashierId, transactionId,
           saleDate,
           txMeta,
+          // Cashier confirmed an over-scan in the cart (physical copies
+          // beyond app stock) — lets the writer bump qty before selling.
+          allowStockAdjust: !!line.stock_adjust,
         })
         ok.push({ line, result })
       } else if (line.kind === 'slab_manual' || line.kind === 'single_manual') {
@@ -3727,6 +3744,7 @@ export const submitPlatformTransaction = async ({
           ourPrice: line.our_price,
           platform, channel, streamerId, transactionId, saleDate,
           saleChannel,
+          allowStockAdjust: !!line.stock_adjust,
         })
         ok.push({ line, result })
       } else {
@@ -3853,11 +3871,22 @@ const _sellSlabLinePlatform = async ({
 const _sellSingleLinePlatform = async ({
   single, quantity, salePrice, ourPrice,
   platform, channel, streamerId, transactionId, saleDate, saleChannel,
+  allowStockAdjust = false,
 }) => {
-  const isFungibleRaw = single.form === 'raw' && (single.quantity || 1) > 1
-  const sourceQty = single.quantity || 1
+  let sourceQty = single.quantity || 1
   const sellQty   = Math.max(1, Number(quantity) || 1)
-  if (sellQty > sourceQty) throw new Error(`Only ${sourceQty} available — cannot sell ${sellQty}`)
+  if (sellQty > sourceQty) {
+    if (!allowStockAdjust) throw new Error(`Only ${sourceQty} available — cannot sell ${sellQty}`)
+    // Streamer confirmed an over-scan: physical copies in hand beyond app
+    // stock (directive 2026-06-09 — physical wins). Bump the row's qty
+    // first so the sell math below stays whole.
+    const { error: bumpErr } = await supabase
+      .from('singles').update({ quantity: sellQty }).eq('id', single.id)
+    if (bumpErr) throw bumpErr
+    console.log(`[sell-single-platform] stock auto-corrected: ${single.tcg_id} qty ${sourceQty} → ${sellQty}`)
+    sourceQty = sellQty
+  }
+  const isFungibleRaw = single.form === 'raw' && sourceQty > 1
 
   const lineNet = (Number(salePrice) || 0) * sellQty
   const cost    = single.acquisition_cost_usd != null

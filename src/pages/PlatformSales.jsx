@@ -182,32 +182,44 @@ export default function PlatformSales() {
     }
     const available = single.quantity || 1
     const mismatchLabel = itemNotAtRoomLabel(single.location?.name || null)
-    setCart(prev => {
-      const idx = prev.findIndex(l => l.kind === 'single' && l.single.id === single.id)
-      if (idx >= 0) {
-        const existing = prev[idx]
-        if ((existing.quantity || 1) + 1 > available) {
-          addToast(`Only ${available} available — cart has ${existing.quantity}`, 'error')
-          return prev
-        }
-        const next = [...prev]
-        next[idx] = { ...existing, quantity: (existing.quantity || 1) + 1 }
-        return next
+    // Over-scan with confirm (directive 2026-06-09: physical copy wins).
+    // The streamer is holding another physical copy beyond what the app
+    // recorded — confirm, flag the line, and checkout bumps the DB row's
+    // qty up before selling. confirm() stays OUTSIDE setCart (updaters
+    // can double-fire under StrictMode).
+    const existing = cart.find(l => l.kind === 'single' && l.single.id === single.id)
+    if (existing) {
+      const nextQty = (existing.quantity || 1) + 1
+      let stockAdjust = existing.stock_adjust || false
+      if (nextQty > (existing.available || available)) {
+        const ok = confirm(
+          `App only shows ${existing.available || available} in stock for "${single.card_name}", but you scanned another physical copy.\n\n` +
+          `Add it anyway? Inventory will be auto-corrected to ${nextQty} at submit.`
+        )
+        if (!ok) return
+        stockAdjust = true
       }
-      const ourPrice = single.current_market_price_usd != null
-        ? Number(single.current_market_price_usd) : null
-      return [...prev, {
-        kind: 'single',
-        key: `single-${single.id}`,
-        single, available,
-        quantity: 1,
-        price: '',
-        our_price: ourPrice,
-        location_warning: mismatchLabel,
-      }]
-    })
+      setCart(prev => prev.map(l =>
+        (l.kind === 'single' && l.single.id === single.id)
+          ? { ...l, quantity: nextQty, stock_adjust: stockAdjust }
+          : l
+      ))
+      addToast(`${single.card_name} ×${nextQty}${stockAdjust ? ' (stock will be corrected)' : ''}`, 'success')
+      return
+    }
+    const ourPrice = single.current_market_price_usd != null
+      ? Number(single.current_market_price_usd) : null
+    setCart(prev => [...prev, {
+      kind: 'single',
+      key: `single-${single.id}`,
+      single, available,
+      quantity: 1,
+      price: '',
+      our_price: ourPrice,
+      location_warning: mismatchLabel,
+    }])
     addToast(`Added: ${single.card_name}`, 'success')
-  }, [addToast, expectedRoomName])
+  }, [addToast, expectedRoomName, cart])
 
   // ---------- scan ----------
 
@@ -590,7 +602,12 @@ function CartRow({ line, onUpdate, onRemove, disabled }) {
     const setLine = line.single.set?.name ? ` · ${line.single.set.name}` : ''
     title = `${line.single.card_name}${line.single.card_number ? ` #${line.single.card_number}` : ''}`
     sub   = `${line.single.condition || 'raw'}${setLine} · TCG ${line.single.tcg_id}`
-    available = line.available
+    // stock_adjust = cashier-confirmed over-scan; qty may sit above the
+    // app's recorded stock (corrected at submit).
+    available = line.stock_adjust
+      ? Math.max(line.available || 1, line.quantity || 1)
+      : line.available
+    if (line.stock_adjust) sub += ' · ⚠ stock will be corrected at submit'
     qtyEditable = true
   }
 

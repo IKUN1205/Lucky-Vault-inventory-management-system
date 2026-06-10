@@ -323,32 +323,46 @@ export default function StorefrontSale() {
       return
     }
     const available = single.quantity || 1
-    setCart(prev => {
-      const idx = prev.findIndex(l => l.kind === 'single' && l.single.id === single.id)
-      if (idx >= 0) {
-        const existing = prev[idx]
-        if ((existing.quantity || 1) + 1 > available) {
-          addToast(`Only ${available} available — cart already has ${existing.quantity}`, 'error')
-          return prev
-        }
-        const next = [...prev]
-        next[idx] = { ...existing, quantity: (existing.quantity || 1) + 1 }
-        return next
+    // Increment-beyond-available is allowed WITH confirmation: the cashier
+    // is literally holding another physical copy, so app inventory is
+    // under-counted (directive 2026-06-09: 实物为准 — the physical copy
+    // wins). The line gets stock_adjust=true and checkout bumps the DB
+    // row's quantity up before selling, so inventory math stays whole.
+    // The confirm() runs OUTSIDE setCart — confirm inside a state updater
+    // can double-fire under StrictMode.
+    const existing = cart.find(l => l.kind === 'single' && l.single.id === single.id)
+    if (existing) {
+      const nextQty = (existing.quantity || 1) + 1
+      let stockAdjust = existing.stock_adjust || false
+      if (nextQty > (existing.available || available)) {
+        const ok = confirm(
+          `App only shows ${existing.available || available} in stock for "${single.card_name}", but you scanned another physical copy.\n\n` +
+          `Add it anyway? Inventory will be auto-corrected to ${nextQty} at checkout.`
+        )
+        if (!ok) return
+        stockAdjust = true
       }
-      const ourPrice = single.current_market_price_usd != null
-        ? Number(single.current_market_price_usd) : null
-      return [
-        ...prev,
-        {
-          kind: 'single',
-          key: `single-${single.id}`,
-          single, available,
-          quantity: 1,
-          our_price: ourPrice,
-          scanned_code: single.tcg_id,
-        },
-      ]
-    })
+      setCart(prev => prev.map(l =>
+        (l.kind === 'single' && l.single.id === single.id)
+          ? { ...l, quantity: nextQty, stock_adjust: stockAdjust }
+          : l
+      ))
+      addToast(`${single.card_name} ×${nextQty}${stockAdjust ? ' (stock will be corrected)' : ''}`, 'success')
+      return
+    }
+    const ourPrice = single.current_market_price_usd != null
+      ? Number(single.current_market_price_usd) : null
+    setCart(prev => [
+      ...prev,
+      {
+        kind: 'single',
+        key: `single-${single.id}`,
+        single, available,
+        quantity: 1,
+        our_price: ourPrice,
+        scanned_code: single.tcg_id,
+      },
+    ])
     addToast(`Added: ${single.card_name}`, 'success')
   }
 
@@ -2031,7 +2045,12 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
     const setLine = line.single.set?.name ? ` · ${line.single.set.name}` : ''
     title = `${line.single.card_name}${line.single.card_number ? ` #${line.single.card_number}` : ''}`
     sub = `${line.single.condition || 'raw'}${setLine} · TCG ${line.single.tcg_id}`
-    available = line.available
+    // stock_adjust lines were confirmed-over-scanned (physical copies in
+    // hand beyond app stock) — let the qty stay above the app's count.
+    available = line.stock_adjust
+      ? Math.max(line.available || 1, line.quantity || 1)
+      : line.available
+    if (line.stock_adjust) sub += ' · ⚠ stock will be corrected at checkout'
     qtyEditable = true
   } else if (line.kind === 'slab_manual') {
     // Buy mode manual entry — only description (cashier-typed) to show.
