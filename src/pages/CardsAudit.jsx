@@ -515,11 +515,22 @@ export default function CardsAudit() {
       .eq('deleted', false)
       .limit(1)
     const tpl = prior?.[0] || null
+    // card_number is NOT NULL in the schema — '' when unknown.
+    // set_id falls back to the sheet-sync's "Unknown Set" bucket so a
+    // never-seen card can still be created (boss fills details later).
+    let setId = tpl?.set_id ?? null
+    if (!setId) {
+      const { data: fb } = await supabase
+        .from('card_sets').select('id')
+        .eq('name', 'Unknown Set (sheet import)')
+        .maybeSingle()
+      setId = fb?.id ?? null
+    }
     const sheetInfo = physicalSheetById[extra.id] || null
     const insert = {
       card_name: tpl?.card_name || `(unknown — TCG ${extra.id})`,
-      card_number: tpl?.card_number ?? null,
-      set_id: tpl?.set_id ?? null,
+      card_number: tpl?.card_number || '',
+      set_id: setId,
       brand: tpl?.brand || 'Pokemon',
       language: tpl?.language || 'EN',
       variant: tpl?.variant ?? null,
