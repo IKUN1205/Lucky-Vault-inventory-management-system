@@ -1215,10 +1215,12 @@ async function reportSheetSyncResult(kind, dbId) {
     try { body = await r.json() }
     catch { body = { outcome: 'unparseable', message: `HTTP ${r.status} with non-JSON body` } }
     const prefix = `[sheet sync · ${kind}]`
-    if (r.ok && body.outcome === 'marked_sold') {
+    const OK_OUTCOMES = new Set(['marked_sold', 'sheet_updated', 'qty_decremented'])
+    const NOOP_OUTCOMES = new Set(['already_sold', 'qty_already_correct'])
+    if (r.ok && OK_OUTCOMES.has(body.outcome)) {
       console.log(`${prefix} ✓ ${body.message}`, body.trace?.sheet_url || '')
-    } else if (r.ok && body.outcome === 'already_sold') {
-      console.log(`${prefix} (already sold) ${body.message}`)
+    } else if (r.ok && NOOP_OUTCOMES.has(body.outcome)) {
+      console.log(`${prefix} (no change needed) ${body.message}`)
     } else if (r.ok && body.outcome === 'not_in_sheet') {
       console.info(`${prefix} (not in sheet — fine) ${body.message}`)
     } else {

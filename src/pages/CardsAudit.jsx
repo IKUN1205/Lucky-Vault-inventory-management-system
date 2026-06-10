@@ -1862,7 +1862,11 @@ function ThreeWaySection({ title, bucket, items, emptyText }) {
                   <ThreeWayValue label="P" value={it.physical} tone="emerald" />
                   <ThreeWayValue label="A" value={it.app}      tone="gold" diffWith={it.physical} />
                   <ThreeWayValue label="S"
-                                 value={it.sheet?.qty ?? (it.sheet?.status ? `"${it.sheet.status}"` : '—')}
+                                 value={
+                                   it.sheet?.status === 'sold' && it.sheet?.qty != null
+                                     ? `${it.sheet.qty}·"sold"`
+                                     : (it.sheet?.qty ?? (it.sheet?.status ? `"${it.sheet.status}"` : '—'))
+                                 }
                                  tone="cyan" diffWith={it.app} />
                   {it.sheet?.location && (
                     <span className="text-[10px] text-gray-500">

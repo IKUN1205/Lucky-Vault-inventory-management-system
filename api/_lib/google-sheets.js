@@ -225,10 +225,16 @@ export async function backsyncSoldStatus({
         const remaining = remainingByTcg?.get(idStr) ?? 0
         const sheetQty = Number(rows[r][qtyColumn]) || 0
         if (remaining > 0) {
-          // Some units left — sync qty cell, leave status alone.
+          // Some units left — sync qty cell, and CLEAR a stale "sold"
+          // status (card sold out once, later re-added/found — the app
+          // is live again so the old sold marker must go).
           if (sheetQty !== remaining) {
             updates.push({ range: cellA1(tab, r, qtyColumn), values: [[remaining]] })
             queuedQty++
+          }
+          if (currentStatus === 'sold') {
+            updates.push({ range: cellA1(tab, r, statusColumn), values: [['']] })
+            queuedStatus++
           }
         } else {
           // All sold — write 'sold' to status (and zero qty if needed).

@@ -265,8 +265,24 @@ export default async function handler(req, res) {
       const qtyCell = cellA1(found.tab, found.rowIndex, cfg.qtyColumn)
 
       if (remainingQty > 0) {
-        // Some units still in inventory — sync qty (not status).
-        if (sheetQty === remainingQty) {
+        // Some units still in inventory. Two things may need fixing:
+        //   - qty cell out of date
+        //   - a STALE "sold" in the Status column (e.g. the card sold out
+        //     once, got re-added/found during a physical count, and the
+        //     sheet's old sold marker stuck around). App says live, so
+        //     the sheet's sold text must be CLEARED — otherwise audits
+        //     keep flagging it and the sync would skip the row forever.
+        const updates = []
+        const fixes = []
+        if (sheetQty !== remainingQty) {
+          updates.push({ range: qtyCell, values: [[remainingQty]] })
+          fixes.push(`qty ${sheetQty} → ${remainingQty}`)
+        }
+        if (sheetStatusLower === 'sold') {
+          updates.push({ range: statusCell, values: [['']] })
+          fixes.push('cleared stale "sold" status')
+        }
+        if (updates.length === 0) {
           return respond(res, 200, 'qty_already_correct',
             `${kindNoun(kind)} ${idLabel(kind)} ${idValue}: sheet already shows qty=${remainingQty} in ${found.tab} row ${found.rowIndex + 1}. Nothing to write.`,
             {
@@ -276,17 +292,15 @@ export default async function handler(req, res) {
               remaining_qty: remainingQty, sheet_qty: sheetQty,
             })
         }
-        const result = await batchUpdateValues(cfg.spreadsheetId, [
-          { range: qtyCell, values: [[remainingQty]] },
-        ])
-        return respond(res, 200, 'qty_decremented',
-          `Updated qty ${sheetQty} → ${remainingQty} for ${kindNoun(kind).toLowerCase()} ${idLabel(kind)} ${idValue} in ${found.tab} cell ${qtyCell.split('!')[1]}. (Status left alone — there are still units in inventory.)`,
+        const result = await batchUpdateValues(cfg.spreadsheetId, updates)
+        return respond(res, 200, 'sheet_updated',
+          `${kindNoun(kind)} ${idLabel(kind)} ${idValue}: ${fixes.join(' + ')} in ${found.tab} row ${found.rowIndex + 1}. (Card is live in the app — ${remainingQty} unit${remainingQty === 1 ? '' : 's'} in inventory.)`,
           {
             kind, db_id: id, id_value: idValue,
             sheet_tab: found.tab, sheet_row: found.rowIndex + 1,
             sheet_cell: qtyCell, sheet_url: sheetUrl,
             qty_before: sheetQty, qty_after: remainingQty,
-            cells_updated: result.totalUpdatedCells ?? result.updatedCells ?? 1,
+            cells_updated: result.totalUpdatedCells ?? result.updatedCells ?? updates.length,
           })
       }
 
