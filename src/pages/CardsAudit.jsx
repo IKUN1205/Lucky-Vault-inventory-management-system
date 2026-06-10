@@ -467,11 +467,79 @@ export default function CardsAudit() {
     setPhysicalLocationId(null)
   }
 
-  // Resolve an "extra" by moving its DB rows to the current location.
-  // Mirrors what staff would do in the Move Inventory page, but
-  // automated for the audit workflow. Used when the staff member
-  // confirmed the physical card IS in this room and the system's
-  // record is stale.
+  // Resolve an "extra" — a physically-present card the app didn't expect
+  // at this room. Two cases, handled automatically:
+  //   1. App has LIVE rows for this id elsewhere → move them here (same
+  //      as Move Inventory would).
+  //   2. App has NO live rows (every row sold, or never imported) — the
+  //      physical card in hand proves reality disagrees, so RE-ADD it:
+  //      insert a fresh in_inventory row at this room with qty = times
+  //      scanned, copying the card's identity (name/set/condition) from
+  //      a prior (sold) row when one exists. Price seeds from the sheet
+  //      snapshot when available; the hourly sync keeps it fresh after.
+  //      (Slabs only get case 2 via flipping isn't safe — a duplicate
+  //      cert row would break maybeSingle() lookups — so for slabs with
+  //      no live row we surface a clear message instead.)
+  // Returns 'moved' | 'readded' | 'failed' so the bulk loop can tally.
+  const resolveOneExtraCore = async (extra) => {
+    const table = kind === 'single' ? 'singles' : 'slabs'
+    const idCol = kind === 'single' ? 'tcg_id' : 'cert_number'
+    // Case 1: live rows exist anywhere → move them here.
+    const { data: liveRows, error: findErr } = await supabase
+      .from(table)
+      .select('id, location_id, status')
+      .eq(idCol, extra.id)
+      .neq('status', 'sold')
+      .eq('deleted', false)
+      .limit(50)
+    if (findErr) throw findErr
+    if (liveRows && liveRows.length > 0) {
+      const ids = liveRows.map(r => r.id)
+      const { error: updErr } = await supabase
+        .from(table)
+        .update({ location_id: physicalLocationId })
+        .in('id', ids)
+      if (updErr) throw updErr
+      return 'moved'
+    }
+
+    // Case 2: nothing live. Singles → re-add; slabs → explain.
+    if (kind !== 'single') {
+      throw new Error(`Slab ${extra.id} exists only as SOLD in the app. If it's physically here, the sale record may be wrong — check its history in Cards Inventory before re-adding.`)
+    }
+    // Copy identity from any prior row (sold ones count — same card).
+    const { data: prior } = await supabase
+      .from('singles')
+      .select('card_name, card_number, set_id, brand, language, variant, form, condition')
+      .eq('tcg_id', extra.id)
+      .eq('deleted', false)
+      .limit(1)
+    const tpl = prior?.[0] || null
+    const sheetInfo = physicalSheetById[extra.id] || null
+    const insert = {
+      card_name: tpl?.card_name || `(unknown — TCG ${extra.id})`,
+      card_number: tpl?.card_number ?? null,
+      set_id: tpl?.set_id ?? null,
+      brand: tpl?.brand || 'Pokemon',
+      language: tpl?.language || 'EN',
+      variant: tpl?.variant ?? null,
+      form: tpl?.form || 'raw',
+      condition: tpl?.condition || 'NM',
+      quantity: extra.scanned_count || 1,
+      tcg_id: extra.id,
+      current_market_price_usd: sheetInfo?.price ?? null,
+      source_type: 'other',
+      status: 'in_inventory',
+      location_id: physicalLocationId,
+      date_acquired: new Date().toLocaleDateString('en-CA'),
+      notes: `Re-added via physical count at ${locationName} (app had no live row — found in store)`,
+      deleted: false,
+    }
+    const { error: insErr } = await supabase.from('singles').insert(insert)
+    if (insErr) throw insErr
+    return 'readded'
+  }
+
   const resolveExtraMoveHere = async (extra) => {
     if (!physicalLocationId) {
       addToast('No physical location id — internal error', 'error')
@@ -479,32 +547,15 @@ export default function CardsAudit() {
     }
     setPhysicalResolving(extra.id)
     try {
-      const table = kind === 'single' ? 'singles' : 'slabs'
-      const idCol = kind === 'single' ? 'tcg_id' : 'cert_number'
-      // Find the DB rows for this id (any location, any non-sold status)
-      const { data, error: findErr } = await supabase
-        .from(table)
-        .select('id, location_id, status')
-        .eq(idCol, extra.id)
-        .neq('status', 'sold')
-        .eq('deleted', false)
-        .limit(50)
-      if (findErr) throw findErr
-      if (!data || data.length === 0) {
-        throw new Error(`No live row found in app for ${extra.id}`)
+      const outcome = await resolveOneExtraCore(extra)
+      if (outcome === 'moved') {
+        addToast(`Moved ${extra.id} → ${locationName}`, 'success')
+      } else {
+        addToast(`Re-added ${extra.scanned_count || 1} × ${extra.id} to ${locationName} (app had it as all-sold — physical copy wins)`, 'success')
       }
-      // Move them all to the current location.
-      const ids = data.map(r => r.id)
-      const { error: updErr } = await supabase
-        .from(table)
-        .update({ location_id: physicalLocationId })
-        .in('id', ids)
-      if (updErr) throw updErr
-      addToast(`Moved ${ids.length} row${ids.length === 1 ? '' : 's'} of ${extra.id} → ${locationName}`, 'success')
-      // Drop from extras
       setPhysicalExtras(prev => prev.filter(e => e.id !== extra.id))
     } catch (err) {
-      addToast(`Move failed: ${err.message}`, 'error')
+      addToast(`Resolve failed: ${err.message}`, 'error')
     } finally {
       setPhysicalResolving(null)
     }
@@ -563,8 +614,9 @@ export default function CardsAudit() {
     )
   }
 
-  // Bulk-move all "Extras" to the current location. One round trip
-  // per extra. After each success the extra is dropped from the list.
+  // Bulk-resolve all "Extras" — same two-case logic as the per-row button
+  // (move live rows here, or re-add when nothing live exists). Sequential;
+  // survivors (true failures) stay in the list.
   const [bulkMoveExtrasRunning, setBulkMoveExtrasRunning] = useState(false)
   const bulkMoveExtrasHere = async () => {
     if (!physicalLocationId) {
@@ -573,33 +625,19 @@ export default function CardsAudit() {
     }
     if (physicalExtras.length === 0) return
     if (!confirm(
-      `Move all ${physicalExtras.length} extra card${physicalExtras.length === 1 ? '' : 's'} → ${locationName}?\n\n` +
-      `These are cards you scanned that the app thought were elsewhere. Moving them updates their location_id in the app to ${locationName}.`
+      `Resolve all ${physicalExtras.length} extra card${physicalExtras.length === 1 ? '' : 's'} → ${locationName}?\n\n` +
+      `Cards with live rows elsewhere get MOVED here. Cards the app has as all-sold (or doesn't know) get RE-ADDED here with the scanned qty — the physical copy in your hand wins.`
     )) return
     setBulkMoveExtrasRunning(true)
-    let ok = 0, failed = 0
-    const table = kind === 'single' ? 'singles' : 'slabs'
-    const idCol = kind === 'single' ? 'tcg_id' : 'cert_number'
+    let moved = 0, readded = 0, failed = 0
     const survivors = []
     for (const e of physicalExtras) {
       try {
-        const { data, error: findErr } = await supabase
-          .from(table)
-          .select('id')
-          .eq(idCol, e.id)
-          .neq('status', 'sold')
-          .eq('deleted', false)
-          .limit(50)
-        if (findErr) throw findErr
-        if (!data || data.length === 0) { failed++; survivors.push(e); continue }
-        const { error: updErr } = await supabase
-          .from(table)
-          .update({ location_id: physicalLocationId })
-          .in('id', data.map(r => r.id))
-        if (updErr) throw updErr
-        ok++
+        const outcome = await resolveOneExtraCore(e)
+        if (outcome === 'moved') moved++
+        else readded++
       } catch (err) {
-        console.warn('[bulk-move-extras] failed', e.id, err.message)
+        console.warn('[bulk-resolve-extras] failed', e.id, err.message)
         failed++
         survivors.push(e)
       }
@@ -607,7 +645,7 @@ export default function CardsAudit() {
     setPhysicalExtras(survivors)
     setBulkMoveExtrasRunning(false)
     addToast(
-      `Moved ${ok} card${ok === 1 ? '' : 's'} → ${locationName}${failed ? ` · ${failed} failed` : ''}`,
+      `Moved ${moved} · re-added ${readded}${failed ? ` · ${failed} failed (still listed)` : ''}`,
       failed ? 'info' : 'success'
     )
   }
