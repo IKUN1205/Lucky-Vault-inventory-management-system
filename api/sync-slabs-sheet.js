@@ -56,8 +56,8 @@ const SHEET_ID = '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI'
 // New-arrival staging tabs ("New Input" / "OP NEW") are intentionally NOT
 // synced — boss moves slabs into a Master tab when they're ready.
 const TAB_CONFIG = [
-  { tab: 'Pokemon Master',   mp: 6, ls: 5, list: 7, lv: 9, cost: 17, intake: 14, location: 12 },
-  { tab: 'One Piece Master', mp: 5, ls: 6, list: 7, lv: 8, cost: 14, intake: 16, location: 15 },
+  { tab: 'Pokemon Master',   mp: 6, ls: 5, list: 7, lv: 9, cost: 17, intake: 14, location: 12, status: 11 },
+  { tab: 'One Piece Master', mp: 5, ls: 6, list: 7, lv: 8, cost: 14, intake: 16, location: 15, status: 11 },
 ]
 
 // Location-column routing for NEW inserts. Mirrors the rule used for the
@@ -130,11 +130,15 @@ export default async function handler(req, res) {
       for (const gr of gridRows) {
         const cert = String(gr.cells[0] || '').trim()
         if (!/^\d+$/.test(cert)) { skippedJunk++; continue }
-        // Crossed-out = strikethrough on the cert cell or the item-name
-        // cell (boss sometimes strikes only part of the row).
+        // Sold signals (boss convention, confirmed 2026-06-08) — ANY of:
+        //   1. strikethrough on the cert cell or item-name cell
+        //   2. Location column says "sold" (any casing) or "traded out"
+        //   3. Status column (L) says "sold"
+        // Such rows are already sold: never import, never price-refresh.
         if (gr.struck[0] || gr.struck[2]) { crossed++; continue }
         const locText = String(gr.cells[cfg.location] || '').trim()
-        if (locText.toLowerCase() === 'sold') { soldText++; continue }
+        const statusText = String(gr.cells[cfg.status] || '').trim()
+        if (/^sold$/i.test(locText) || /traded/i.test(locText) || /sold/i.test(statusText)) { soldText++; continue }
         let itemName = String(gr.cells[2] || '').trim()
         if (!itemName) itemName = `(unnamed slab — cert ${cert})`
         // First tab wins on duplicate certs (Pokemon Master processed
