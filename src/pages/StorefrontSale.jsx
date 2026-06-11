@@ -43,7 +43,7 @@ const KIND_META = {
   sealed:        { icon: Package, color: 'text-amber-300',   label: 'Sealed'    },
   slab:          { icon: Diamond, color: 'text-emerald-300', label: 'Slab'      },
   single:        { icon: Layers,  color: 'text-blue-300',    label: 'Single'    },
-  // Buy-only manual lines: cashier types description because the item isn't
+  // Manual lines (no inventory writes). Buy: cashier types description because the item isn't
   // in our cards inventory yet (cert / TCG ID not captured). These rows are
   // recorded in storefront_sales only; no slabs / singles row is created.
   slab_manual:   { icon: Diamond, color: 'text-emerald-300', label: 'Slab (manual)' },
@@ -372,6 +372,27 @@ export default function StorefrontSale() {
     e?.preventDefault?.()
     const code = scanValue.trim()
     if (!code) return
+    // "bulk" SKU (boss directive 2026-06-11): searching "bulk" adds a
+    // record-only Bulk Singles line — many commons bought/sold as one
+    // stack, one price, never tracked per-card in the singles table.
+    // Buy mode routes through the existing Bulk Buy modal (count matters
+    // for the Cards Scan intake); sale/trade just drops the line in the
+    // cart, qty + price editable there like any other line.
+    if (/^bulk$/i.test(code)) {
+      setScanValue('')
+      if (transactionType === 'buy') {
+        openManualLine('bulk_single')
+      } else {
+        const key = `single_manual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+        setCart(prev => [
+          ...prev,
+          { kind: 'single_manual', key, description: 'Bulk singles', quantity: 1, our_price: null, bulk: true },
+        ])
+        addToast('Bulk singles added — set qty + price in the cart', 'success')
+        setTimeout(() => inputRef.current?.focus(), 0)
+      }
+      return
+    }
     setScanning(true)
     setUnknownCode(null)
     try {

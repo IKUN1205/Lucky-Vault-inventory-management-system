@@ -2995,6 +2995,49 @@ const _buyManualLine = async ({
   return { sale, note: 'Recorded only — cards inventory NOT updated (intake separately via Cards Scan).' }
 }
 
+// SALE/TRADE counterpart of _buyManualLine — the "bulk" SKU (boss
+// directive 2026-06-11): many singles sold as one stack with one price.
+// Records the money in; the singles inventory table is NOT touched —
+// bulk commons were never tracked per-card there, and scanning a 50-card
+// stack at the counter is unrealistic.
+const _sellManualLine = async ({
+  subKind,        // 'slab' | 'single'
+  description,
+  quantity,
+  unitPrice,
+  paymentMethodId,
+  cashierId,
+  transactionId,
+  locationIds,    // { frontStore }
+  saleDate,
+  txMeta = {},
+}) => {
+  const qty = Number(quantity) || 1
+  const lineTotal = (Number(unitPrice) || 0) * qty
+  const desc = (description || '').trim() || '(no description)'
+
+  const sale = await createStorefrontSale({
+    date: saleDate,
+    sale_type: 'Itemized',
+    product_id: null,
+    location_id: locationIds.frontStore || null,
+    quantity: qty,
+    sale_price: lineTotal,
+    cost_basis: null,    // untracked bulk — no per-card cost basis
+    profit: null,
+    payment_method_id: paymentMethodId || null,
+    cashier_id: cashierId || null,
+    transaction_id: transactionId,
+    transaction_type: txMeta.transactionType || 'sale',
+    trade_in_value_usd: txMeta.tradeInValue ?? null,
+    net_cash_usd: txMeta.netCash ?? null,
+    trade_in_notes: txMeta.tradeInNotes || null,
+    notes: `SALE (manual): ${subKind} — ${desc}`,
+  })
+
+  return { sale, note: 'Recorded only — cards inventory NOT updated.' }
+}
+
 // Public: submit one storefront cart as a single transaction. Returns
 // { transaction_id, ok: [...], failed: [...] }. Caller (the page) uses the
 // failed[] to keep those lines visible for retry.
@@ -3194,14 +3237,11 @@ export const submitStorefrontTransaction = async ({
         })
         ok.push({ line, result })
       } else if (line.kind === 'slab_manual' || line.kind === 'single_manual') {
-        // BUY-only path: customer is selling us a slab/single. We record
-        // the money out but DO NOT auto-create a row in slabs/singles —
-        // the store staff intakes those separately via Cards Scan once
-        // they've gathered cert#/TCG ID/condition/etc.
-        if (!isBuy) {
-          throw new Error(`${line.kind} can only be used in Buy transactions`)
-        }
-        const result = await _buyManualLine({
+        // Manual lines: cashier-typed description, NO inventory writes.
+        // Buy → money out (customer selling us cards; staff intakes them
+        // separately via Cards Scan). Sale/trade → money in (the "bulk"
+        // SKU — many commons sold as one stack; never tracked per-card).
+        const manualArgs = {
           subKind: line.kind === 'slab_manual' ? 'slab' : 'single',
           description: line.description || '',
           quantity: Number(line.quantity) || 1,
@@ -3210,7 +3250,10 @@ export const submitStorefrontTransaction = async ({
           locationIds: { frontStore: frontStoreId },
           saleDate,
           txMeta,
-        })
+        }
+        const result = isBuy
+          ? await _buyManualLine(manualArgs)
+          : await _sellManualLine(manualArgs)
         ok.push({ line, result })
       } else {
         throw new Error(`Unknown line kind: ${line.kind}`)
