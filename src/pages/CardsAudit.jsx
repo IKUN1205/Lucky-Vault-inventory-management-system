@@ -123,9 +123,10 @@ export default function CardsAudit() {
     return () => { cancelled = true }
   }, [])
 
-  // Location filter only applies to singles right now (slabs don't audit
-  // by location because the slab sheet doesn't carry that column).
-  const effectiveLocation = kind === 'single' && locationName ? locationName : ''
+  // Location filter works for both kinds. Slab sheet Location cells are
+  // bin codes / "lucky" / "slabbie" / "show" — the API routes them to the
+  // app room they imply before comparing (same rule as the hourly sync).
+  const effectiveLocation = locationName || ''
   const qs = () => {
     const p = new URLSearchParams({ kind })
     if (effectiveLocation) p.set('location', effectiveLocation)
@@ -900,7 +901,7 @@ export default function CardsAudit() {
             </ul>
           </div>
 
-          <p className="text-cyan-400 text-xs mt-3">💡 Singles read from <span className="font-mono text-vault-gold">Master Singles</span> only (New Singles is a staging area). Pick a location below to audit qty + location together for that room.</p>
+          <p className="text-cyan-400 text-xs mt-3">💡 Singles read from <span className="font-mono text-vault-gold">Master Singles</span> only (New Singles is a staging area). Pick a location below to scope the audit to one room — singles compare qty + location, slabs compare location (sheet bin codes count as Slab Room; "lucky"/"slabbie"/"show" map to their rooms).</p>
         </div>
       </Instructions>
 
@@ -923,26 +924,24 @@ export default function CardsAudit() {
           </button>
         </div>
 
-        {kind === 'single' && (
-          <div className="flex items-center gap-2">
-            <MapPin size={14} className="text-gray-500" />
-            <select
-              value={locationName}
-              onChange={(e) => { setLocationName(e.target.value); setScanResult(null); setFullResult(null); }}
-              className="text-sm py-1.5 px-2 bg-vault-darker/40 border border-vault-border rounded-md text-white"
-            >
-              <option value="">All locations</option>
-              {locations.map(l => (
-                <option key={l.id} value={l.name}>{l.name}</option>
-              ))}
-            </select>
-            {locationName && (
-              <span className="text-[10px] text-gray-500">
-                comparing qty + location at this room
-              </span>
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          <MapPin size={14} className="text-gray-500" />
+          <select
+            value={locationName}
+            onChange={(e) => { setLocationName(e.target.value); setScanResult(null); setFullResult(null); }}
+            className="text-sm py-1.5 px-2 bg-vault-darker/40 border border-vault-border rounded-md text-white"
+          >
+            <option value="">All locations</option>
+            {locations.map(l => (
+              <option key={l.id} value={l.name}>{l.name}</option>
+            ))}
+          </select>
+          {locationName && (
+            <span className="text-[10px] text-gray-500">
+              {kind === 'single' ? 'comparing qty + location at this room' : 'comparing location at this room'}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Mode tabs — pick which workflow you're in so the page stays focused.

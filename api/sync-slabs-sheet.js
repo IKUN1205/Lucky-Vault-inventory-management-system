@@ -68,11 +68,13 @@ const ROOM_NAMES = {
   slabroom: 'Slab Room',
   lucky:    'Stream Room - eBay LuckyVaultUS',
   slabbie:  'Stream Room - eBay SlabbiePatty',
+  shows:    'Shows',
 }
 const routeLocation = (locText) => {
   const t = String(locText || '').toLowerCase()
   if (/lucky/.test(t)) return 'lucky'
   if (/slabbie|slabby|patty/.test(t)) return 'slabbie'
+  if (/show/.test(t)) return 'shows'
   return 'slabroom'
 }
 

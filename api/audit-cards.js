@@ -43,7 +43,13 @@ const SHEET_CONFIG = {
   },
   slab: {
     spreadsheetId: '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI',
-    tabs: ['Pokemon Master', 'One Piece Master'],
+    // The two Master tabs have DIFFERENT layouts (verified 2026-06-08):
+    // Location is col M (12) on Pokemon Master, col P (15) on One Piece
+    // Master — hence per-tab objects instead of plain names here.
+    tabs: [
+      { name: 'Pokemon Master',   locationColumn: 12 },
+      { name: 'One Piece Master', locationColumn: 15 },
+    ],
     idColumn: 0,         // A = Cert
     nameColumn: 2,       // C = Item Name (for name-integrity check)
     statusColumn: 11,    // L = Status
@@ -96,6 +102,24 @@ function locationsMatch(a, b) {
   return na.includes(nb) || nb.includes(na)
 }
 
+// Slab sheet Location cells aren't app location names — they're bin codes
+// ("H-01", "2V-03"), "lucky"/"slabbie", or "show". Route them to the app
+// room they imply, mirroring sync-slabs-sheet.js routeLocation (boss rule
+// 2026-06-08: lucky → LuckyVaultUS room, slabbie/patty → SlabbiePatty
+// room, bin numbers → Slab Room). Blank = nothing recorded → null, so the
+// comparator skips the location check instead of assuming Slab Room.
+function routeSlabSheetLocation(locText) {
+  const t = String(locText || '').trim()
+  if (!t) return null
+  // "sold" / "traded out" are sold markers, not places — handled by the
+  // sold checks in compareOne, never routed to a room.
+  if (/sold|traded/i.test(t)) return null
+  if (/lucky/i.test(t)) return 'Stream Room - eBay LuckyVaultUS'
+  if (/slabbie|slabby|patty/i.test(t)) return 'Stream Room - eBay SlabbiePatty'
+  if (/show/i.test(t)) return 'Shows'
+  return 'Slab Room'
+}
+
 export const config = { maxDuration: 60 }
 
 // Parse dollar strings like "$0.09" or " $1,205.00 " → number or null.
@@ -114,13 +138,20 @@ function parseDollar(v) {
 async function loadSheetRows(cfg) {
   const byId = new Map()
   const tabSummary = []
-  for (const tab of cfg.tabs) {
+  for (const tabEntry of cfg.tabs) {
+    // A tab is either a plain name (all columns from cfg) or
+    // { name, locationColumn } when a column position differs per tab
+    // (the two slab Master tabs have different layouts).
+    const tab = typeof tabEntry === 'string' ? tabEntry : tabEntry.name
+    const locationColumn = typeof tabEntry === 'string'
+      ? (cfg.locationColumn ?? null)
+      : (tabEntry.locationColumn ?? cfg.locationColumn ?? null)
     const widest = Math.max(
       cfg.idColumn,
       cfg.statusColumn,
       cfg.qtyColumn ?? 0,
       cfg.priceColumn ?? 0,
-      cfg.locationColumn ?? 0,
+      locationColumn ?? 0,
       cfg.nameColumn ?? 0,
     )
     const range = `${tab}!A1:${colLetter(widest)}10000`
@@ -150,8 +181,8 @@ async function loadSheetRows(cfg) {
         qty: cfg.qtyColumn != null ? Number(rows[r][cfg.qtyColumn]) || 0 : null,
         status: String(rows[r][cfg.statusColumn] || '').trim().toLowerCase() || null,
         price: cfg.priceColumn != null ? parseDollar(rows[r][cfg.priceColumn]) : null,
-        location: cfg.locationColumn != null
-          ? String(rows[r][cfg.locationColumn] || '').trim() || null
+        location: locationColumn != null
+          ? String(rows[r][locationColumn] || '').trim() || null
           : null,
         name: cfg.nameColumn != null
           ? String(rows[r][cfg.nameColumn] || '').trim() || null
@@ -368,21 +399,62 @@ function compareOne(id, sheet, db, kind, locationFilter = null) {
       }
     }
   } else {
-    // Slabs — unique items, no qty.
-    if (db.status === 'sold' && sheet.status !== 'sold') {
+    // Slabs — unique items, no qty. "Sold on the sheet" = Status col says
+    // sold OR Location col says sold / traded out (boss convention
+    // 2026-06-08; strikethrough is the third marker but the values API
+    // can't see formatting).
+    const sheetSold = sheet.status === 'sold'
+      || /sold|traded/i.test(String(sheet.location || ''))
+    if (db.status === 'sold' && !sheetSold) {
       issues.push({
         code: 'sold_but_sheet_shows_available',
         severity: 'critical',
         message: `Slab sold in the app but sheet status is "${sheet.status || 'blank'}". Sheet should say "sold".`,
         suggested_action: 'push_sold_to_sheet',
       })
-    } else if (db.status !== 'sold' && sheet.status === 'sold') {
+    } else if (db.status !== 'sold' && sheetSold) {
       issues.push({
         code: 'sheet_says_sold_but_app_says_available',
         severity: 'critical',
-        message: `Sheet says "sold" but app still has the slab as "${db.status}". The sheet may have been manually marked sold while the app row didn't keep up.`,
+        message: `Sheet says "sold" (status "${sheet.status || 'blank'}", location "${sheet.location || 'blank'}") but app still has the slab as "${db.status}". The sheet may have been manually marked sold while the app row didn't keep up.`,
       })
     }
+    // Location checks. Sheet Location is a bin code / "lucky" /
+    // "slabbie" / "show" — route it to the app room it implies, then
+    // compare like singles do. Skipped when either side considers the
+    // slab sold (the sold criticals above already cover that row — a
+    // stale location on a sold row is not separately actionable) and
+    // when the sheet cell is blank (nothing recorded ≠ Slab Room).
+    if (db.remaining_qty > 0 && !sheetSold) {
+      const sheetRoom = routeSlabSheetLocation(sheet.location)
+      if (locationFilter) {
+        if (db.qty_at_filter === 0) {
+          const elsewhere = db.locations.map(l => l.name).join(', ')
+          issues.push({
+            code: 'not_at_this_location',
+            severity: 'warning',
+            message: `${id} isn't at "${locationFilter.name}" in the app — currently at ${elsewhere || 'no live location'}. (Sheet may be out of date or the slab was moved.)`,
+          })
+        }
+        if (sheetRoom && !locationsMatch(sheetRoom, locationFilter.name)) {
+          issues.push({
+            code: 'location_mismatch',
+            severity: 'warning',
+            message: `Sheet's Location "${sheet.location}" implies ${sheetRoom}, but you're auditing "${locationFilter.name}". (Move the slab or update the sheet.)`,
+          })
+        }
+      } else if (sheetRoom) {
+        const dbLocs = db.locations.map(l => l.name)
+        if (dbLocs.length > 0 && !dbLocs.some(n => locationsMatch(sheetRoom, n))) {
+          issues.push({
+            code: 'location_mismatch',
+            severity: 'warning',
+            message: `Sheet's Location "${sheet.location}" implies ${sheetRoom}, but app holds the slab at ${dbLocs.join(', ')}.`,
+          })
+        }
+      }
+    }
+
     // Name-integrity check (2026-06-09 incident: legacy Mystery Game
     // attached wrong card names to certs and nothing caught it until a
     // sold listing was eyeballed). Skip placeholders — those are tracked
@@ -433,7 +505,12 @@ export async function runFullAudit(supabase, kind, { locationFilter = null } = {
     // this location. (We still surface "not_at_this_location" for ids
     // whose sheet location matches the filter but db doesn't.)
     if (locationFilter) {
-      const sheetMatches = sheetForId?.location && locationsMatch(sheetForId.location, locationFilter.name)
+      // Slab sheet locations are bin codes / "lucky" / "slabbie" — route
+      // them to the app room they imply before matching.
+      const sheetLoc = kind === 'slab'
+        ? routeSlabSheetLocation(sheetForId?.location)
+        : sheetForId?.location
+      const sheetMatches = sheetLoc && locationsMatch(sheetLoc, locationFilter.name)
       const dbMatches = dbForId && (dbForId.qty_at_filter > 0)
       if (!sheetMatches && !dbMatches) continue
     }
@@ -478,10 +555,9 @@ export default async function handler(req, res) {
   }
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } })
 
-  // Resolve location name → location_id (only meaningful for singles —
-  // slabs don't currently audit by location). null when no filter.
+  // Resolve location name → location_id. null when no filter.
   let locationFilter = null
-  if (location && kind === 'single') {
+  if (location) {
     const { data: loc, error: locErr } = await supabase
       .from('locations')
       .select('id, name')
