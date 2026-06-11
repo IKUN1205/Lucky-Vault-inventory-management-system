@@ -360,6 +360,36 @@ export async function applyRowStrikethrough(spreadsheetId, rows) {
   return { struck: rows.length }
 }
 
+/**
+ * Insert `count` blank rows at 0-based `startIndex` (rows at/after that
+ * index shift down). Used by the sold-ledger appender to open space ABOVE
+ * the TOTAL row before writing values. inheritFromBefore keeps the new
+ * rows formatted like the data rows above them, not like TOTAL.
+ */
+export async function insertRows(spreadsheetId, sheetId, startIndex, count) {
+  if (!count || count <= 0) return
+  const token = await getAccessToken()
+  const resp = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requests: [{
+          insertDimension: {
+            range: { sheetId, dimension: 'ROWS', startIndex, endIndex: startIndex + count },
+            inheritFromBefore: true,
+          },
+        }],
+      }),
+    }
+  )
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`insertRows failed (${resp.status}): ${text}`)
+  }
+}
+
 // Column index → A1 letter ("A", "B", …, "Z", "AA", "AB", …). Inputs are
 // zero-based. Lets the caller think in terms of "Status is column 11"
 // instead of having to spell out "L" themselves.

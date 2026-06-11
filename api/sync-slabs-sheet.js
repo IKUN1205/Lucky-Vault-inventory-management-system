@@ -38,7 +38,7 @@
 // Vercel attaches Authorization: Bearer ${CRON_SECRET} when invoking.
 
 import { createClient } from '@supabase/supabase-js'
-import { backsyncSoldStatus, readGridWithFormat } from './_lib/google-sheets.js'
+import { backsyncSoldStatus, readGridWithFormat, readRange, batchUpdateValues, getSheetIds, insertRows } from './_lib/google-sheets.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -141,6 +141,7 @@ export default async function handler(req, res) {
     //    sold; the app must not import or price-refresh them.
     const tabSummary = []
     const byCert = new Map()
+    const soldSource = new Map()   // cert → sold-sheet-shaped row (A..L)
     let skippedJunk = 0
     for (const cfg of TAB_CONFIG) {
       let gridRows
@@ -157,6 +158,16 @@ export default async function handler(req, res) {
       for (const gr of gridRows) {
         const cert = String(gr.cells[0] || '').trim()
         if (!/^\d+$/.test(cert)) { skippedJunk++; continue }
+        // Ledger source: keep a sold-sheet-shaped copy (cols A..L) of every
+        // cert row BEFORE any skip, so the sold-ledger appender below can
+        // copy Pop/CL/Trend etc. faithfully when a cert sells. The two tabs
+        // have different layouts; "sold sheet" mirrors Pokemon Master's.
+        if (!soldSource.has(cert)) {
+          const c = gr.cells
+          soldSource.set(cert, cfg.tab === 'Pokemon Master'
+            ? [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], 'sold'].map(v => v ?? '')
+            : [c[0], c[1], c[2], c[3], c[4], c[6], c[5], c[7], '', c[8], c[9], 'sold'].map(v => v ?? ''))
+        }
         // Sold signals (boss convention, confirmed 2026-06-08) — ANY of:
         //   1. strikethrough on the cert cell or item-name cell
         //   2. Location column says "sold" (any casing) or "traded out"
@@ -393,14 +404,17 @@ export default async function handler(req, res) {
     // pushes Status='sold' to the matching cert in the sheet if it's
     // not already there.
     let backsync = { skipped: 'env not set' }
+    let soldRows = []
     try {
-      const { data: soldRows } = await supabase
+      const soldQuery = await supabase
         .from('slabs')
-        .select('cert_number')
+        .select('cert_number, item_name, grading_company, market_price_usd, lv_price_usd, list_price_usd, last_sold_usd, sale_channel, sale_date, sale_price_usd')
         .eq('status', 'sold')
         .eq('deleted', false)
         .not('cert_number', 'is', null)
-      const soldIds = new Set((soldRows || []).map(r => String(r.cert_number).trim()).filter(Boolean))
+        .limit(5000)
+      soldRows = soldQuery.data || []
+      const soldIds = new Set(soldRows.map(r => String(r.cert_number).trim()).filter(Boolean))
       backsync = await backsyncSoldStatus({
         spreadsheetId: SHEET_ID,
         // Back-sync ONLY into the two canonical Master tabs per boss
@@ -419,6 +433,81 @@ export default async function handler(req, res) {
       backsync = { error: e.message }
     }
 
+    // Sold ledger — keep the "sold sheet" tab current (boss directive
+    // 2026-06-11): every app-sold cert missing from that tab is appended
+    // at the bottom of the data, ABOVE the TOTAL row. Dedupe by cert, so
+    // re-runs are no-ops. Row values copy the cert's Master-tab row when
+    // it exists (Pop/CL/Trend preserved); app-only solds build from app
+    // fields. Sale channel/date/price ride along in the Note column.
+    const SOLD_LEDGER_TAB = 'sold sheet'
+    const LEDGER_APPEND_CAP = 80   // backfill was one-time; a burst above this = something's wrong
+    let soldLedger = { appended: 0 }
+    try {
+      const ledgerCol = await readRange(SHEET_ID, `${SOLD_LEDGER_TAB}!A1:A10000`)
+      const inLedger = new Set()
+      let totalRowIdx = -1   // 0-based row index of the TOTAL row
+      for (let r = 0; r < (ledgerCol || []).length; r++) {
+        const v = String(ledgerCol[r]?.[0] || '').trim()
+        if (/^total$/i.test(v)) { totalRowIdx = r; break }
+        if (/^\d+$/.test(v)) inLedger.add(v)
+      }
+      const missing = soldRows
+        .map(r => ({ ...r, cert: String(r.cert_number).trim() }))
+        .filter(r => r.cert && !inLedger.has(r.cert))
+        // stable order: oldest sale first so the ledger reads chronologically
+        .sort((a, b) => String(a.sale_date || '').localeCompare(String(b.sale_date || '')))
+      // de-dupe within this batch (duplicate cert rows in the app)
+      const seenBatch = new Set()
+      const newRows = []
+      for (const s of missing) {
+        if (seenBatch.has(s.cert)) continue
+        seenBatch.add(s.cert)
+        let row = soldSource.get(s.cert)
+        row = row ? [...row] : [
+          s.cert, s.grading_company || '', s.item_name || '', '', '',
+          s.last_sold_usd ?? '', s.market_price_usd ?? '', s.list_price_usd ?? '',
+          '', s.lv_price_usd ?? '', '', 'sold',
+        ]
+        const sale = [s.sale_channel, s.sale_date, s.sale_price_usd != null ? `$${s.sale_price_usd}` : null]
+          .filter(Boolean).join(' ')
+        if (sale) row[10] = row[10] ? `${row[10]} | sold: ${sale}` : `sold: ${sale}`
+        newRows.push(row)
+      }
+      if (newRows.length > LEDGER_APPEND_CAP) {
+        soldLedger = { appended: 0, skipped_cap: newRows.length }
+        await postLark(`⚠️ Slabs sync: ${newRows.length} sold slabs would be appended to "${SOLD_LEDGER_TAB}" in one run (cap ${LEDGER_APPEND_CAP}) — skipped as a safety stop, check the tab.`)
+      } else if (newRows.length > 0) {
+        if (totalRowIdx >= 0) {
+          // open space above TOTAL, then write into it
+          const sheetIds = await getSheetIds(SHEET_ID)
+          const ledgerSheetId = sheetIds.get(SOLD_LEDGER_TAB)
+          if (ledgerSheetId == null) throw new Error(`tab "${SOLD_LEDGER_TAB}" not found`)
+          await insertRows(SHEET_ID, ledgerSheetId, totalRowIdx, newRows.length)
+          const start = totalRowIdx + 1   // 1-based first inserted row
+          const newTotalRow = totalRowIdx + newRows.length + 1   // 1-based
+          const dataEnd = newTotalRow - 1
+          await batchUpdateValues(SHEET_ID, [
+            { range: `${SOLD_LEDGER_TAB}!A${start}:L${start + newRows.length - 1}`, values: newRows },
+            // TOTAL formulas don't auto-expand when rows are inserted at the
+            // range edge — rewrite them to span the new data block.
+            { range: `${SOLD_LEDGER_TAB}!C${newTotalRow}`, values: [[`=COUNTA(C2:C${dataEnd})`]] },
+            { range: `${SOLD_LEDGER_TAB}!G${newTotalRow}`, values: [[`=SUM(G2:G${dataEnd})`]] },
+          ])
+        } else {
+          // no TOTAL row (deleted?) — plain append after the last content row
+          const start = (ledgerCol || []).length + 1
+          await batchUpdateValues(SHEET_ID, [
+            { range: `${SOLD_LEDGER_TAB}!A${start}:L${start + newRows.length - 1}`, values: newRows },
+          ])
+        }
+        soldLedger = { appended: newRows.length }
+        console.log(`[sync-slabs-sheet] sold ledger: appended ${newRows.length} row(s)`)
+      }
+    } catch (e) {
+      console.warn('[sync-slabs-sheet] sold ledger threw (non-fatal):', e.message)
+      soldLedger = { error: e.message }
+    }
+
     const durationMs = Date.now() - startedAt
     const summary = {
       ok: true, tabs: tabSummary, unique_live_certs: items.length,
@@ -430,6 +519,7 @@ export default async function handler(req, res) {
       price_errors: updErr, new_inserted: ins, insert_errors: insErr,
       backsync_sold_to_sheet: backsync.written ?? 0,
       backsync_detail: backsync,
+      sold_ledger: soldLedger,
       duration_ms: durationMs,
     }
     console.log('[sync-slabs-sheet] OK', summary)
