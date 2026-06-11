@@ -82,6 +82,10 @@ export default function CardsAudit() {
   // Location scope (singles only). '' = audit across all locations.
   const [locationName, setLocationName] = useState('')
   const [locations, setLocations] = useState([])
+  // Latest hourly auto-audit run per kind (api/audit-cron.js, :45 hourly).
+  // { single: row, slab: row } or null while loading / when the audit_runs
+  // table doesn't exist yet — banner simply hides in that case.
+  const [autoAudit, setAutoAudit] = useState(null)
   const inputRef = useRef(null)
 
   useEffect(() => {
@@ -92,6 +96,31 @@ export default function CardsAudit() {
     fetchLocations('Physical')
       .then(setLocations)
       .catch(err => console.error('[audit] fetch locations failed:', err))
+  }, [])
+
+  // Load the most recent auto-audit run per kind for the banner. One
+  // filtered query per kind (not a single recent-N window) so a kind whose
+  // cron half keeps failing can't get pushed out of the window by the
+  // other kind's hourly rows. Errors (e.g. audit_runs not created yet)
+  // just leave the banner hidden.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const [s, b] = await Promise.all(['single', 'slab'].map(k =>
+        supabase
+          .from('audit_runs')
+          .select('kind, created_at, actionable, new_count, resolved_count')
+          .eq('kind', k)
+          .order('created_at', { ascending: false })
+          .limit(1)
+      ))
+      if (cancelled) return
+      const latest = {}
+      if (!s.error && s.data?.[0]) latest.single = s.data[0]
+      if (!b.error && b.data?.[0]) latest.slab = b.data[0]
+      if (latest.single || latest.slab) setAutoAudit(latest)
+    })()
+    return () => { cancelled = true }
   }, [])
 
   // Location filter only applies to singles right now (slabs don't audit
@@ -818,6 +847,30 @@ export default function CardsAudit() {
         </h1>
         <p className="text-gray-400 mt-1">Compare app database vs Google Sheet — find what's out of sync.</p>
       </div>
+
+      {/* Hourly auto-audit status — only renders once the cron has stored
+          at least one run (needs the audit_runs table). "open" = actionable
+          issues (critical + name mismatch) still present in the last run;
+          info-level noise like missing_in_sheet isn't counted here. */}
+      {autoAudit && (autoAudit.single || autoAudit.slab) && (() => {
+        const openCount = (r) => Array.isArray(r?.actionable) ? r.actionable.length : 0
+        const totalOpen = openCount(autoAudit.single) + openCount(autoAudit.slab)
+        const newest = [autoAudit.single, autoAudit.slab].filter(Boolean)
+          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0]
+        const ranAt = new Date(newest.created_at).toLocaleString('en-US', {
+          timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', hour12: false,
+        })
+        return (
+          <div className={`mb-4 px-3 py-2 rounded-lg border flex flex-wrap items-center gap-x-3 gap-y-1 text-sm ${totalOpen > 0 ? 'bg-amber-500/10 border-amber-500/40 text-amber-200' : 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'}`}>
+            {totalOpen > 0 ? <AlertTriangle size={15} className="flex-shrink-0" /> : <CheckCircle size={15} className="flex-shrink-0" />}
+            <span className="font-medium">Auto-audit (hourly, :45):</span>
+            {autoAudit.single && <span>🎴 Singles {openCount(autoAudit.single)} open{autoAudit.single.new_count > 0 ? ` (+${autoAudit.single.new_count} new)` : ''}</span>}
+            {autoAudit.slab && <span>💎 Slabs {openCount(autoAudit.slab)} open{autoAudit.slab.new_count > 0 ? ` (+${autoAudit.slab.new_count} new)` : ''}</span>}
+            <span className="text-xs opacity-70">last run {ranAt} PT{totalOpen > 0 ? ' · run a Full audit below to see + fix them' : ''}</span>
+          </div>
+        )
+      })()}
 
       <Instructions>
         <div className="space-y-3 text-gray-300">

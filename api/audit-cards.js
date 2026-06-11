@@ -412,6 +412,58 @@ function compareOne(id, sheet, db, kind, locationFilter = null) {
   return issues
 }
 
+// Full audit for one kind — shared by the handler's mode=full branch and
+// the hourly auto-audit cron (api/audit-cron.js), so the cron alerts on
+// EXACTLY the same issue set the Cards Audit page shows. Returns
+// { summary, issues } in the same shape the page already consumes.
+export async function runFullAudit(supabase, kind, { locationFilter = null } = {}) {
+  const cfg = SHEET_CONFIG[kind]
+  if (!cfg) throw new Error(`unknown kind: ${kind}`)
+  const [sheetState, dbMap] = await Promise.all([
+    loadSheetRows(cfg),
+    loadDbRows(supabase, cfg, { locationFilterId: locationFilter?.id || null }),
+  ])
+  const allIds = new Set([...sheetState.byId.keys(), ...dbMap.keys()])
+  const issues = []
+  for (const id of allIds) {
+    const sheetForId = sheetState.byId.get(id) || null
+    const dbForId = dbMap.get(id) || null
+    // When a location filter is set, prune the working set: skip ids
+    // whose sheet location AND db location both clearly don't involve
+    // this location. (We still surface "not_at_this_location" for ids
+    // whose sheet location matches the filter but db doesn't.)
+    if (locationFilter) {
+      const sheetMatches = sheetForId?.location && locationsMatch(sheetForId.location, locationFilter.name)
+      const dbMatches = dbForId && (dbForId.qty_at_filter > 0)
+      if (!sheetMatches && !dbMatches) continue
+    }
+    const issuesForId = compareOne(id, sheetForId, dbForId, kind, locationFilter)
+    for (const issue of issuesForId) {
+      issues.push({
+        id,
+        ...issue,
+        sheet: sheetForId,
+        db: dbForId,
+      })
+    }
+  }
+
+  // Buckets so the UI doesn't have to recompute.
+  const byCode = {}
+  for (const i of issues) byCode[i.code] = (byCode[i.code] || 0) + 1
+
+  return {
+    summary: {
+      total_db_ids: dbMap.size,
+      total_sheet_ids: sheetState.byId.size,
+      total_issues: issues.length,
+      by_code: byCode,
+      tabs: sheetState.tabSummary,
+    },
+    issues,
+  }
+}
+
 export default async function handler(req, res) {
   const q = req.query || req.body || {}
   const { kind, mode, id, location } = q
@@ -508,49 +560,11 @@ export default async function handler(req, res) {
     }
 
     // mode === 'full'
-    const [sheetState, dbMap] = await Promise.all([
-      loadSheetRows(cfg),
-      loadDbRows(supabase, cfg, { locationFilterId: locationFilter?.id || null }),
-    ])
-    const allIds = new Set([...sheetState.byId.keys(), ...dbMap.keys()])
-    const issues = []
-    for (const id of allIds) {
-      const sheetForId = sheetState.byId.get(id) || null
-      const dbForId = dbMap.get(id) || null
-      // When a location filter is set, prune the working set: skip ids
-      // whose sheet location AND db location both clearly don't involve
-      // this location. (We still surface "not_at_this_location" for ids
-      // whose sheet location matches the filter but db doesn't.)
-      if (locationFilter) {
-        const sheetMatches = sheetForId?.location && locationsMatch(sheetForId.location, locationFilter.name)
-        const dbMatches = dbForId && (dbForId.qty_at_filter > 0)
-        if (!sheetMatches && !dbMatches) continue
-      }
-      const issuesForId = compareOne(id, sheetForId, dbForId, kind, locationFilter)
-      for (const issue of issuesForId) {
-        issues.push({
-          id,
-          ...issue,
-          sheet: sheetForId,
-          db: dbForId,
-        })
-      }
-    }
-
-    // Buckets so the UI doesn't have to recompute.
-    const byCode = {}
-    for (const i of issues) byCode[i.code] = (byCode[i.code] || 0) + 1
-
+    const { summary, issues } = await runFullAudit(supabase, kind, { locationFilter })
     return res.status(200).json({
       ok: true, kind, mode: 'full',
       location_filter: locationFilter,
-      summary: {
-        total_db_ids: dbMap.size,
-        total_sheet_ids: sheetState.byId.size,
-        total_issues: issues.length,
-        by_code: byCode,
-        tabs: sheetState.tabSummary,
-      },
+      summary,
       issues,
     })
   } catch (err) {
