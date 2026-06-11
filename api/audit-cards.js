@@ -45,12 +45,29 @@ const SHEET_CONFIG = {
     spreadsheetId: '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI',
     tabs: ['Pokemon Master', 'One Piece Master'],
     idColumn: 0,         // A = Cert
+    nameColumn: 2,       // C = Item Name (for name-integrity check)
     statusColumn: 11,    // L = Status
     // Slabs have no qty (always 1) — set to null below in the scan call
     // so the comparator skips it cleanly.
     table: 'slabs',
     idAttr: 'cert_number',
+    nameAttr: 'item_name',
   },
+}
+
+// Name-integrity comparison (slabs). The 2026-06-09 incident: the legacy
+// Mystery Game create path attached the WRONG card name to a cert (copied
+// from another scan), and nothing caught it until the boss eyeballed a
+// sold listing. Token-overlap below 50% between the app's item_name and
+// the sheet's Item Name now raises a name_mismatch issue so this class
+// of data corruption surfaces in every Full audit instead of by luck.
+const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9\s#]/g, ' ').split(/\s+/).filter(Boolean)
+function nameOverlap(a, b) {
+  const A = new Set(normName(a)), B = new Set(normName(b))
+  if (A.size === 0 || B.size === 0) return 1   // nothing to compare — don't flag
+  let hit = 0
+  for (const t of A) if (B.has(t)) hit++
+  return hit / Math.max(1, Math.min(A.size, B.size))
 }
 
 // Normalize a location string for fuzzy comparison. Boss might write
@@ -104,6 +121,7 @@ async function loadSheetRows(cfg) {
       cfg.qtyColumn ?? 0,
       cfg.priceColumn ?? 0,
       cfg.locationColumn ?? 0,
+      cfg.nameColumn ?? 0,
     )
     const range = `${tab}!A1:${colLetter(widest)}10000`
     let rows
@@ -134,6 +152,9 @@ async function loadSheetRows(cfg) {
         price: cfg.priceColumn != null ? parseDollar(rows[r][cfg.priceColumn]) : null,
         location: cfg.locationColumn != null
           ? String(rows[r][cfg.locationColumn] || '').trim() || null
+          : null,
+        name: cfg.nameColumn != null
+          ? String(rows[r][cfg.nameColumn] || '').trim() || null
           : null,
       })
       count++
@@ -166,6 +187,7 @@ async function loadDbRows(supabase, cfg, { locationFilterId = null } = {}) {
       'location:locations(id,name)',
       cfg.qtyAttr ? cfg.qtyAttr : null,
       cfg.priceAttr ? cfg.priceAttr : null,
+      cfg.nameAttr ? cfg.nameAttr : null,
     ].filter(Boolean).join(',')
     let q = supabase
       .from(cfg.table)
@@ -201,6 +223,7 @@ async function loadDbRows(supabase, cfg, { locationFilterId = null } = {}) {
         if (isFiltered) entry.locations_filtered.set(locName, (entry.locations_filtered.get(locName) || 0) + qty)
       }
       if (cfg.priceAttr && row[cfg.priceAttr] != null) entry.prices.push(Number(row[cfg.priceAttr]))
+      if (cfg.nameAttr && row[cfg.nameAttr] && !entry.app_name) entry.app_name = row[cfg.nameAttr]
       byId.set(idStr, entry)
     }
     if (data.length < pageSize) break
@@ -225,6 +248,7 @@ async function loadDbRows(supabase, cfg, { locationFilterId = null } = {}) {
       sold_qty: e.sold_qty,
       price: e.prices.length ? e.prices.reduce((a, b) => a + b, 0) / e.prices.length : null,
       locations: locationsArr,
+      app_name: e.app_name || null,
       // When a location filter was applied, qty_at_filter = sum at that
       // specific location only (0 if the card isn't there).
       qty_at_filter: locationFilterId
@@ -359,6 +383,19 @@ function compareOne(id, sheet, db, kind, locationFilter = null) {
         message: `Sheet says "sold" but app still has the slab as "${db.status}". The sheet may have been manually marked sold while the app row didn't keep up.`,
       })
     }
+    // Name-integrity check (2026-06-09 incident: legacy Mystery Game
+    // attached wrong card names to certs and nothing caught it until a
+    // sold listing was eyeballed). Skip placeholders — those are tracked
+    // by the sync's name-healing, not a corruption signal.
+    if (db.app_name && sheet.name
+        && !/^\(unnamed slab/.test(db.app_name)
+        && nameOverlap(db.app_name, sheet.name) < 0.5) {
+      issues.push({
+        code: 'name_mismatch',
+        severity: 'warning',
+        message: `App calls cert ${id} "${db.app_name}" but the sheet says "${sheet.name}". One of them is wrong (bad intake?) — verify the physical slab, then correct whichever side is off.`,
+      })
+    }
   }
 
   // Optional price-mismatch hint — low severity since prices change all day.
@@ -414,6 +451,7 @@ export default async function handler(req, res) {
         'location:locations(id,name)',
         cfg.qtyAttr ? cfg.qtyAttr : null,
         cfg.priceAttr ? cfg.priceAttr : null,
+        cfg.nameAttr ? cfg.nameAttr : null,
       ].filter(Boolean).join(',')
       const { data: dbRows, error: dbErr } = await supabase
         .from(cfg.table)
@@ -453,6 +491,7 @@ export default async function handler(req, res) {
           locations: [...locations.entries()]
             .map(([name, qty]) => ({ name, qty }))
             .sort((a, b) => b.qty - a.qty),
+          app_name: cfg.nameAttr ? (dbRows.find(r => r[cfg.nameAttr])?.[cfg.nameAttr] || null) : null,
           qty_at_filter: qtyAtFilter,
         }
       }

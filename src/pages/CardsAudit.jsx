@@ -36,6 +36,7 @@ const CODE_LABELS = {
   missing_in_sheet:                      'Missing in sheet',
   missing_in_db:                         'Missing in app',
   price_mismatch:                        'Price mismatch',
+  name_mismatch:                         'Name mismatch (app vs sheet)',
 }
 
 export default function CardsAudit() {
@@ -1289,6 +1290,7 @@ const TRUST_BUCKET = {
   sheet_says_sold_but_app_says_available:{ bucket: 'review',  label: 'Needs review — likely a manual sheet edit. Check before changing either side.' },
   not_at_this_location:                  { bucket: 'review',  label: 'Needs review — physically locate the card, then update either side.' },
   location_mismatch:                     { bucket: 'review',  label: 'Needs review — verify where the card really is.' },
+  name_mismatch:                         { bucket: 'review',  label: 'Needs review — app and sheet disagree on WHAT this cert is. Check the physical slab, then fix whichever side is wrong.' },
   missing_in_db:                         { bucket: 'review',  label: 'Needs review — has the hourly sheet→app sync run? Or was the row deleted?' },
   // Informational — not actually broken.
   missing_in_sheet:                      { bucket: 'info_only', label: 'Normal — card was added in-app, never went through the sheet.' },
