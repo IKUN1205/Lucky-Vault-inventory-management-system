@@ -219,7 +219,7 @@ export default async function handler(req, res) {
       if (a == null) return true
       return Math.abs(Number(a) - Number(b)) >= 0.005
     }
-    let upd = 0, updErr = 0, updSkip = 0
+    let upd = 0, updErr = 0, updSkip = 0, renamed = 0
     for (const it of items) {
       const ex = existing.get(it.cert_number)
       if (!ex) continue
@@ -229,13 +229,23 @@ export default async function handler(req, res) {
       if (hasNoteColumn && (it.sheet_note || null) !== (ex.sheet_note || null)) {
         patch.sheet_note = it.sheet_note   // null clears a note removed on the sheet
       }
-      // Heal placeholder names: rows created in-app before the sheet had
-      // them (e.g. early Mystery Game scans) carry "(unnamed slab — cert
-      // N)". Once the boss fills the name into the sheet, adopt it. Only
-      // placeholder rows are touched — a deliberate in-app rename of a
-      // properly-named slab is never overwritten.
-      if (/^\(unnamed slab/.test(String(ex.item_name || '')) && !/^\(unnamed slab/.test(it.item_name)) {
+      // Names are SHEET-OWNED (boss directive 2026-06-11 "我们以sheet作为
+      // 基础"): whenever the sheet has a real Item Name and the app
+      // disagrees, the sheet wins — hourly, same as prices. The old rule
+      // (placeholder-healing only) froze a name at first import forever;
+      // that's how the 6/2 mid-edit snapshot left 33 certs wearing other
+      // cards' names for 8 days. A sheet caught mid-edit can still write a
+      // transiently wrong name, but the next hourly pass converges it back
+      // once the row is finished. Consequence: rename slabs ON THE SHEET —
+      // an in-app rename gets reverted within the hour.
+      // it.item_name falls back to "(unnamed slab — cert N)" when the
+      // sheet cell is blank — that never overwrites a real app name.
+      if (!/^\(unnamed slab/.test(it.item_name)
+          && String(ex.item_name || '').trim() !== it.item_name) {
+        console.log('[sync-slabs-sheet] rename', it.cert_number,
+          JSON.stringify(ex.item_name), '→', JSON.stringify(it.item_name))
         patch.item_name = it.item_name
+        renamed++
         if ((!ex.grading_company || ex.grading_company === 'Other') && it.grading_company !== 'Other') {
           patch.grading_company = it.grading_company
         }
@@ -312,6 +322,7 @@ export default async function handler(req, res) {
       ok: true, tabs: tabSummary, unique_live_certs: items.length,
       skipped_junk_rows: skippedJunk,
       existing_in_db: existing.size, prices_changed: upd, prices_unchanged: updSkip,
+      names_refreshed: renamed,
       price_errors: updErr, new_inserted: ins, insert_errors: insErr,
       backsync_sold_to_sheet: backsync.written ?? 0,
       backsync_detail: backsync,
