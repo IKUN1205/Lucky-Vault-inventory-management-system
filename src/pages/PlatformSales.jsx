@@ -42,6 +42,11 @@ const CHANNELS = [
   { id: 'tiktok-packheads',  label: 'TikTok · PackHeadsTCG', platform: 'TikTok',  channel: 'PackHeadsTCG',   streamRoom: 'Stream Room - TikTok Packheads'  },
   { id: 'tiktok-rocketshq',  label: 'TikTok · RocketsHQ',    platform: 'TikTok',  channel: 'RocketsHQ',      streamRoom: 'Stream Room - TikTok RocketsHQ'  },
   { id: 'whatnot',           label: 'Whatnot',               platform: 'Whatnot', channel: 'Whatnot',        streamRoom: 'Stream Room - Whatnot'           },
+  // In-person card shows — stock gets Moved to the "Shows" location first
+  // (Move Inventory), then sold here so show sales are recorded exactly
+  // like stream sales (per-line platform_sales rows, sheet cross-out for
+  // slabs). Lark falls back to the main group (no per-room webhook).
+  { id: 'shows',             label: 'Shows · Card Show',     platform: 'Shows',   channel: 'Shows',          streamRoom: 'Shows'                           },
 ]
 
 const KIND_META = {
