@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { fetchLocations, supabase } from '../lib/supabase'
+import { fetchLocations, supabase, reportSlabLocationToSheet } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import {
@@ -531,6 +531,16 @@ export default function CardsAudit() {
         .update({ location_id: physicalLocationId })
         .in('id', ids)
       if (updErr) throw updErr
+      // Slab locations are sheet-owned — push the move into the sheet's
+      // Location cell or the hourly sync will move it back. Surface a
+      // failed write-back so staff can fix the cell before :30.
+      if (kind === 'slab') {
+        const roomName = locations.find(l => l.id === physicalLocationId)?.name
+        const wb = await reportSlabLocationToSheet(extra.id, roomName)
+        if (wb?.outcome !== 'updated') {
+          addToast(`Sheet write-back for ${extra.id} not applied (${wb?.outcome}) — update its Location cell to "${roomName}" or the hourly sync will move it back`, 'info')
+        }
+      }
       return 'moved'
     }
 
@@ -637,6 +647,30 @@ export default function CardsAudit() {
       } catch (e) {
         console.warn('[bulk-move-missing] failed', m.id, e.message)
         failed++
+      }
+    }
+    // Slab locations are sheet-owned — write all the moves back to the
+    // sheet in ONE bulk call (per-slab calls would burst Sheets quota on
+    // big moves) and surface anything that didn't land, since the hourly
+    // sync will undo those moves unless the cell is fixed by hand.
+    if (kind === 'slab' && removedIds.size > 0) {
+      try {
+        const r = await fetch('/api/sheet-update-location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: [...removedIds].map(cert => ({ cert_number: cert, location_name: targetLocationName })),
+          }),
+        })
+        const d = await r.json()
+        const bad = (d.results || []).filter(x => x.outcome !== 'updated')
+        if (bad.length > 0) {
+          console.warn('[bulk-move-missing] sheet write-back incomplete:', bad)
+          addToast(`Sheet write-back incomplete for ${bad.length} slab${bad.length === 1 ? '' : 's'} (${bad.slice(0, 3).map(b => b.cert_number).join(', ')}${bad.length > 3 ? '…' : ''}) — set their Location cells to "${targetLocationName}" or the hourly sync will move them back`, 'error')
+        }
+      } catch (e) {
+        console.warn('[bulk-move-missing] sheet write-back failed:', e)
+        addToast('Sheet write-back failed — the hourly sync may move these slabs back. Update their Location cells by hand.', 'error')
       }
     }
     // Drop them from the expected map so the review re-renders without

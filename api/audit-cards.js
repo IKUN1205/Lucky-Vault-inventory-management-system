@@ -117,6 +117,12 @@ function routeSlabSheetLocation(locText) {
   if (/lucky/i.test(t)) return 'Stream Room - eBay LuckyVaultUS'
   if (/slabbie|slabby|patty/i.test(t)) return 'Stream Room - eBay SlabbiePatty'
   if (/show/i.test(t)) return 'Shows'
+  if (/rocket/i.test(t)) return 'Stream Room - TikTok RocketsHQ'
+  if (/packhead/i.test(t)) return 'Stream Room - TikTok Packheads'
+  if (/whatnot/i.test(t)) return 'Stream Room - Whatnot'
+  if (/master/i.test(t)) return 'Master Inventory'
+  if (/front/i.test(t)) return 'Front Store'
+  if (/japan/i.test(t)) return 'Japan Warehouse'
   return 'Slab Room'
 }
 

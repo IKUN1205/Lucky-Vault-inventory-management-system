@@ -65,20 +65,45 @@ const TAB_CONFIG = [
 // slabbie/patty → SlabbiePatty stream room, everything else (shelf codes,
 // blank) → Slab Room.
 const ROOM_NAMES = {
-  slabroom: 'Slab Room',
-  lucky:    'Stream Room - eBay LuckyVaultUS',
-  slabbie:  'Stream Room - eBay SlabbiePatty',
-  shows:    'Shows',
+  slabroom:  'Slab Room',
+  lucky:     'Stream Room - eBay LuckyVaultUS',
+  slabbie:   'Stream Room - eBay SlabbiePatty',
+  shows:     'Shows',
+  rockets:   'Stream Room - TikTok RocketsHQ',
+  packheads: 'Stream Room - TikTok Packheads',
+  whatnot:   'Stream Room - Whatnot',
+  master:    'Master Inventory',
+  front:     'Front Store',
+  japan:     'Japan Warehouse',
 }
+// Keep this keyword table in sync with BOTH routeSlabSheetLocation in
+// api/audit-cards.js (the audit's mirror of this rule) and
+// KEYWORD_BY_ROOM in api/sheet-update-location.js (the reverse map the
+// in-app move write-back uses).
 const routeLocation = (locText) => {
   const t = String(locText || '').toLowerCase()
+  // Sold markers are not places — rows carrying them are skipped before
+  // routing matters, but null here is defense-in-depth so sold-ish text
+  // can never drive a relocation (relocation no-ops on a null route; the
+  // insert path falls back to slabroom).
+  if (/sold|traded/.test(t)) return null
   if (/lucky/.test(t)) return 'lucky'
   if (/slabbie|slabby|patty/.test(t)) return 'slabbie'
   if (/show/.test(t)) return 'shows'
-  return 'slabroom'
+  if (/rocket/.test(t)) return 'rockets'
+  if (/packhead/.test(t)) return 'packheads'
+  if (/whatnot/.test(t)) return 'whatnot'
+  if (/master/.test(t)) return 'master'
+  if (/front/.test(t)) return 'front'
+  if (/japan/.test(t)) return 'japan'
+  return 'slabroom'   // bin codes (H-01, 2V-03, …) and anything unknown
 }
 
-export const config = { maxDuration: 60 }
+// 300, not 60: a full pass is two grid reads + up to ~860 row PATCHes
+// (first run after the sheet_bin migration backfills every row) + the
+// sold back-sync. A platform timeout kill mid-loop would leave partial
+// state with no summary. auto-reconcile.js / audit-cron.js precedent.
+export const config = { maxDuration: 300 }
 
 const money = (s) => { if (!s) return null; const m = String(s).replace(/,/g, '').match(/-?[\d.]+/); return m ? Number(m[0]) : null }
 const dateOrNull = (s) => { const t = String(s || '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : null }
@@ -140,7 +165,7 @@ export default async function handler(req, res) {
         if (gr.struck[0] || gr.struck[2]) { crossed++; continue }
         const locText = String(gr.cells[cfg.location] || '').trim()
         const statusText = String(gr.cells[cfg.status] || '').trim()
-        if (/^sold$/i.test(locText) || /traded/i.test(locText) || /sold/i.test(statusText)) { soldText++; continue }
+        if (/sold|traded/i.test(locText) || /sold/i.test(statusText)) { soldText++; continue }
         let itemName = String(gr.cells[2] || '').trim()
         if (!itemName) itemName = `(unnamed slab — cert ${cert})`
         // First tab wins on duplicate certs (Pokemon Master processed
@@ -158,6 +183,9 @@ export default async function handler(req, res) {
           acquisition_cost_usd: money(gr.cells[cfg.cost]),
           date_acquired: dateOrNull(gr.cells[cfg.intake]),
           location_route: routeLocation(locText),
+          // Raw Location cell ("H-01", "lucky", …) — stored as sheet_bin
+          // so staff can see the exact shelf bin in the app.
+          sheet_location_raw: locText || null,
         })
         kept++
       }
@@ -194,14 +222,25 @@ export default async function handler(req, res) {
         console.warn('[sync-slabs-sheet] sheet_note column missing — note sync skipped (run scripts/add_slabs_sheet_note.sql)')
       }
     }
+    // Same probe for sheet_bin (raw Location cell — bin codes). Added by
+    // scripts/add_slabs_sheet_bin.sql; degrades to skip until it's run.
+    let hasBinColumn = true
+    {
+      const { error: probeErr } = await supabase
+        .from('slabs').select('sheet_bin').limit(1)
+      if (probeErr) {
+        hasBinColumn = false
+        console.warn('[sync-slabs-sheet] sheet_bin column missing — bin sync skipped (run scripts/add_slabs_sheet_bin.sql)')
+      }
+    }
 
     // 4. Which certs exist? Pull current MP/LV/note + name too so we only
     //    PATCH deltas (item_name is needed for placeholder-name healing).
     const existing = new Map()
     const certs = items.map(i => i.cert_number)
-    const existCols = hasNoteColumn
-      ? 'id, cert_number, item_name, grading_company, market_price_usd, lv_price_usd, sheet_note'
-      : 'id, cert_number, item_name, grading_company, market_price_usd, lv_price_usd'
+    const existCols = 'id, cert_number, item_name, grading_company, market_price_usd, lv_price_usd, location_id'
+      + (hasNoteColumn ? ', sheet_note' : '')
+      + (hasBinColumn ? ', sheet_bin' : '')
     for (let i = 0; i < certs.length; i += 150) {
       const { data, error } = await supabase
         .from('slabs')
@@ -221,15 +260,68 @@ export default async function handler(req, res) {
       if (a == null) return true
       return Math.abs(Number(a) - Number(b)) >= 0.005
     }
-    let upd = 0, updErr = 0, updSkip = 0, renamed = 0
+    // Relocation guard: pre-count how many rows the sheet wants to move
+    // this run. A burst above the cap is almost certainly NOT physical
+    // reality (mass sheet edit, column shift, routing bug) — in that case
+    // skip ALL relocations this run and page the team instead of silently
+    // re-shelving the store. Prices/names/bins still sync normally.
+    const RELOCATION_CAP = 30
+    const plannedRelocations = []
+    for (const it of items) {
+      const ex = existing.get(it.cert_number)
+      if (!ex || !it.sheet_location_raw || !it.location_route) continue
+      const targetRoomId = roomIdByKey[it.location_route] || null
+      if (targetRoomId && ex.location_id !== targetRoomId) {
+        plannedRelocations.push({ cert: it.cert_number, room: ROOM_NAMES[it.location_route], cell: it.sheet_location_raw })
+      }
+    }
+    const allowRelocations = plannedRelocations.length <= RELOCATION_CAP
+    if (!allowRelocations) {
+      const sample = plannedRelocations.slice(0, 5).map(p => `${p.cert}→${p.room} ("${p.cell}")`).join(', ')
+      console.error(`[sync-slabs-sheet] relocation cap: ${plannedRelocations.length} > ${RELOCATION_CAP} — skipping ALL relocations this run`)
+      await postLark(`⚠️ Slabs sync safety stop: the sheet wants to relocate ${plannedRelocations.length} slabs in one run (cap ${RELOCATION_CAP}) — skipped ALL relocations. Sample: ${sample}. If this is a real mass re-shelving, check the sheet's Location column, then rerun.`)
+    }
+
+    let upd = 0, updErr = 0, updSkip = 0, renamed = 0, relocated = 0
+    const relocationAudits = []   // slabs_audit_log rows, written after the loop
     for (const it of items) {
       const ex = existing.get(it.cert_number)
       if (!ex) continue
       const patch = {}
+      let pendingRelocationAudit = null
       if (priceDiff(ex.market_price_usd, it.market_price_usd)) patch.market_price_usd = it.market_price_usd
       if (priceDiff(ex.lv_price_usd, it.lv_price_usd))         patch.lv_price_usd = it.lv_price_usd
       if (hasNoteColumn && (it.sheet_note || null) !== (ex.sheet_note || null)) {
         patch.sheet_note = it.sheet_note   // null clears a note removed on the sheet
+      }
+      // Location is SHEET-OWNED too (boss directive 2026-06-11): route the
+      // sheet's Location cell to the app room it implies and move the row
+      // when they disagree. Blank cells = nothing recorded → never move.
+      // Deliberate in-app moves are safe because every move writes its
+      // room keyword back into the sheet cell (api/sheet-update-location)
+      // — only genuine drift converges here, toward the sheet.
+      if (allowRelocations && it.sheet_location_raw && it.location_route) {
+        const targetRoomId = roomIdByKey[it.location_route] || null
+        if (targetRoomId && ex.location_id !== targetRoomId) {
+          console.log('[sync-slabs-sheet] relocate', it.cert_number,
+            'from', ex.location_id, '→', ROOM_NAMES[it.location_route],
+            `(sheet: "${it.sheet_location_raw}")`)
+          patch.location_id = targetRoomId
+          relocated++
+          // Audit trail so the previous location stays recoverable —
+          // mirrors what moveSlabToLocation logs for in-app moves.
+          pendingRelocationAudit = {
+            slab_id: ex.id,
+            event_type: 'moved',
+            summary: `Sheet sync relocated cert #${it.cert_number} to ${ROOM_NAMES[it.location_route]} (sheet Location: "${it.sheet_location_raw}")`,
+            payload: { from_location_id: ex.location_id, to_location_id: targetRoomId, source: 'sheet-sync' },
+          }
+        }
+      }
+      // Raw Location cell mirrored into sheet_bin so staff can see the
+      // exact shelf bin in the app. null clears a cell emptied on the sheet.
+      if (hasBinColumn && (it.sheet_location_raw || null) !== (ex.sheet_bin || null)) {
+        patch.sheet_bin = it.sheet_location_raw
       }
       // Names are SHEET-OWNED (boss directive 2026-06-11 "我们以sheet作为
       // 基础"): whenever the sheet has a real Item Name and the app
@@ -257,7 +349,14 @@ export default async function handler(req, res) {
         .update(patch)
         .eq('id', ex.id)
       if (error) { console.error('[sync-slabs-sheet] PATCH fail', it.cert_number, error.message); updErr++ }
-      else upd++
+      else {
+        upd++
+        if (pendingRelocationAudit) relocationAudits.push(pendingRelocationAudit)
+      }
+    }
+    if (relocationAudits.length > 0) {
+      const { error: auditErr } = await supabase.from('slabs_audit_log').insert(relocationAudits)
+      if (auditErr) console.warn('[sync-slabs-sheet] relocation audit-log insert failed (non-fatal):', auditErr.message)
     }
 
     // 6. Insert new certs at the sheet-routed location (Slab Room default).
@@ -278,6 +377,7 @@ export default async function handler(req, res) {
         deleted: false,
       }
       if (hasNoteColumn) row.sheet_note = it.sheet_note
+      if (hasBinColumn) row.sheet_bin = it.sheet_location_raw
       return row
     })
     let ins = 0, insErr = 0
@@ -324,7 +424,9 @@ export default async function handler(req, res) {
       ok: true, tabs: tabSummary, unique_live_certs: items.length,
       skipped_junk_rows: skippedJunk,
       existing_in_db: existing.size, prices_changed: upd, prices_unchanged: updSkip,
-      names_refreshed: renamed,
+      names_refreshed: renamed, locations_refreshed: relocated,
+      relocations_planned: plannedRelocations.length,
+      relocations_capped: !allowRelocations,
       price_errors: updErr, new_inserted: ins, insert_errors: insErr,
       backsync_sold_to_sheet: backsync.written ?? 0,
       backsync_detail: backsync,

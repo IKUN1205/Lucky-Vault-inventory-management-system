@@ -2475,6 +2475,35 @@ export const moveSingleToLocation = async ({
   return { mode: 'split', source_id: singleId, clone: inserted }
 }
 
+// Report an in-app slab move to the slabs sheet so the hourly sheet→app
+// location sync (sheet is the base for slab locations, boss directive
+// 2026-06-11) doesn't undo it an hour later.
+//
+// ⚠️ Consequence of a failed write-back: the next hourly sync moves the
+// slab BACK to wherever the sheet still says, and once that happens the
+// two sides agree again — the lost move leaves no audit trace except
+// this console line and the slabs_audit_log 'sheet-sync' row. Callers
+// that can show a toast should await the returned outcome and tell the
+// user to fix the sheet cell by hand when it isn't 'updated'.
+export const reportSlabLocationToSheet = (certNumber, locationName) => {
+  if (!certNumber || !locationName) return Promise.resolve({ outcome: 'skipped' })
+  return fetch('/api/sheet-update-location', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cert_number: certNumber, location_name: locationName }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d?.outcome === 'updated') console.log('[sheet-location]', certNumber, '→', locationName, ': updated')
+      else console.warn('[sheet-location] write-back NOT applied', certNumber, '→', locationName, ':', d?.outcome, '— fix the sheet Location cell or the hourly sync will undo this move')
+      return d
+    })
+    .catch(e => {
+      console.warn('[sheet-location] write-back failed', certNumber, e)
+      return { outcome: 'network_error' }
+    })
+}
+
 // Move a slab. Always qty=1 so it's just a location_id flip + audit row.
 export const moveSlabToLocation = async ({
   slabId,
@@ -2508,6 +2537,9 @@ export const moveSlabToLocation = async ({
     payload: { from_location_id: source.location_id, to_location_id: toLocationId },
     acted_by_id: actorId,
   })
+  // Push the new room into the sheet's Location cell — without this the
+  // hourly sheet→app location sync would move the slab back.
+  reportSlabLocationToSheet(source.cert_number, updated?.location?.name)
   return updated
 }
 
