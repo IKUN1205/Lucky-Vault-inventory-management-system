@@ -278,7 +278,9 @@ export default async function handler(req, res) {
     // ---- build the Lark message ----
     const lines = []
     lines.push(`📦 Weekly Buy Report — ${window.from} → ${window.to}`)
-    lines.push(`💰 Inflow: ${fmtUsd(totalSpend)} · ${purchases.length} purchase${purchases.length === 1 ? '' : 's'} · ${totalUnits} units`)
+    lines.push('')
+    lines.push('1️⃣ Spend this week')
+    lines.push(`💰 ${fmtUsd(totalSpend)} · ${purchases.length} purchase${purchases.length === 1 ? '' : 's'} · ${totalUnits} units`)
     if (jpShipped.length > 0) {
       const tUsd = jpShipped.reduce((s, t) => s + (Number(t.cost_usd) || 0), 0)
       const tUnits = jpShipped.reduce((s, t) => s + (Number(t.quantity_purchased) || 0), 0)
@@ -290,31 +292,31 @@ export default async function handler(req, res) {
       lines.push(`🇯🇵 Japan-side stocking (not counted until shipped): ${jUnits} units · ${fmtUsd(jUsd)}`)
     }
 
+    if (byProduct.size > 0) {
+      lines.push('')
+      lines.push('2️⃣ What we bought')
+      const sorted = [...byProduct.entries()].sort((x, y) => y[1].usd - x[1].usd)
+      const MAX_BUY_LINES = 10
+      for (const [label, p] of sorted.slice(0, MAX_BUY_LINES)) {
+        lines.push(`  • ${label}: ${p.units} units · ${fmtUsd(p.usd)}`)
+      }
+      if (sorted.length > MAX_BUY_LINES) {
+        const restUsd = sorted.slice(MAX_BUY_LINES).reduce((s, [, p]) => s + p.usd, 0)
+        lines.push(`  …and ${sorted.length - MAX_BUY_LINES} more products (${fmtUsd(restUsd)})`)
+      }
+    }
+
     if (byAcquirer.size > 0) {
       lines.push('')
-      lines.push('By buyer:')
+      lines.push('3️⃣ Who bought')
       for (const [who, a] of [...byAcquirer.entries()].sort((x, y) => y[1].usd - x[1].usd)) {
         lines.push(`  • ${who}: ${fmtUsd(a.usd)} (${a.orders} order${a.orders === 1 ? '' : 's'} / ${a.units} units)`)
       }
     }
 
-    if (byProduct.size > 0) {
-      lines.push('')
-      lines.push('Bought vs used this week (sealed, stream rooms):')
-      const sorted = [...byProduct.entries()].sort((x, y) => y[1].usd - x[1].usd)
-      const MAX_LINES = 14
-      for (const [label, p] of sorted.slice(0, MAX_LINES)) {
-        const pct = p.units > 0 ? Math.round((p.usedTotal / p.units) * 100) : 0
-        const rooms = [...p.usedBy.entries()].sort((a, b) => b[1] - a[1])
-          .map(([ch, n]) => `${ch} ${n}`).join(', ')
-        lines.push(`  • ${label}: bought ${p.units} (${fmtUsd(p.usd)}) · used ${p.usedTotal}${rooms ? ` (${rooms})` : ''} → ${pct}%`)
-      }
-      if (sorted.length > MAX_LINES) lines.push(`  …and ${sorted.length - MAX_LINES} more products`)
-    }
-
     if (roomProducts.size > 0) {
       lines.push('')
-      lines.push('Room usage this week (sealed, at cost — incl. items bought earlier):')
+      lines.push('4️⃣ Each room — burned vs bought this week (sealed, at cost)')
       // short product label for the room lines (full brand|name|type is too long)
       const shortLabel = (p) => {
         let s = p?.name || '(unknown)'
@@ -329,10 +331,14 @@ export default async function handler(req, res) {
         return { room, usd, items }
       }).sort((a, b) => b.usd - a.usd)
       for (const r of roomRows) {
+        lines.push(`  • ${r.room} burned ${fmtUsd(r.usd)}:`)
         const top = r.items.sort((a, b) => b.usd - a.usd).slice(0, 3)
-          .map(p => `${shortLabel(p.product)} ×${p.units} (${fmtUsd(p.usd)})`).join(', ')
-        const more = r.items.length > 3 ? ` +${r.items.length - 3} more` : ''
-        lines.push(`  • ${r.room}: ${fmtUsd(r.usd)} — ${top}${more}`)
+        for (const p of top) {
+          const b = byProduct.get(productLabel(p.product))
+          const boughtStr = b ? `bought ${b.units} (${fmtUsd(b.usd)})` : 'bought 0 this week'
+          lines.push(`      ${shortLabel(p.product)} ×${p.units} (${fmtUsd(p.usd)}) — ${boughtStr}`)
+        }
+        if (r.items.length > 3) lines.push(`      +${r.items.length - 3} more products`)
       }
     }
 
