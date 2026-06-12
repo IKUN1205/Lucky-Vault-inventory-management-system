@@ -27,6 +27,10 @@
       "schedule": "45 * * * *"
     },
     {
+      "path": "/api/weekly-buy-report",
+      "schedule": "0 16 * * 1"
+    },
+    {
       "path": "/api/sync-digest-eod",
       "schedule": "0 0 * * *"
     }
