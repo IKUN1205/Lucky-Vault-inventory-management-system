@@ -141,7 +141,7 @@ export default async function handler(req, res) {
         .lte('date_purchased', window.to),
       supabase
         .from('platform_sales')
-        .select('channel, quantity, product:products(name, brand, language, type)')
+        .select('channel, quantity, product_id, product:products(name, brand, language, type)')
         .eq('deleted', false)
         .eq('kind', 'sealed')
         .gte('date', window.from)
@@ -165,7 +165,7 @@ export default async function handler(req, res) {
     for (let i = 0; i < countIds.length; i += 100) {
       const { data, error } = await supabase
         .from('stream_count_items')
-        .select('stream_count_id, expected_qty, actual_qty, product:products(name, brand, language, type)')
+        .select('stream_count_id, expected_qty, actual_qty, product_id, product:products(name, brand, language, type)')
         .in('stream_count_id', countIds.slice(i, i + 100))
       if (error) throw error
       countItems.push(...(data || []))
@@ -197,9 +197,11 @@ export default async function handler(req, res) {
     }
 
     // ---- aggregate stream-room usage (both sources, same shape) ----
-    const roomTotals = new Map()   // channel → units
-    const usageByProduct = new Map()  // label → { total, by: Map(channel → units) }
-    const addUsage = (room, product, units) => {
+    const roomTotals = new Map()   // room → units
+    const usageByProduct = new Map()  // label → { total, by: Map(room → units) }
+    const roomProducts = new Map()    // room → Map(pid → { product, units })
+    const usedPids = new Set()
+    const addUsage = (room, pid, product, units) => {
       if (!units || units <= 0) return
       roomTotals.set(room, (roomTotals.get(room) || 0) + units)
       const label = productLabel(product)
@@ -207,13 +209,64 @@ export default async function handler(req, res) {
       e.total += units
       e.by.set(room, (e.by.get(room) || 0) + units)
       usageByProduct.set(label, e)
+      if (pid) {
+        usedPids.add(pid)
+        const rp = roomProducts.get(room) || new Map()
+        const p = rp.get(pid) || { product, units: 0 }
+        p.units += units
+        rp.set(pid, p)
+        roomProducts.set(room, rp)
+      }
     }
     for (const u of usage || []) {
-      addUsage(CHANNEL_SHORT[u.channel] || u.channel || '?', u.product, Number(u.quantity) || 0)
+      addUsage(CHANNEL_SHORT[u.channel] || u.channel || '?', u.product_id, u.product, Number(u.quantity) || 0)
     }
     for (const it of countItems) {
       const sold = (Number(it.expected_qty) || 0) - (Number(it.actual_qty) || 0)
-      addUsage(roomByCountId.get(it.stream_count_id) || '?', it.product, sold)
+      addUsage(roomByCountId.get(it.stream_count_id) || '?', it.product_id, it.product, sold)
+    }
+
+    // ---- unit cost per used product, for $-valuing room usage ----
+    // Prefer the maintained inventory avg_cost_basis (mean of positive
+    // values across locations); fall back to acquisitions-derived
+    // average (lifetime cost_usd / units) for products with no inventory
+    // cost yet. Products with neither stay $0-valued.
+    const unitCost = new Map()   // pid → usd per unit
+    {
+      const pids = [...usedPids]
+      for (let i = 0; i < pids.length; i += 100) {
+        const { data, error } = await supabase
+          .from('inventory')
+          .select('product_id, avg_cost_basis')
+          .in('product_id', pids.slice(i, i + 100))
+          .eq('deleted', false)
+          .gt('avg_cost_basis', 0)
+        if (error) throw error
+        const agg = new Map()
+        for (const r of data || []) {
+          const a = agg.get(r.product_id) || { sum: 0, n: 0 }
+          a.sum += Number(r.avg_cost_basis); a.n += 1
+          agg.set(r.product_id, a)
+        }
+        for (const [pid, a] of agg) unitCost.set(pid, a.sum / a.n)
+      }
+      const missing = pids.filter(p => !unitCost.has(p))
+      for (let i = 0; i < missing.length; i += 100) {
+        const { data, error } = await supabase
+          .from('acquisitions')
+          .select('product_id, cost_usd, quantity_purchased')
+          .in('product_id', missing.slice(i, i + 100))
+          .eq('deleted', false)
+          .gt('cost_usd', 0)
+        if (error) throw error
+        const agg = new Map()
+        for (const r of data || []) {
+          const a = agg.get(r.product_id) || { usd: 0, units: 0 }
+          a.usd += Number(r.cost_usd); a.units += Number(r.quantity_purchased) || 0
+          agg.set(r.product_id, a)
+        }
+        for (const [pid, a] of agg) if (a.units > 0) unitCost.set(pid, a.usd / a.units)
+      }
     }
     // attach usage to bought products
     let usedUnitsOfBought = 0
@@ -259,11 +312,27 @@ export default async function handler(req, res) {
       if (sorted.length > MAX_LINES) lines.push(`  …and ${sorted.length - MAX_LINES} more products`)
     }
 
-    if (roomTotals.size > 0) {
+    if (roomProducts.size > 0) {
       lines.push('')
-      lines.push('Room usage this week (all sealed, incl. items bought earlier):')
-      for (const [ch, n] of [...roomTotals.entries()].sort((a, b) => b[1] - a[1])) {
-        lines.push(`  • ${ch}: ${n} units`)
+      lines.push('Room usage this week (sealed, at cost — incl. items bought earlier):')
+      // short product label for the room lines (full brand|name|type is too long)
+      const shortLabel = (p) => {
+        let s = p?.name || '(unknown)'
+        if (p?.language && p.language !== 'EN') s += ` [${p.language}]`
+        return s
+      }
+      const roomRows = [...roomProducts.entries()].map(([room, rp]) => {
+        const items = [...rp.entries()].map(([pid, p]) => ({
+          product: p.product, units: p.units, usd: p.units * (unitCost.get(pid) || 0),
+        }))
+        const usd = items.reduce((s, p) => s + p.usd, 0)
+        return { room, usd, items }
+      }).sort((a, b) => b.usd - a.usd)
+      for (const r of roomRows) {
+        const top = r.items.sort((a, b) => b.usd - a.usd).slice(0, 3)
+          .map(p => `${shortLabel(p.product)} ×${p.units} (${fmtUsd(p.usd)})`).join(', ')
+        const more = r.items.length > 3 ? ` +${r.items.length - 3} more` : ''
+        lines.push(`  • ${r.room}: ${fmtUsd(r.usd)} — ${top}${more}`)
       }
     }
 
