@@ -7,14 +7,12 @@
 // week. Manual runs: ?week=YYYY-MM-DD (the week containing that date) or
 // ?current=1 (the in-progress week).
 //
-// Money facts (boss directive 2026-06-11 "日本只算寄到美国的"):
-//   - Japan-side stocking (origin='jp_vendor', bought into the Japan
-//     warehouse) is NOT counted — that inventory hasn't entered the US
-//     operation yet. It shows as one FYI line.
-//   - origin='jp_to_us_shipment' (goods shipped Japan → US) IS counted,
-//     in the week it ships — that's when the goods become available to
-//     the rooms this report compares against.
-//   - everything else (US/direct purchases) counts normally.
+// Money facts (boss directive 2026-06-11, revised same day "我想要日本和
+// 美国两个分别买了多少钱"):
+//   - Spend = real purchases on BOTH sides, split 🇺🇸 US vs 🇯🇵 Japan
+//     (origin='jp_vendor'). Each side gets its own what-we-bought list.
+//   - origin='jp_to_us_shipment' is logistics, NOT spend — the goods were
+//     already counted when bought in Japan. Shown as one 🚢 FYI line.
 //   - usage = SEALED only, from two sources merged:
 //       1. stream_counts × stream_count_items (expected − actual = sold
 //          that session) — this is where stream-room sealed consumption
@@ -171,21 +169,23 @@ export default async function handler(req, res) {
       countItems.push(...(data || []))
     }
 
-    // Counted inflow = US/direct purchases + Japan goods SHIPPED to the US
-    // this week. Japan-side stocking (jp_vendor) is excluded — not in the
-    // US operation yet.
-    const purchases = (buys || []).filter(b => b.origin !== 'jp_vendor')
-    const jpShipped = purchases.filter(b => b.origin === 'jp_to_us_shipment')
-    const jpLocal = (buys || []).filter(b => b.origin === 'jp_vendor')
+    // Real purchases (both sides); shipments are logistics, not spend.
+    const purchases = (buys || []).filter(b => b.origin !== 'jp_to_us_shipment')
+    const jpShipped = (buys || []).filter(b => b.origin === 'jp_to_us_shipment')
+    const sideOf = (b) => (b.origin === 'jp_vendor' ? 'jp' : 'us')
 
     // ---- aggregate buys ----
     let totalSpend = 0, totalUnits = 0
+    const sideTotals = { us: { usd: 0, units: 0 }, jp: { usd: 0, units: 0 } }
     const byAcquirer = new Map()   // name → { usd, orders, units }
     const byProduct = new Map()    // label → { usd, units, usedTotal, usedBy: Map }
+    const byProductSide = { us: new Map(), jp: new Map() }  // label → { usd, units }
     for (const b of purchases) {
       const usd = Number(b.cost_usd) || (b.currency === 'USD' ? Number(b.cost) || 0 : 0)
       const units = Number(b.quantity_purchased) || 0
+      const side = sideOf(b)
       totalSpend += usd; totalUnits += units
+      sideTotals[side].usd += usd; sideTotals[side].units += units
       const who = b.acquirer?.name || '(unknown)'
       const a = byAcquirer.get(who) || { usd: 0, orders: 0, units: 0 }
       a.usd += usd; a.orders += 1; a.units += units
@@ -194,6 +194,9 @@ export default async function handler(req, res) {
       const p = byProduct.get(label) || { usd: 0, units: 0, usedTotal: 0, usedBy: new Map() }
       p.usd += usd; p.units += units
       byProduct.set(label, p)
+      const ps = byProductSide[side].get(label) || { usd: 0, units: 0 }
+      ps.usd += usd; ps.units += units
+      byProductSide[side].set(label, ps)
     }
 
     // ---- aggregate stream-room usage (both sources, same shape) ----
@@ -280,30 +283,33 @@ export default async function handler(req, res) {
     lines.push(`📦 Weekly Buy Report — ${window.from} → ${window.to}`)
     lines.push('')
     lines.push('1️⃣ Spend this week')
-    lines.push(`💰 ${fmtUsd(totalSpend)} · ${purchases.length} purchase${purchases.length === 1 ? '' : 's'} · ${totalUnits} units`)
+    lines.push(`💰 Total: ${fmtUsd(totalSpend)} · ${purchases.length} purchase${purchases.length === 1 ? '' : 's'} · ${totalUnits} units`)
+    lines.push(`   🇺🇸 US: ${fmtUsd(sideTotals.us.usd)} (${sideTotals.us.units} units) · 🇯🇵 Japan: ${fmtUsd(sideTotals.jp.usd)} (${sideTotals.jp.units} units)`)
     if (jpShipped.length > 0) {
       const tUsd = jpShipped.reduce((s, t) => s + (Number(t.cost_usd) || 0), 0)
       const tUnits = jpShipped.reduce((s, t) => s + (Number(t.quantity_purchased) || 0), 0)
-      lines.push(`   incl. 🚢 JP→US shipped: ${tUnits} units · ${fmtUsd(tUsd)}`)
-    }
-    if (jpLocal.length > 0) {
-      const jUsd = jpLocal.reduce((s, t) => s + (Number(t.cost_usd) || 0), 0)
-      const jUnits = jpLocal.reduce((s, t) => s + (Number(t.quantity_purchased) || 0), 0)
-      lines.push(`🇯🇵 Japan-side stocking (not counted until shipped): ${jUnits} units · ${fmtUsd(jUsd)}`)
+      lines.push(`   🚢 Shipped JP→US this week: ${tUnits} units · ${fmtUsd(tUsd)} (logistics — already counted when bought)`)
     }
 
+    const pushSideBuys = (flag, side) => {
+      const m = byProductSide[side]
+      if (m.size === 0) return
+      lines.push(`${flag} ${side === 'us' ? 'US' : 'Japan'} — ${fmtUsd(sideTotals[side].usd)}:`)
+      const sorted = [...m.entries()].sort((x, y) => y[1].usd - x[1].usd)
+      const MAX = 7
+      for (const [label, p] of sorted.slice(0, MAX)) {
+        lines.push(`  • ${label}: ${p.units} units · ${fmtUsd(p.usd)}`)
+      }
+      if (sorted.length > MAX) {
+        const restUsd = sorted.slice(MAX).reduce((s, [, p]) => s + p.usd, 0)
+        lines.push(`  …and ${sorted.length - MAX} more (${fmtUsd(restUsd)})`)
+      }
+    }
     if (byProduct.size > 0) {
       lines.push('')
       lines.push('2️⃣ What we bought')
-      const sorted = [...byProduct.entries()].sort((x, y) => y[1].usd - x[1].usd)
-      const MAX_BUY_LINES = 10
-      for (const [label, p] of sorted.slice(0, MAX_BUY_LINES)) {
-        lines.push(`  • ${label}: ${p.units} units · ${fmtUsd(p.usd)}`)
-      }
-      if (sorted.length > MAX_BUY_LINES) {
-        const restUsd = sorted.slice(MAX_BUY_LINES).reduce((s, [, p]) => s + p.usd, 0)
-        lines.push(`  …and ${sorted.length - MAX_BUY_LINES} more products (${fmtUsd(restUsd)})`)
-      }
+      pushSideBuys('🇺🇸', 'us')
+      pushSideBuys('🇯🇵', 'jp')
     }
 
     if (byAcquirer.size > 0) {
