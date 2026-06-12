@@ -7,11 +7,14 @@
 // week. Manual runs: ?week=YYYY-MM-DD (the week containing that date) or
 // ?current=1 (the in-progress week).
 //
-// Money facts:
-//   - spend counts ONLY real purchases (origin null / jp_vendor etc.).
-//     origin='jp_to_us_shipment' rows are cross-border transfers of goods
-//     ALREADY bought — counting their cost_usd would double-count, so
-//     they're reported separately as transfers.
+// Money facts (boss directive 2026-06-11 "日本只算寄到美国的"):
+//   - Japan-side stocking (origin='jp_vendor', bought into the Japan
+//     warehouse) is NOT counted — that inventory hasn't entered the US
+//     operation yet. It shows as one FYI line.
+//   - origin='jp_to_us_shipment' (goods shipped Japan → US) IS counted,
+//     in the week it ships — that's when the goods become available to
+//     the rooms this report compares against.
+//   - everything else (US/direct purchases) counts normally.
 //   - usage = platform_sales (kind='sealed') per channel; slabs/singles
 //     follow their own pipelines and aren't bought via Purchased Items.
 //
@@ -116,8 +119,12 @@ export default async function handler(req, res) {
     if (buyErr) throw buyErr
     if (useErr) throw useErr
 
-    const purchases = (buys || []).filter(b => b.origin !== 'jp_to_us_shipment')
-    const transfers = (buys || []).filter(b => b.origin === 'jp_to_us_shipment')
+    // Counted inflow = US/direct purchases + Japan goods SHIPPED to the US
+    // this week. Japan-side stocking (jp_vendor) is excluded — not in the
+    // US operation yet.
+    const purchases = (buys || []).filter(b => b.origin !== 'jp_vendor')
+    const jpShipped = purchases.filter(b => b.origin === 'jp_to_us_shipment')
+    const jpLocal = (buys || []).filter(b => b.origin === 'jp_vendor')
 
     // ---- aggregate buys ----
     let totalSpend = 0, totalUnits = 0
@@ -160,11 +167,16 @@ export default async function handler(req, res) {
     // ---- build the Lark message ----
     const lines = []
     lines.push(`📦 Weekly Buy Report — ${window.from} → ${window.to}`)
-    lines.push(`💰 Spent: ${fmtUsd(totalSpend)} · ${purchases.length} purchase${purchases.length === 1 ? '' : 's'} · ${totalUnits} units`)
-    if (transfers.length > 0) {
-      const tUsd = transfers.reduce((s, t) => s + (Number(t.cost_usd) || 0), 0)
-      const tUnits = transfers.reduce((s, t) => s + (Number(t.quantity_purchased) || 0), 0)
-      lines.push(`🚢 JP→US transfers (not new spend): ${tUnits} units · ${fmtUsd(tUsd)} value`)
+    lines.push(`💰 Inflow: ${fmtUsd(totalSpend)} · ${purchases.length} purchase${purchases.length === 1 ? '' : 's'} · ${totalUnits} units`)
+    if (jpShipped.length > 0) {
+      const tUsd = jpShipped.reduce((s, t) => s + (Number(t.cost_usd) || 0), 0)
+      const tUnits = jpShipped.reduce((s, t) => s + (Number(t.quantity_purchased) || 0), 0)
+      lines.push(`   incl. 🚢 JP→US shipped: ${tUnits} units · ${fmtUsd(tUsd)}`)
+    }
+    if (jpLocal.length > 0) {
+      const jUsd = jpLocal.reduce((s, t) => s + (Number(t.cost_usd) || 0), 0)
+      const jUnits = jpLocal.reduce((s, t) => s + (Number(t.quantity_purchased) || 0), 0)
+      lines.push(`🇯🇵 Japan-side stocking (not counted until shipped): ${jUnits} units · ${fmtUsd(jUsd)}`)
     }
 
     if (byAcquirer.size > 0) {
