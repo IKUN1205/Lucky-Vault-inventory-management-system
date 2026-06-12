@@ -15,8 +15,15 @@
 //     in the week it ships — that's when the goods become available to
 //     the rooms this report compares against.
 //   - everything else (US/direct purchases) counts normally.
-//   - usage = platform_sales (kind='sealed') per channel; slabs/singles
-//     follow their own pipelines and aren't bought via Purchased Items.
+//   - usage = SEALED only, from two sources merged:
+//       1. stream_counts × stream_count_items (expected − actual = sold
+//          that session) — this is where stream-room sealed consumption
+//          actually lives (verified 2026-06-11: platform_sales has zero
+//          sealed rows; rooms count sealed at streamer handoff instead)
+//       2. platform_sales kind='sealed' — covers channels that sell
+//          sealed through the Platform Sales page (e.g. Shows).
+//     Slabs/singles follow their own pipelines and aren't bought via
+//     Purchased Items, so they're out of scope here.
 //
 // Routed to LARK_WEBHOOK_ACQUISITIONS (purchasing squad) with main-URL
 // fallback.
@@ -68,6 +75,22 @@ const CHANNEL_SHORT = {
   RocketsHQ: 'Rockets', LuckyVaultUS: 'Lucky',
   SlabbiePatty: 'Slabbie', Whatnot: 'Whatnot', Shows: 'Shows',
 }
+// Stream-count rooms are identified by location NAME ("Stream Room -
+// TikTok Packheads") — collapse to the same short labels.
+function roomShort(locationName) {
+  const n = String(locationName || '').toLowerCase()
+  if (n.includes('packheads')) return 'Packheads'
+  if (n.includes('rockets') || n.includes('rocket')) return 'Rockets'
+  if (n.includes('luckyvault') || n.includes('lucky')) return 'Lucky'
+  if (n.includes('slabbie') || n.includes('patty')) return 'Slabbie'
+  if (n.includes('whatnot')) return 'Whatnot'
+  if (n.includes('show')) return 'Shows'
+  return locationName || '?'
+}
+const nextDay = (dateStr) => {
+  const d = new Date(`${dateStr}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1)
+  return d.toISOString().slice(0, 10)
+}
 
 async function postLark(text) {
   if (!LARK_URL) return false
@@ -101,7 +124,15 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [{ data: buys, error: buyErr }, { data: usage, error: useErr }] = await Promise.all([
+    // Stream-count sessions happen evenings PT, so the timestamp filter
+    // shifts the window by UTC-7 to keep "this week" in boss time.
+    const countFrom = `${window.from}T07:00:00Z`
+    const countTo = `${nextDay(window.to)}T07:00:00Z`
+    const [
+      { data: buys, error: buyErr },
+      { data: usage, error: useErr },
+      { data: counts, error: cntErr },
+    ] = await Promise.all([
       supabase
         .from('acquisitions')
         .select('date_purchased, quantity_purchased, cost, currency, cost_usd, origin, acquirer:users!acquisitions_acquirer_id_fkey(name), vendor:vendors(name), product:products(name, brand, language, type)')
@@ -115,9 +146,30 @@ export default async function handler(req, res) {
         .eq('kind', 'sealed')
         .gte('date', window.from)
         .lte('date', window.to),
+      supabase
+        .from('stream_counts')
+        .select('id, location:locations(name)')
+        .eq('deleted', false)
+        .gte('count_time', countFrom)
+        .lt('count_time', countTo),
     ])
     if (buyErr) throw buyErr
     if (useErr) throw useErr
+    if (cntErr) throw cntErr
+
+    // Per-product sold quantities for those count sessions (expected −
+    // actual = sold). Batched .in() — a week is a handful of sessions.
+    const roomByCountId = new Map((counts || []).map(c => [c.id, roomShort(c.location?.name)]))
+    const countItems = []
+    const countIds = [...roomByCountId.keys()]
+    for (let i = 0; i < countIds.length; i += 100) {
+      const { data, error } = await supabase
+        .from('stream_count_items')
+        .select('stream_count_id, expected_qty, actual_qty, product:products(name, brand, language, type)')
+        .in('stream_count_id', countIds.slice(i, i + 100))
+      if (error) throw error
+      countItems.push(...(data || []))
+    }
 
     // Counted inflow = US/direct purchases + Japan goods SHIPPED to the US
     // this week. Japan-side stocking (jp_vendor) is excluded — not in the
@@ -144,18 +196,24 @@ export default async function handler(req, res) {
       byProduct.set(label, p)
     }
 
-    // ---- aggregate stream-room usage ----
+    // ---- aggregate stream-room usage (both sources, same shape) ----
     const roomTotals = new Map()   // channel → units
     const usageByProduct = new Map()  // label → { total, by: Map(channel → units) }
-    for (const u of usage || []) {
-      const ch = CHANNEL_SHORT[u.channel] || u.channel || '?'
-      const units = Number(u.quantity) || 0
-      roomTotals.set(ch, (roomTotals.get(ch) || 0) + units)
-      const label = productLabel(u.product)
+    const addUsage = (room, product, units) => {
+      if (!units || units <= 0) return
+      roomTotals.set(room, (roomTotals.get(room) || 0) + units)
+      const label = productLabel(product)
       const e = usageByProduct.get(label) || { total: 0, by: new Map() }
       e.total += units
-      e.by.set(ch, (e.by.get(ch) || 0) + units)
+      e.by.set(room, (e.by.get(room) || 0) + units)
       usageByProduct.set(label, e)
+    }
+    for (const u of usage || []) {
+      addUsage(CHANNEL_SHORT[u.channel] || u.channel || '?', u.product, Number(u.quantity) || 0)
+    }
+    for (const it of countItems) {
+      const sold = (Number(it.expected_qty) || 0) - (Number(it.actual_qty) || 0)
+      addUsage(roomByCountId.get(it.stream_count_id) || '?', it.product, sold)
     }
     // attach usage to bought products
     let usedUnitsOfBought = 0
