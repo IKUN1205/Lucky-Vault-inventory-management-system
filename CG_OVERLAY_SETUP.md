@@ -52,9 +52,50 @@
 - **调试**:叠层网址加 `&debug=1`,左下角会显示连接状态小圆点(上播前去掉)
 - **素材**:现在的动画是用代码画的(金色金库风格)。以后有了真素材(图片/视频特效)可以替换进去
 
+## 用实体按钮板(Elgato Stream Deck)触发
+
+不想用手机点,想拍一下实体键就出动画 —— 用 Stream Deck。原理:每个键
+配成"按一下 = 访问一个网址",那个网址(`/api/cg-cue`)会把动画打进叠层。
+
+### 一次性设置
+
+1. Stream Deck 软件 → Marketplace 搜 **Web Requests**(BarRaider 出的,免费)→ 安装
+2. 把 **Web Requests → GET** 这个动作拖到一个键上
+3. 在 **URL** 填对应动画的网址(见下表),方法选 **GET**
+4. 给这个键起个名字 / 配个图标
+5. 每个动画重复一次
+
+### 每个键填的网址(把 `你的域名` 换成库存系统域名)
+
+| 键 | 网址 |
+|---|---|
+| 🔥 HYPE | `https://你的域名/api/cg-cue?room=main&anim=hype` |
+| 🔥 HYPE(自定义大字) | `https://你的域名/api/cg-cue?room=main&anim=hype&text=BIG%20W` |
+| ⏱️ 倒计时 | `https://你的域名/api/cg-cue?room=main&anim=countdown&from=3` |
+| 🔨 一次 | `https://你的域名/api/cg-cue?room=main&anim=auction&step=once` |
+| 🔨 两次 | `https://你的域名/api/cg-cue?room=main&anim=auction&step=twice` |
+| 🔨 成交 | `https://你的域名/api/cg-cue?room=main&anim=auction&step=sold` |
+| 💰 SOLD(不带价格) | `https://你的域名/api/cg-cue?room=main&anim=sold` |
+| ⏹ 清空 | `https://你的域名/api/cg-cue?room=main&anim=clear` |
+
+### 实体键的限制 + 怎么补
+
+实体键**不能临时打字**。所以:
+- **不用打字的**(HYPE / 倒计时 / 拍卖 / SOLD 不带价)→ 用 Stream Deck,完美
+- **要填买家名 / 价格的**(欢迎 @某人、SOLD $120)→ 还是用手机 `cg-control.html`
+
+两个可以同时用,不冲突 —— 实体键放常用的固定动画,手机留着填字那几个。
+
+### 测试有没有通
+
+先确保 OBS 叠层(`cg-overlay.html`)开着,然后浏览器直接打开任意一条上面的网址。
+看到 `{"ok":true,...}` + OBS 画面出动画 = 成功。
+
 ## 文件位置
 
 - `public/cg-overlay.html` — 叠层(OBS 用)
-- `public/cg-control.html` — 控制台(点按钮用)
+- `public/cg-control.html` — 手机控制台(点按钮用)
+- `api/cg-cue.js` — Stream Deck 触发接口
+- `public/cg-demo.html` — 本地演示页(不连网,纯试玩)
 
-两个都是独立网页,不影响库存系统。
+都不影响库存系统。
