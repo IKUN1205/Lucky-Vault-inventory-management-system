@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CG — Countdown</title>
+<!--
+  单块动画文件:倒计时 3 → 2 → 1 → GO!。自包含,被显示即自动播一遍后透明。
+  OBS:来源 ➕ → 浏览器 → 勾「本地文件」→ 选此文件;1920×1080;
+  勾「源不可见时关闭」。
+-->
+<style>
+  :root { --gold:#F6C544; --ink:#1a1205; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
+  #stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .num { font-size:34vmin; font-weight:900; color:var(--gold);
+    -webkit-text-stroke:.9vmin var(--ink); paint-order:stroke fill;
+    text-shadow:0 0 7vmin var(--gold), 0 2vmin 4vmin rgba(0,0,0,.6); animation:pulse 1s ease forwards; }
+  @keyframes pulse { 0%{transform:scale(2.2);opacity:0} 25%{transform:scale(1);opacity:1} 80%{transform:scale(1);opacity:1} 100%{transform:scale(.6);opacity:0} }
+  .confetti { position:fixed; top:-8vmin; width:1.4vmin; height:2.4vmin; border-radius:.3vmin; }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+  <script>
+  (function(){
+    var stage=document.getElementById('stage');
+    var GOLD=['#F6C544','#FFF0B8','#E0A92E','#FFFFFF','#FFD56A'];
+    function confetti(n){
+      for(var i=0;i<n;i++){
+        var c=document.createElement('div'); c.className='confetti';
+        c.style.left=(Math.random()*100)+'vw'; c.style.background=GOLD[(Math.random()*GOLD.length)|0];
+        var dur=2.2+Math.random()*1.6, delay=Math.random()*0.4, drift=(Math.random()*2-1)*16, rot=Math.random()*720;
+        document.body.appendChild(c);
+        c.animate([{transform:'translate(0,0) rotate(0deg)',opacity:1},{transform:'translate('+drift+'vw,112vh) rotate('+rot+'deg)',opacity:1}],
+          {duration:dur*1000,delay:delay*1000,easing:'cubic-bezier(.3,.1,.5,1)',fill:'forwards'});
+        (function(el,t){setTimeout(function(){el.remove();},t*1000+200);})(c,dur+delay);
+      }
+    }
+    var timer;
+    function play(){
+      clearTimeout(timer);
+      var n=3;
+      var tick=function(){
+        if(n>0){ stage.innerHTML='<div class="num">'+n+'</div>'; n--; timer=setTimeout(tick,1000); }
+        else { stage.innerHTML='<div class="num" style="color:#fff;-webkit-text-stroke:.9vmin #1a1205">GO!</div>'; confetti(70);
+               timer=setTimeout(function(){ stage.innerHTML=''; },1000); }
+      };
+      tick();
+    }
+    play();
+    document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='visible') play(); });
+  })();
+  </script>
+</body>
+</html>

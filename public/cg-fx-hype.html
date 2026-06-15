@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CG — HYPE</title>
+<!--
+  单块动画文件:稀有卡 HYPE。自包含,被显示即自动播一遍后透明。
+  OBS:来源 ➕ → 浏览器 → 勾「本地文件」→ 选此文件;1920×1080;
+  勾「源不可见时关闭」。
+-->
+<style>
+  :root { --gold:#F6C544; --ink:#1a1205; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
+  #stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .rays { position:fixed; width:200vmax; height:200vmax; left:50%; top:50%; margin:-100vmax 0 0 -100vmax;
+    background:repeating-conic-gradient(from 0deg, rgba(246,197,68,.16) 0deg 7deg, transparent 7deg 14deg); animation:spin 9s linear infinite; }
+  @keyframes spin { to{transform:rotate(360deg)} }
+  .core { position:relative; text-align:center; animation:shake .5s ease-in-out 3; }
+  @keyframes shake { 0%,100%{transform:translate(0,0)} 25%{transform:translate(-1vmin,.6vmin)} 50%{transform:translate(1vmin,-.6vmin)} 75%{transform:translate(-.6vmin,-.4vmin)} }
+  .big { font-size:16vmin; font-weight:900; line-height:1; color:var(--gold);
+    -webkit-text-stroke:.6vmin var(--ink); paint-order:stroke fill;
+    text-shadow:0 0 6vmin var(--gold), 0 1.5vmin 3vmin rgba(0,0,0,.6); transform:scale(0); animation:pop .5s cubic-bezier(.2,1.7,.4,1) forwards; }
+  .sub { margin-top:1.5vmin; font-size:5vmin; font-weight:800; color:#fff; text-shadow:0 .3vmin 1.4vmin rgba(0,0,0,.85);
+    opacity:0; animation:rise .5s ease .3s forwards; }
+  @keyframes pop { 0%{transform:scale(0)} 70%{transform:scale(1.12)} 100%{transform:scale(1)} }
+  @keyframes rise { from{opacity:0;transform:translateY(4vmin)} to{opacity:1;transform:none} }
+  .confetti { position:fixed; top:-8vmin; width:1.4vmin; height:2.4vmin; border-radius:.3vmin; }
+  #stage.out { animation:fade .5s ease forwards; }
+  @keyframes fade { to{opacity:0} }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+  <script>
+  (function(){
+    var stage=document.getElementById('stage');
+    var GOLD=['#F6C544','#FFF0B8','#E0A92E','#FFFFFF','#FFD56A'];
+    function confetti(n){
+      for(var i=0;i<n;i++){
+        var c=document.createElement('div'); c.className='confetti';
+        c.style.left=(Math.random()*100)+'vw'; c.style.background=GOLD[(Math.random()*GOLD.length)|0];
+        var dur=2.2+Math.random()*1.8, delay=Math.random()*0.5, drift=(Math.random()*2-1)*18, rot=Math.random()*720;
+        document.body.appendChild(c);
+        c.animate([{transform:'translate(0,0) rotate(0deg)',opacity:1},{transform:'translate('+drift+'vw,112vh) rotate('+rot+'deg)',opacity:1}],
+          {duration:dur*1000,delay:delay*1000,easing:'cubic-bezier(.3,.1,.5,1)',fill:'forwards'});
+        (function(el,t){setTimeout(function(){el.remove();},t*1000+200);})(c,dur+delay);
+      }
+    }
+    var t1,t2;
+    function play(){
+      clearTimeout(t1); clearTimeout(t2);
+      stage.classList.remove('out');
+      stage.innerHTML='<div class="rays"></div><div class="core"><div class="big">🔥 BIG PULL 🔥</div><div class="sub">RARE PULL — CONGRATS!</div></div>';
+      confetti(120);
+      t1=setTimeout(function(){ stage.classList.add('out'); },4400);
+      t2=setTimeout(function(){ stage.innerHTML=''; stage.classList.remove('out'); },5000);
+    }
+    play();
+    document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='visible') play(); });
+  })();
+  </script>
+</body>
+</html>
