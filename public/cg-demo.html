@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lucky Vault — CG 动画演示</title>
+<!--
+  ============================================================================
+  演示页 (本地试玩,不连 Supabase)
+  ============================================================================
+  这一页把"假直播画面 + 动画 + 触发按钮"放在一起,纯本地点按钮就能看效果。
+  目的只是给你/老板看动画长什么样。真正上播用的是 cg-overlay.html(挂 OBS)
+  + cg-control.html(遥控器)。动画代码和真版一模一样。
+  ============================================================================
+-->
+<style>
+  :root { --gold:#F6C544; --gold-deep:#E0A92E; --gold-light:#FFF0B8; --ink:#1a1205; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden;
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif; user-select:none; }
+  body { background: radial-gradient(120% 90% at 50% 22%, #2a2113, #0b0905 80%); }
+
+  .live { position:fixed; top:16px; left:18px; z-index:5; display:flex; align-items:center; gap:8px;
+    color:#fff; font-size:15px; font-weight:700; letter-spacing:.5px; }
+  .live .rd { width:11px; height:11px; border-radius:50%; background:#ff3b30; animation:blink 1.4s infinite; }
+  @keyframes blink { 50% { opacity:.35; } }
+  .brand { position:fixed; top:16px; right:18px; z-index:5; color:var(--gold); font-size:15px; font-weight:700; opacity:.9; }
+  .idle { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    color:#6b5e3e; font-size:3.4vmin; z-index:1; }
+
+  #stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:3; }
+
+  /* SOLD */
+  .sold-ring { position:absolute; top:42%; left:50%; width:18vmin; height:18vmin; margin:-9vmin 0 0 -9vmin;
+    border:1vmin solid var(--gold); border-radius:50%; animation:ringOut .9s ease-out forwards; }
+  @keyframes ringOut { from{transform:scale(.3);opacity:.9} to{transform:scale(4.2);opacity:0} }
+  .sold-stamp { font-weight:900; font-size:22vmin; letter-spacing:.5vmin; color:var(--gold);
+    -webkit-text-stroke:.7vmin var(--ink); paint-order:stroke fill;
+    text-shadow:0 .8vmin 0 var(--gold-deep), 0 2vmin 5vmin rgba(0,0,0,.55);
+    transform:rotate(-9deg) scale(0); animation:stampIn .55s cubic-bezier(.2,1.6,.4,1) forwards; }
+  @keyframes stampIn { 0%{transform:rotate(-9deg) scale(3);opacity:0} 60%{transform:rotate(-9deg) scale(.86);opacity:1} 80%{transform:rotate(-9deg) scale(1.06)} 100%{transform:rotate(-9deg) scale(1)} }
+  .sold-info { position:absolute; bottom:16vmin; display:flex; flex-direction:column; align-items:center; gap:1.5vmin;
+    opacity:0; animation:riseIn .5s ease .35s forwards; }
+  .sold-item { font-size:5.2vmin; font-weight:800; color:#fff; text-shadow:0 .3vmin 1.4vmin rgba(0,0,0,.8); }
+  .sold-price { font-size:7vmin; font-weight:900; color:var(--ink);
+    background:linear-gradient(180deg,var(--gold-light),var(--gold)); padding:.4vmin 4vmin; border-radius:99px;
+    box-shadow:0 1vmin 3vmin rgba(0,0,0,.5), inset 0 0 0 .4vmin rgba(255,255,255,.4); }
+  @keyframes riseIn { from{opacity:0;transform:translateY(4vmin)} to{opacity:1;transform:none} }
+
+  /* 欢迎 */
+  .wel-bar { position:fixed; left:4vw; bottom:14vh; display:flex; align-items:center; gap:2.4vmin;
+    padding:2vmin 4vmin 2vmin 2vmin; background:linear-gradient(135deg,rgba(20,16,7,.94),rgba(40,30,10,.94));
+    border-left:.8vmin solid var(--gold); border-radius:1.6vmin; box-shadow:0 1.5vmin 4vmin rgba(0,0,0,.55);
+    transform:translateX(-130%); animation:slideIn .6s cubic-bezier(.2,1,.3,1) forwards; z-index:3; }
+  @keyframes slideIn { to{transform:none} }
+  .wel-ava { width:9vmin; height:9vmin; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-size:4.4vmin; font-weight:900; color:var(--ink);
+    background:radial-gradient(circle at 35% 30%,var(--gold-light),var(--gold) 60%,var(--gold-deep));
+    box-shadow:inset 0 0 0 .4vmin rgba(255,255,255,.5), 0 0 2vmin var(--gold); }
+  .wel-hi { font-size:2.6vmin; font-weight:700; color:var(--gold); letter-spacing:.3vmin; }
+  .wel-name { font-size:5vmin; font-weight:900; color:#fff; line-height:1; }
+
+  /* HYPE */
+  .hype-rays { position:fixed; width:200vmax; height:200vmax; left:50%; top:50%; margin:-100vmax 0 0 -100vmax;
+    background:repeating-conic-gradient(from 0deg, rgba(246,197,68,.16) 0deg 7deg, transparent 7deg 14deg); animation:spin 9s linear infinite; }
+  @keyframes spin { to{transform:rotate(360deg)} }
+  .hype-core { position:relative; text-align:center; animation:shake .5s ease-in-out 3; }
+  @keyframes shake { 0%,100%{transform:translate(0,0)} 25%{transform:translate(-1vmin,.6vmin)} 50%{transform:translate(1vmin,-.6vmin)} 75%{transform:translate(-.6vmin,-.4vmin)} }
+  .hype-big { font-size:16vmin; font-weight:900; line-height:1; color:var(--gold);
+    -webkit-text-stroke:.6vmin var(--ink); paint-order:stroke fill;
+    text-shadow:0 0 6vmin var(--gold), 0 1.5vmin 3vmin rgba(0,0,0,.6); transform:scale(0); animation:pop .5s cubic-bezier(.2,1.7,.4,1) forwards; }
+  .hype-sub { margin-top:1.5vmin; font-size:5vmin; font-weight:800; color:#fff; text-shadow:0 .3vmin 1.4vmin rgba(0,0,0,.85);
+    opacity:0; animation:riseIn .5s ease .3s forwards; }
+  @keyframes pop { 0%{transform:scale(0)} 70%{transform:scale(1.12)} 100%{transform:scale(1)} }
+
+  /* 倒计时 / 拍卖 */
+  .count-num { font-size:34vmin; font-weight:900; color:var(--gold);
+    -webkit-text-stroke:.8vmin var(--ink); paint-order:stroke fill;
+    text-shadow:0 0 7vmin var(--gold), 0 2vmin 4vmin rgba(0,0,0,.6); animation:countPulse 1s ease forwards; }
+  @keyframes countPulse { 0%{transform:scale(2.2);opacity:0} 25%{transform:scale(1);opacity:1} 80%{transform:scale(1);opacity:1} 100%{transform:scale(.6);opacity:0} }
+  .auc-call { text-align:center; font-size:11vmin; font-weight:900; color:#fff;
+    -webkit-text-stroke:.5vmin var(--ink); paint-order:stroke fill;
+    text-shadow:0 0 5vmin rgba(246,197,68,.7), 0 1.5vmin 3vmin rgba(0,0,0,.6); transform:scale(0); animation:pop .45s cubic-bezier(.2,1.7,.4,1) forwards; }
+  .auc-call .gv { font-size:13vmin; display:block; }
+
+  .confetti { position:fixed; top:-8vmin; width:1.4vmin; height:2.4vmin; border-radius:.3vmin; z-index:3; }
+
+  /* 演示按钮条 */
+  .bar { position:fixed; left:0; right:0; bottom:0; z-index:10;
+    display:flex; flex-wrap:wrap; gap:9px; justify-content:center;
+    padding:14px; background:rgba(8,6,3,.78); backdrop-filter:blur(6px); border-top:1px solid #3a2f18; }
+  .b { border:none; border-radius:11px; padding:13px 18px; font-size:16px; font-weight:800; cursor:pointer; color:var(--ink);
+    background:linear-gradient(180deg,#FFE89A,var(--gold) 55%,var(--gold-deep)); box-shadow:0 4px 0 #9c7414; }
+  .b:active { transform:translateY(3px); box-shadow:0 1px 0 #9c7414; }
+  .b.ghost { background:#241d11; color:#f4ecd8; border:1px solid #3a2f18; box-shadow:0 4px 0 #120e07; }
+  .tag { position:fixed; left:50%; bottom:74px; transform:translateX(-50%); z-index:10;
+    color:#8a7a52; font-size:13px; }
+</style>
+</head>
+<body>
+  <div class="live"><span class="rd"></span>LIVE</div>
+  <div class="brand">PackHeads TCG</div>
+  <div class="idle" id="idle">🎴 Live — tap a button below ↓</div>
+  <div id="stage"></div>
+
+  <div class="tag">← 演示页:本地点按钮试玩,真版由控制台远程触发 →</div>
+  <div class="bar">
+    <button class="b" data-cg="sold">💰 SOLD 成交</button>
+    <button class="b" data-cg="welcome">👋 欢迎买家</button>
+    <button class="b" data-cg="hype">🔥 稀有卡 HYPE</button>
+    <button class="b" data-cg="countdown">⏱️ 倒计时</button>
+    <button class="b" data-cg="auction">🔨 成交!</button>
+    <button class="b ghost" data-cg="clear">⏹ 清空</button>
+  </div>
+
+  <script>
+  (function(){
+    var stage=document.getElementById('stage'), idle=document.getElementById('idle'), timer=null;
+    var GOLD=['#F6C544','#FFF0B8','#E0A92E','#FFFFFF','#FFD56A'];
+    function confetti(n){
+      for(var i=0;i<n;i++){
+        var c=document.createElement('div'); c.className='confetti';
+        c.style.left=(Math.random()*100)+'vw'; c.style.background=GOLD[(Math.random()*GOLD.length)|0];
+        var dur=2.2+Math.random()*1.8, delay=Math.random()*0.5, drift=(Math.random()*2-1)*18, rot=Math.random()*720;
+        document.body.appendChild(c);
+        c.animate([{transform:'translate(0,0) rotate(0deg)',opacity:1},{transform:'translate('+drift+'vw,112vh) rotate('+rot+'deg)',opacity:1}],
+          {duration:dur*1000,delay:delay*1000,easing:'cubic-bezier(.3,.1,.5,1)',fill:'forwards'});
+        (function(el,t){setTimeout(function(){el.remove();},t*1000+200);})(c,dur+delay);
+      }
+    }
+    function clearStage(){ if(timer){clearTimeout(timer);timer=null;} stage.innerHTML=''; idle.style.display='flex'; }
+    function hold(ms){ if(timer)clearTimeout(timer); timer=setTimeout(clearStage,ms); }
+    function play(kind){
+      if(timer){clearTimeout(timer);timer=null;} stage.innerHTML=''; idle.style.display='none';
+      if(kind==='clear'){ clearStage(); return; }
+      if(kind==='sold'){
+        stage.innerHTML='<div class="sold-ring"></div><div class="sold-stamp">SOLD</div>'+
+          '<div class="sold-info"><div class="sold-item">OP-15 Booster Box</div><div class="sold-price">$120</div></div>';
+        confetti(80); hold(4200); return;
+      }
+      if(kind==='welcome'){
+        stage.innerHTML='<div class="wel-bar"><div class="wel-ava">T</div><div><div class="wel-hi">WELCOME</div><div class="wel-name">@tcg_mike</div></div></div>';
+        hold(5000); return;
+      }
+      if(kind==='hype'){
+        stage.innerHTML='<div class="hype-rays"></div><div class="hype-core"><div class="hype-big">🔥 BIG PULL 🔥</div><div class="hype-sub">RARE PULL — CONGRATS!</div></div>';
+        confetti(120); hold(5000); return;
+      }
+      if(kind==='countdown'){
+        var n=3; var tick=function(){
+          if(n>0){ stage.innerHTML='<div class="count-num">'+n+'</div>'; n--; timer=setTimeout(tick,1000); }
+          else { stage.innerHTML='<div class="count-num" style="color:#fff">GO!</div>'; confetti(60); hold(900); }
+        }; tick(); return;
+      }
+      if(kind==='auction'){
+        stage.innerHTML='<div class="auc-call"><span class="gv">✅</span>SOLD!</div>';
+        confetti(80); hold(3500); return;
+      }
+    }
+    var b=document.querySelectorAll('[data-cg]');
+    for(var i=0;i<b.length;i++){ b[i].addEventListener('click',function(){ play(this.getAttribute('data-cg')); }); }
+  })();
+  </script>
+</body>
+</html>

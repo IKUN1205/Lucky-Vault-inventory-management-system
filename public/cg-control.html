@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Lucky Vault — 直播 CG 控制台</title>
+<!--
+  ============================================================================
+  Lucky Vault 直播 CG 控制台
+  ============================================================================
+  在手机 / 平板 / 电脑浏览器打开这个网址,点按钮 → OBS 叠层上立刻出动画。
+  打开:  https://你的域名/cg-control.html?room=main
+  room 必须和 OBS 叠层那边一致,才能对上。
+  ============================================================================
+-->
+<style>
+  :root {
+    --gold:#F6C544; --gold-deep:#E0A92E; --ink:#1a1205;
+    --bg:#14110b; --card:#1f1a10; --card2:#272013; --border:#3a2f18;
+    --txt:#f4ecd8; --mut:#a99b78;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    background: radial-gradient(1200px 700px at 50% -10%, #241c0e, var(--bg)) fixed;
+    color: var(--txt); min-height:100vh;
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+    padding: 16px 14px 60px;
+  }
+  .head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }
+  .title { font-size:20px; font-weight:900; letter-spacing:.5px; }
+  .title .lv { color:var(--gold); }
+  .status { display:flex; align-items:center; gap:7px; font-size:12px; color:var(--mut);
+            background:var(--card); border:1px solid var(--border); padding:6px 10px; border-radius:99px; }
+  .status .dot { width:9px; height:9px; border-radius:50%; background:#888; }
+  .status.on  .dot { background:#39d353; box-shadow:0 0 8px #39d353; }
+  .status.err .dot { background:#ff4d4d; box-shadow:0 0 8px #ff4d4d; }
+
+  .roombar { display:flex; align-items:center; gap:8px; margin-bottom:16px; font-size:13px; color:var(--mut); }
+  .roombar input { width:120px; }
+
+  .card {
+    background:linear-gradient(180deg,var(--card),var(--card2));
+    border:1px solid var(--border); border-radius:16px;
+    padding:15px 15px 17px; margin-bottom:14px;
+  }
+  .card h2 { font-size:15px; font-weight:800; margin-bottom:11px; display:flex; align-items:center; gap:8px; }
+  .card h2 .em { font-size:19px; }
+  .row { display:flex; gap:9px; flex-wrap:wrap; }
+  .field { flex:1 1 130px; display:flex; flex-direction:column; gap:5px; margin-bottom:11px; }
+  .field label { font-size:11.5px; color:var(--mut); padding-left:2px; }
+  input[type=text], input[type=number] {
+    width:100%; background:#0f0c06; border:1px solid var(--border); color:var(--txt);
+    border-radius:10px; padding:12px 12px; font-size:16px; outline:none;
+  }
+  input:focus { border-color:var(--gold); }
+
+  .btn {
+    border:none; border-radius:12px; padding:15px 16px; font-size:16px; font-weight:800;
+    cursor:pointer; width:100%; color:var(--ink);
+    background:linear-gradient(180deg,#FFE89A,var(--gold) 55%,var(--gold-deep));
+    box-shadow:0 5px 0 #9c7414, 0 8px 18px rgba(0,0,0,.4);
+    transition: transform .05s, box-shadow .05s; touch-action: manipulation;
+  }
+  .btn:active { transform:translateY(4px); box-shadow:0 1px 0 #9c7414, 0 3px 8px rgba(0,0,0,.4); }
+  .btn:disabled { opacity:.45; box-shadow:none; cursor:not-allowed; }
+  .btn.ghost {
+    background:#241d11; color:var(--txt); border:1px solid var(--border);
+    box-shadow:0 4px 0 #120e07; font-weight:700;
+  }
+  .btn.ghost:active { box-shadow:0 1px 0 #120e07; }
+  .btn.danger {
+    background:linear-gradient(180deg,#ff7a6b,#e23b28); color:#fff; box-shadow:0 5px 0 #8e1c10, 0 8px 18px rgba(0,0,0,.4);
+  }
+  .btn.danger:active { box-shadow:0 1px 0 #8e1c10; }
+  .btn3 { display:flex; gap:9px; }
+  .btn3 .btn { font-size:15px; padding:14px 6px; }
+
+  .hint { font-size:11.5px; color:var(--mut); margin-top:3px; padding-left:2px; }
+
+  /* toast */
+  #toast {
+    position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(30px);
+    background:var(--gold); color:var(--ink); font-weight:800; font-size:15px;
+    padding:12px 22px; border-radius:99px; box-shadow:0 8px 24px rgba(0,0,0,.5);
+    opacity:0; pointer-events:none; transition:.25s; z-index:99;
+  }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+  <div class="head">
+    <div class="title">🎬 <span class="lv">Lucky Vault</span> 直播控制台</div>
+    <div class="status" id="status"><span class="dot"></span><span id="stxt">连接中…</span></div>
+  </div>
+
+  <div class="roombar">
+    直播间 room:
+    <input type="text" id="room" />
+    <span style="opacity:.7">(改了刷新页面;要和 OBS 叠层一致)</span>
+  </div>
+
+  <!-- 1. SOLD -->
+  <div class="card">
+    <h2><span class="em">💰</span> SOLD 成交</h2>
+    <div class="row">
+      <div class="field"><label>商品名(可空)</label><input type="text" id="sold-item" placeholder="例:OP-15 原箱" /></div>
+      <div class="field"><label>价格(可空)</label><input type="text" id="sold-price" placeholder="例:$120" /></div>
+    </div>
+    <button class="btn" data-fire="sold">▶ 播放 SOLD</button>
+    <div class="hint">商品名/价格留空也能播,只出 SOLD 字样 + 彩带。</div>
+  </div>
+
+  <!-- 2. 欢迎 -->
+  <div class="card">
+    <h2><span class="em">👋</span> 买家欢迎</h2>
+    <div class="field"><label>买家名 / 用户名</label><input type="text" id="wel-name" placeholder="例:@tcg_mike" /></div>
+    <button class="btn" data-fire="welcome">▶ 播放欢迎</button>
+  </div>
+
+  <!-- 3. HYPE -->
+  <div class="card">
+    <h2><span class="em">🔥</span> 稀有卡 HYPE</h2>
+    <div class="field"><label>自定义大字(可空)</label><input type="text" id="hype-text" placeholder="留空 = 🔥 BIG PULL 🔥" /></div>
+    <button class="btn" data-fire="hype">▶ 播放 HYPE</button>
+  </div>
+
+  <!-- 4. 倒计时 -->
+  <div class="card">
+    <h2><span class="em">⏱️</span> 倒计时</h2>
+    <div class="field" style="max-width:160px"><label>起始数字(1–10)</label><input type="number" id="count-from" value="3" min="1" max="10" /></div>
+    <button class="btn" data-fire="countdown">▶ 播放倒计时 → GO!</button>
+  </div>
+
+  <!-- 5. 拍卖 -->
+  <div class="card">
+    <h2><span class="em">🔨</span> 拍卖节奏</h2>
+    <div class="btn3">
+      <button class="btn ghost" data-fire="auction" data-step="once">一次</button>
+      <button class="btn ghost" data-fire="auction" data-step="twice">两次</button>
+      <button class="btn" data-fire="auction" data-step="sold">成交!</button>
+    </div>
+    <div class="hint">主播喊价时按节奏点:一次 → 两次 → 成交。</div>
+  </div>
+
+  <!-- 清空 -->
+  <button class="btn danger" data-fire="clear">⏹ 立即清空叠层</button>
+
+  <div id="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+  (function () {
+    const SUPABASE_URL = 'https://dqreqevbjszercgackuc.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxcmVxZXZianN6ZXJjZ2Fja3VjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NzU4NzcsImV4cCI6MjA5MzA1MTg3N30.vDu1lA5SJLpA_mRhAF5JkVSreP_F4Q9g_Ta-9xm-UdU';
+
+    const params = new URLSearchParams(location.search);
+    const ROOM = params.get('room') || 'main';
+    document.getElementById('room').value = ROOM;
+    document.getElementById('room').addEventListener('change', (e) => {
+      const r = (e.target.value || 'main').trim();
+      params.set('room', r); location.search = params.toString();
+    });
+
+    const statusEl = document.getElementById('status');
+    const stxt = document.getElementById('stxt');
+    const toast = document.getElementById('toast');
+    const buttons = [...document.querySelectorAll('[data-fire]')];
+    let ready = false;
+    buttons.forEach(b => b.disabled = true);
+
+    function showToast(msg) {
+      toast.textContent = msg; toast.classList.add('show');
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => toast.classList.remove('show'), 1300);
+    }
+
+    const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    const channel = sb.channel('lv-cg-' + ROOM, { config: { broadcast: { self: false } } });
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        ready = true; buttons.forEach(b => b.disabled = false);
+        statusEl.className = 'status on'; stxt.textContent = '已连接 · ' + ROOM;
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        statusEl.className = 'status err'; stxt.textContent = '连接失败';
+      } else {
+        statusEl.className = 'status'; stxt.textContent = status;
+      }
+    });
+
+    function cue(payload) {
+      if (!ready) { showToast('还没连上,稍等…'); return; }
+      channel.send({ type: 'broadcast', event: 'cue', payload });
+    }
+
+    const val = (id) => document.getElementById(id).value.trim();
+
+    buttons.forEach(btn => btn.addEventListener('click', () => {
+      const anim = btn.dataset.fire;
+      if (anim === 'sold')      { cue({ anim:'sold', item: val('sold-item'), price: val('sold-price') }); showToast('SOLD 已发送 ✓'); }
+      else if (anim==='welcome'){ const n=val('wel-name'); if(!n){showToast('先填买家名');return;} cue({ anim:'welcome', name:n }); showToast('欢迎已发送 ✓'); }
+      else if (anim==='hype')   { cue({ anim:'hype', text: val('hype-text') }); showToast('HYPE 已发送 ✓'); }
+      else if (anim==='countdown'){ cue({ anim:'countdown', from: val('count-from') || 3 }); showToast('倒计时已发送 ✓'); }
+      else if (anim==='auction'){ cue({ anim:'auction', step: btn.dataset.step }); showToast('已发送 ✓'); }
+      else if (anim==='clear')  { cue({ anim:'clear' }); showToast('已清空 ✓'); }
+    }));
+  })();
+  </script>
+</body>
+</html>

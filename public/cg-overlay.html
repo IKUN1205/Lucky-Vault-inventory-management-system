@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lucky Vault — Stream CG Overlay</title>
+<!--
+  ============================================================================
+  Lucky Vault 直播叠层 (OBS Browser Source)
+  ============================================================================
+  这是盖在直播画面最上层的透明网页。平时完全透明、不显示任何东西。
+  它通过 Supabase Realtime 监听控制台 (cg-control.html) 发来的指令,
+  收到就播对应动画,播完自动消失。
+
+  OBS 里怎么用:
+    来源 → + → 浏览器 → 网址填:
+      https://你的域名/cg-overlay.html?room=main
+    宽 1920 高 1080,勾选「不可见时关闭来源」可留可不留。
+
+  网址参数:
+    ?room=main   多个直播间用不同 room 名,互不干扰 (main / room2 / ...)
+    ?debug=1     左下角显示连接状态小圆点 (上播前去掉)
+    ?mute=1      关掉音效
+  ============================================================================
+-->
+<style>
+  :root {
+    --gold:       #F6C544;
+    --gold-deep:  #E0A92E;
+    --gold-light: #FFF0B8;
+    --ink:        #1a1205;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: transparent;          /* OBS 透明关键 */
+    font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    user-select: none;
+    pointer-events: none;             /* 永远不挡鼠标 */
+  }
+  #stage {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #stage.leaving { animation: fadeOut .55s ease forwards; }
+  @keyframes fadeOut { to { opacity: 0; } }
+
+  /* ---- 连接状态小圆点 (仅 debug) ---- */
+  #dbg {
+    position: fixed; left: 16px; bottom: 14px;
+    display: none; align-items: center; gap: 8px;
+    font-size: 13px; color: #fff;
+    text-shadow: 0 1px 3px #000; opacity: .85;
+  }
+  #dbg .dot { width: 11px; height: 11px; border-radius: 50%; background:#888; box-shadow:0 0 8px #000; }
+  #dbg.on  .dot { background:#39d353; box-shadow:0 0 10px #39d353; }
+  #dbg.err .dot { background:#ff4d4d; box-shadow:0 0 10px #ff4d4d; }
+
+  /* ======================================================================
+     SOLD 成交
+     ====================================================================== */
+  .sold-wrap { position: relative; display:flex; flex-direction:column; align-items:center; gap:2.2vmin; }
+  .sold-stamp {
+    font-weight: 900; font-size: 22vmin; letter-spacing: .5vmin;
+    color: var(--gold);
+    -webkit-text-stroke: .7vmin var(--ink);
+    paint-order: stroke fill;
+    text-shadow: 0 .8vmin 0 var(--gold-deep), 0 2vmin 5vmin rgba(0,0,0,.55);
+    transform: rotate(-9deg) scale(0);
+    animation: stampIn .55s cubic-bezier(.2,1.6,.4,1) forwards;
+  }
+  @keyframes stampIn {
+    0%   { transform: rotate(-9deg) scale(3); opacity: 0; }
+    60%  { transform: rotate(-9deg) scale(.86); opacity: 1; }
+    80%  { transform: rotate(-9deg) scale(1.06); }
+    100% { transform: rotate(-9deg) scale(1); }
+  }
+  .sold-ring {
+    position: absolute; top: 42%; left: 50%;
+    width: 18vmin; height: 18vmin; margin: -9vmin 0 0 -9vmin;
+    border: 1vmin solid var(--gold);
+    border-radius: 50%;
+    opacity: .85;
+    animation: ringOut .9s ease-out forwards;
+  }
+  @keyframes ringOut {
+    from { transform: scale(.3); opacity: .9; }
+    to   { transform: scale(4.2); opacity: 0; }
+  }
+  .sold-info {
+    display:flex; flex-direction:column; align-items:center; gap:1vmin;
+    opacity: 0; animation: riseIn .5s ease .35s forwards;
+  }
+  .sold-item {
+    font-size: 5.2vmin; font-weight: 800; color: #fff;
+    text-shadow: 0 .3vmin 1.4vmin rgba(0,0,0,.8); max-width: 80vw; text-align:center;
+  }
+  .sold-price {
+    font-size: 7vmin; font-weight: 900; color: var(--ink);
+    background: linear-gradient(180deg, var(--gold-light), var(--gold));
+    padding: .4vmin 4vmin; border-radius: 99px;
+    box-shadow: 0 1vmin 3vmin rgba(0,0,0,.5), inset 0 0 0 .4vmin rgba(255,255,255,.4);
+  }
+  @keyframes riseIn { from { opacity:0; transform: translateY(4vmin); } to { opacity:1; transform:none; } }
+
+  /* ======================================================================
+     买家欢迎 (下方横幅)
+     ====================================================================== */
+  .welcome-bar {
+    position: fixed; left: 4vw; bottom: 8vh;
+    display: flex; align-items: center; gap: 2.4vmin;
+    padding: 2vmin 4vmin 2vmin 2vmin;
+    background: linear-gradient(135deg, rgba(20,16,7,.94), rgba(40,30,10,.94));
+    border-left: .8vmin solid var(--gold);
+    border-radius: 1.6vmin;
+    box-shadow: 0 1.5vmin 4vmin rgba(0,0,0,.55);
+    transform: translateX(-130%);
+    animation: slideIn .6s cubic-bezier(.2,1,.3,1) forwards;
+  }
+  .welcome-bar.leave { animation: slideOut .5s ease forwards; }
+  @keyframes slideIn  { to { transform: none; } }
+  @keyframes slideOut { to { transform: translateX(-130%); } }
+  .welcome-ava {
+    width: 9vmin; height: 9vmin; flex: 0 0 auto; border-radius: 50%;
+    display:flex; align-items:center; justify-content:center;
+    font-size: 4.4vmin; font-weight: 900; color: var(--ink);
+    background: radial-gradient(circle at 35% 30%, var(--gold-light), var(--gold) 60%, var(--gold-deep));
+    box-shadow: inset 0 0 0 .4vmin rgba(255,255,255,.5), 0 0 2vmin var(--gold);
+  }
+  .welcome-text { display:flex; flex-direction:column; gap:.4vmin; }
+  .welcome-hi   { font-size: 2.6vmin; font-weight:700; color: var(--gold); letter-spacing:.3vmin; }
+  .welcome-name { font-size: 5vmin;  font-weight:900; color:#fff; line-height:1; }
+
+  /* ======================================================================
+     稀有卡 HYPE (全屏)
+     ====================================================================== */
+  .hype-wrap { position: fixed; inset: 0; display:flex; align-items:center; justify-content:center; }
+  .hype-rays {
+    position: absolute; width: 200vmax; height: 200vmax; left:50%; top:50%;
+    margin: -100vmax 0 0 -100vmax;
+    background: repeating-conic-gradient(from 0deg, rgba(246,197,68,.16) 0deg 7deg, transparent 7deg 14deg);
+    animation: spin 9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hype-core { position: relative; text-align:center; animation: shake .5s ease-in-out 3; }
+  @keyframes shake {
+    0%,100% { transform: translate(0,0); }
+    25% { transform: translate(-1vmin,.6vmin); }
+    50% { transform: translate(1vmin,-.6vmin); }
+    75% { transform: translate(-.6vmin,-.4vmin); }
+  }
+  .hype-big {
+    font-size: 16vmin; font-weight: 900; line-height: 1;
+    color: var(--gold);
+    -webkit-text-stroke: .6vmin var(--ink); paint-order: stroke fill;
+    text-shadow: 0 0 6vmin var(--gold), 0 1.5vmin 3vmin rgba(0,0,0,.6);
+    transform: scale(0); animation: pop .5s cubic-bezier(.2,1.7,.4,1) forwards;
+  }
+  .hype-sub {
+    margin-top: 1.5vmin; font-size: 5vmin; font-weight:800; color:#fff;
+    text-shadow: 0 .3vmin 1.4vmin rgba(0,0,0,.85);
+    opacity:0; animation: riseIn .5s ease .3s forwards; max-width:86vw;
+  }
+  @keyframes pop { 0%{transform:scale(0)} 70%{transform:scale(1.12)} 100%{transform:scale(1)} }
+
+  /* ======================================================================
+     倒计时 / 拍卖
+     ====================================================================== */
+  .count-num {
+    font-size: 34vmin; font-weight: 900; color: var(--gold);
+    -webkit-text-stroke: .8vmin var(--ink); paint-order: stroke fill;
+    text-shadow: 0 0 7vmin var(--gold), 0 2vmin 4vmin rgba(0,0,0,.6);
+    animation: countPulse 1s ease forwards;
+  }
+  @keyframes countPulse {
+    0%   { transform: scale(2.2); opacity: 0; }
+    25%  { transform: scale(1);   opacity: 1; }
+    80%  { transform: scale(1);   opacity: 1; }
+    100% { transform: scale(.6);  opacity: 0; }
+  }
+  .auction-call {
+    text-align:center;
+    font-size: 11vmin; font-weight: 900; color:#fff;
+    -webkit-text-stroke: .5vmin var(--ink); paint-order: stroke fill;
+    text-shadow: 0 0 5vmin rgba(246,197,68,.7), 0 1.5vmin 3vmin rgba(0,0,0,.6);
+    transform: scale(0); animation: pop .45s cubic-bezier(.2,1.7,.4,1) forwards;
+  }
+  .auction-call .gavel { font-size: 13vmin; display:block; }
+
+  /* ---- 彩带 ---- */
+  .confetti { position: fixed; top: -8vmin; width: 1.4vmin; height: 2.4vmin; border-radius:.3vmin; will-change: transform, opacity; }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="dbg"><span class="dot"></span><span id="dbgtxt">连接中…</span></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+  (function () {
+    // --- 公开的前端连接信息 (与库存系统同一个,anon key 本就公开) ---
+    const SUPABASE_URL = 'https://dqreqevbjszercgackuc.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxcmVxZXZianN6ZXJjZ2Fja3VjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NzU4NzcsImV4cCI6MjA5MzA1MTg3N30.vDu1lA5SJLpA_mRhAF5JkVSreP_F4Q9g_Ta-9xm-UdU';
+
+    const params = new URLSearchParams(location.search);
+    const ROOM  = params.get('room') || 'main';
+    const DEBUG = params.get('debug') === '1';
+    const MUTE  = params.get('mute') === '1';
+
+    const stage = document.getElementById('stage');
+    const dbg = document.getElementById('dbg');
+    const dbgtxt = document.getElementById('dbgtxt');
+    if (DEBUG) dbg.style.display = 'flex';
+
+    let clearTimer = null;
+    const esc = (s) => String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    // ---- 音效 (Web Audio,无需素材文件;?mute=1 关闭) ----
+    let actx = null;
+    function chime(kind) {
+      if (MUTE) return;
+      try {
+        actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+        const now = actx.currentTime;
+        // 上行大三和弦琶音,听着喜庆不廉价
+        const notes = kind === 'hype' ? [523.25, 659.25, 783.99, 1046.5]
+                                      : [523.25, 659.25, 783.99];
+        notes.forEach((f, i) => {
+          const o = actx.createOscillator(), g = actx.createGain();
+          o.type = 'triangle'; o.frequency.value = f;
+          const t = now + i * 0.08;
+          g.gain.setValueAtTime(0, t);
+          g.gain.linearRampToValueAtTime(0.18, t + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0008, t + 0.45);
+          o.connect(g); g.connect(actx.destination);
+          o.start(t); o.stop(t + 0.5);
+        });
+      } catch (e) { /* OBS 偶尔禁音,忽略 */ }
+    }
+
+    // ---- 彩带 ----
+    const GOLD = ['#F6C544', '#FFF0B8', '#E0A92E', '#FFFFFF', '#FFD56A'];
+    function confettiBurst(n) {
+      n = n || 70;
+      for (let i = 0; i < n; i++) {
+        const c = document.createElement('div');
+        c.className = 'confetti';
+        const left = Math.random() * 100;
+        const dur = 2.2 + Math.random() * 1.8;
+        const delay = Math.random() * 0.5;
+        const drift = (Math.random() * 2 - 1) * 18;
+        const rot = Math.random() * 720;
+        c.style.left = left + 'vw';
+        c.style.background = GOLD[(Math.random() * GOLD.length) | 0];
+        c.style.opacity = '0';
+        c.animate([
+          { transform: 'translate(0,0) rotate(0deg)', opacity: 1 },
+          { transform: `translate(${drift}vw, 112vh) rotate(${rot}deg)`, opacity: 1 },
+        ], { duration: dur * 1000, delay: delay * 1000, easing: 'cubic-bezier(.3,.1,.5,1)', fill: 'forwards' });
+        document.body.appendChild(c);
+        setTimeout(() => c.remove(), (dur + delay) * 1000 + 200);
+      }
+    }
+
+    function clearStage(fade) {
+      if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
+      if (fade) {
+        stage.classList.add('leaving');
+        setTimeout(() => { stage.classList.remove('leaving'); stage.innerHTML = ''; }, 560);
+      } else {
+        stage.classList.remove('leaving'); stage.innerHTML = '';
+      }
+    }
+    function holdThenClear(ms) {
+      if (clearTimer) clearTimeout(clearTimer);
+      clearTimer = setTimeout(() => clearStage(true), ms);
+    }
+
+    // ---- 主播放器 ----
+    function play(p) {
+      p = p || {};
+      clearStage(false);
+
+      if (p.anim === 'clear') { return; }
+
+      if (p.anim === 'sold') {
+        const item  = p.item  ? `<div class="sold-item">${esc(p.item)}</div>` : '';
+        const price = p.price ? `<div class="sold-price">${esc(p.price)}</div>` : '';
+        stage.innerHTML =
+          `<div class="sold-wrap">
+             <div class="sold-ring"></div>
+             <div class="sold-stamp">SOLD</div>
+             <div class="sold-info">${item}${price}</div>
+           </div>`;
+        confettiBurst(80); chime('sold'); holdThenClear(4200);
+        return;
+      }
+
+      if (p.anim === 'welcome') {
+        const name = esc(p.name || 'Guest');
+        const initial = name.replace(/^@/, '').charAt(0).toUpperCase() || '🎉';
+        stage.innerHTML =
+          `<div class="welcome-bar" id="wbar">
+             <div class="welcome-ava">${esc(initial)}</div>
+             <div class="welcome-text">
+               <div class="welcome-hi">WELCOME</div>
+               <div class="welcome-name">${name}</div>
+             </div>
+           </div>`;
+        // 5 秒后滑出
+        clearTimer = setTimeout(() => {
+          const bar = document.getElementById('wbar');
+          if (bar) bar.classList.add('leave');
+          setTimeout(() => clearStage(false), 520);
+        }, 5000);
+        return;
+      }
+
+      if (p.anim === 'hype') {
+        const big = esc(p.text && p.text.trim() ? p.text : '🔥 BIG PULL 🔥');
+        stage.innerHTML =
+          `<div class="hype-wrap">
+             <div class="hype-rays"></div>
+             <div class="hype-core">
+               <div class="hype-big">${big}</div>
+               <div class="hype-sub">RARE PULL — CONGRATS!</div>
+             </div>
+           </div>`;
+        confettiBurst(120); chime('hype'); holdThenClear(5000);
+        return;
+      }
+
+      if (p.anim === 'countdown') {
+        let n = parseInt(p.from, 10); if (!(n > 0)) n = 3; if (n > 10) n = 10;
+        const tick = () => {
+          stage.classList.remove('leaving');
+          if (n > 0) {
+            stage.innerHTML = `<div class="count-num">${n}</div>`;
+            chime('sold');
+            n--; clearTimer = setTimeout(tick, 1000);
+          } else {
+            stage.innerHTML = `<div class="count-num" style="color:#fff">GO!</div>`;
+            confettiBurst(60);
+            holdThenClear(900);
+          }
+        };
+        tick();
+        return;
+      }
+
+      if (p.anim === 'auction') {
+        const map = {
+          once:  { t: 'GOING ONCE',  g: '🔨' },
+          twice: { t: 'GOING TWICE', g: '🔨' },
+          sold:  { t: 'SOLD!',       g: '✅' },
+        };
+        const a = map[p.step] || map.once;
+        stage.innerHTML =
+          `<div class="auction-call"><span class="gavel">${a.g}</span>${esc(a.t)}</div>`;
+        if (p.step === 'sold') { confettiBurst(80); chime('sold'); }
+        holdThenClear(p.step === 'sold' ? 3500 : 2400);
+        return;
+      }
+    }
+
+    // ---- 连上 Supabase Realtime ----
+    const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    const channel = sb.channel('lv-cg-' + ROOM, { config: { broadcast: { self: false } } });
+    channel
+      .on('broadcast', { event: 'cue' }, (msg) => play(msg.payload))
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') { dbg.className = 'on'; dbgtxt.textContent = '已连接 · room=' + ROOM; }
+        else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') { dbg.className = 'err'; dbgtxt.textContent = '连接失败,刷新来源'; }
+        else { dbg.className = ''; dbgtxt.textContent = status; }
+      });
+  })();
+  </script>
+</body>
+</html>
