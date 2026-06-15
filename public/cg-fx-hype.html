@@ -3,60 +3,148 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>CG — HYPE</title>
+<title>CG — HYPE (premium)</title>
 <!--
-  单块动画文件:稀有卡 HYPE。自包含,被显示即自动播一遍后透明。
-  OBS:来源 ➕ → 浏览器 → 勾「本地文件」→ 选此文件;1920×1080;
-  勾「源不可见时关闭」。
+  单块动画:稀有卡 HYPE(高质感版)。自包含,无外部依赖,透明背景。
+  Canvas 粒子(火花喷射 + 金尘 + 彩带)+ 金箔流光文字 + 光爆冲击 + 旋转光芒。
+  被 OBS 显示即自动播一遍后透明;visibilitychange 再次显示会重播。
+  OBS:来源 ➕ → 浏览器 → 本地文件/网址;1920×1080;勾「源不可见时关闭」。
 -->
 <style>
-  :root { --gold:#F6C544; --ink:#1a1205; }
+  :root { --gold:#F6C544; --gold-deep:#C8881B; --gold-light:#FFF3C4; --ink:#140d02; }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
-  #stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
-    font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
-  .rays { position:fixed; width:200vmax; height:200vmax; left:50%; top:50%; margin:-100vmax 0 0 -100vmax;
-    background:repeating-conic-gradient(from 0deg, rgba(246,197,68,.16) 0deg 7deg, transparent 7deg 14deg); animation:spin 9s linear infinite; }
-  @keyframes spin { to{transform:rotate(360deg)} }
-  .core { position:relative; text-align:center; animation:shake .5s ease-in-out 3; }
-  @keyframes shake { 0%,100%{transform:translate(0,0)} 25%{transform:translate(-1vmin,.6vmin)} 50%{transform:translate(1vmin,-.6vmin)} 75%{transform:translate(-.6vmin,-.4vmin)} }
-  .big { font-size:16vmin; font-weight:900; line-height:1; color:var(--gold);
-    -webkit-text-stroke:.6vmin var(--ink); paint-order:stroke fill;
-    text-shadow:0 0 6vmin var(--gold), 0 1.5vmin 3vmin rgba(0,0,0,.6); transform:scale(0); animation:pop .5s cubic-bezier(.2,1.7,.4,1) forwards; }
-  .sub { margin-top:1.5vmin; font-size:5vmin; font-weight:800; color:#fff; text-shadow:0 .3vmin 1.4vmin rgba(0,0,0,.85);
-    opacity:0; animation:rise .5s ease .3s forwards; }
-  @keyframes pop { 0%{transform:scale(0)} 70%{transform:scale(1.12)} 100%{transform:scale(1)} }
-  @keyframes rise { from{opacity:0;transform:translateY(4vmin)} to{opacity:1;transform:none} }
-  .confetti { position:fixed; top:-8vmin; width:1.4vmin; height:2.4vmin; border-radius:.3vmin; }
-  #stage.out { animation:fade .5s ease forwards; }
+  #wrap { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    font-family:"Arial Black",system-ui,-apple-system,sans-serif; }
+
+  /* 旋转光芒 + 中心辉光,放在文字后面 */
+  .rays { position:fixed; inset:-50%; margin:auto; width:200vmax; height:200vmax; left:50%; top:50%;
+    transform:translate(-50%,-50%); border-radius:50%;
+    background:repeating-conic-gradient(from 0deg, rgba(246,197,68,.13) 0deg 6deg, transparent 6deg 13deg);
+    -webkit-mask:radial-gradient(closest-side, #000 0%, #000 38%, transparent 72%);
+            mask:radial-gradient(closest-side, #000 0%, #000 38%, transparent 72%);
+    animation:spin 14s linear infinite; opacity:0; }
+  .glow { position:fixed; left:50%; top:50%; width:120vmin; height:120vmin; transform:translate(-50%,-50%) scale(.4);
+    background:radial-gradient(circle, rgba(246,197,68,.55) 0%, rgba(246,197,68,.18) 30%, transparent 62%);
+    filter:blur(8px); opacity:0; animation:glowIn 1s ease-out forwards; }
+  @keyframes spin { to { transform:translate(-50%,-50%) rotate(360deg); } }
+  @keyframes glowIn { 0%{opacity:0;transform:translate(-50%,-50%) scale(.4)} 40%{opacity:1} 100%{opacity:.85;transform:translate(-50%,-50%) scale(1)} }
+
+  /* 冲击波环 + 起手白光闪 */
+  .shock { position:fixed; left:50%; top:50%; width:30vmin; height:30vmin; margin:-15vmin 0 0 -15vmin;
+    border:1.4vmin solid rgba(255,243,196,.9); border-radius:50%; filter:blur(.3vmin);
+    animation:shock 1s cubic-bezier(.2,.7,.3,1) forwards; }
+  @keyframes shock { 0%{transform:scale(.2);opacity:1} 100%{transform:scale(5.5);opacity:0} }
+  .flash { position:fixed; inset:0; background:radial-gradient(circle at 50% 50%, rgba(255,255,255,.9), rgba(255,236,170,.35) 25%, transparent 55%);
+    animation:flash .55s ease-out forwards; }
+  @keyframes flash { 0%{opacity:0} 12%{opacity:1} 100%{opacity:0} }
+
+  canvas#fx { position:fixed; inset:0; width:100%; height:100%; pointer-events:none; }
+
+  /* 文字 */
+  .core { position:relative; text-align:center; z-index:5;
+    animation:floaty 2.6s ease-in-out .5s infinite alternate; }
+  .big {
+    font-size:18vmin; font-weight:900; line-height:1; letter-spacing:.3vmin;
+    background:linear-gradient(96deg, #9a6708 0%, #F6C544 22%, #FFF7D4 46%, #FFFFFF 50%, #FFF7D4 54%, #F6C544 74%, #a9740c 100%);
+    background-size:260% 100%; -webkit-background-clip:text; background-clip:text; color:transparent;
+    text-shadow:0 0 4vmin rgba(246,197,68,.55), 0 0 9vmin rgba(246,197,68,.35);
+    filter:drop-shadow(0 .7vmin .2vmin rgba(0,0,0,.55)) drop-shadow(0 0 1.2vmin rgba(255,220,120,.6));
+    transform:scale(0); animation:pop .6s cubic-bezier(.2,1.7,.45,1) forwards, sheen 2.4s linear .4s infinite; }
+  .big .emoji { -webkit-text-fill-color:initial; color:initial; filter:drop-shadow(0 0 2vmin rgba(255,120,0,.7)); }
+  @keyframes pop { 0%{transform:scale(0)} 65%{transform:scale(1.14)} 100%{transform:scale(1)} }
+  @keyframes sheen { 0%{background-position:130% 0} 100%{background-position:-130% 0} }
+  @keyframes floaty { from{transform:translateY(-.6vmin)} to{transform:translateY(.6vmin)} }
+  .sub { margin-top:2vmin; font-size:5vmin; font-weight:800; letter-spacing:.4vmin; color:#fff;
+    text-shadow:0 0 2vmin rgba(246,197,68,.9), 0 .3vmin 1.2vmin rgba(0,0,0,.85);
+    opacity:0; animation:rise .55s ease .35s forwards; }
+  @keyframes rise { from{opacity:0;transform:translateY(3vmin) scale(.96)} to{opacity:1;transform:none} }
+
+  #wrap.out { animation:fade .55s ease forwards; }
   @keyframes fade { to{opacity:0} }
 </style>
 </head>
 <body>
-  <div id="stage"></div>
+  <div id="wrap">
+    <div class="rays" id="rays"></div>
+    <div class="glow"></div>
+    <canvas id="fx"></canvas>
+    <div class="core">
+      <div class="big"><span class="emoji">🔥</span> BIG PULL <span class="emoji">🔥</span></div>
+      <div class="sub">RARE PULL — CONGRATS!</div>
+    </div>
+  </div>
+
   <script>
   (function(){
-    var stage=document.getElementById('stage');
-    var GOLD=['#F6C544','#FFF0B8','#E0A92E','#FFFFFF','#FFD56A'];
-    function confetti(n){
-      for(var i=0;i<n;i++){
-        var c=document.createElement('div'); c.className='confetti';
-        c.style.left=(Math.random()*100)+'vw'; c.style.background=GOLD[(Math.random()*GOLD.length)|0];
-        var dur=2.2+Math.random()*1.8, delay=Math.random()*0.5, drift=(Math.random()*2-1)*18, rot=Math.random()*720;
-        document.body.appendChild(c);
-        c.animate([{transform:'translate(0,0) rotate(0deg)',opacity:1},{transform:'translate('+drift+'vw,112vh) rotate('+rot+'deg)',opacity:1}],
-          {duration:dur*1000,delay:delay*1000,easing:'cubic-bezier(.3,.1,.5,1)',fill:'forwards'});
-        (function(el,t){setTimeout(function(){el.remove();},t*1000+200);})(c,dur+delay);
+    var wrap=document.getElementById('wrap'), rays=document.getElementById('rays');
+    var cv=document.getElementById('fx'), ctx=cv.getContext('2d');
+    var W,H,DPR=Math.min(window.devicePixelRatio||1,2);
+    function size(){ W=cv.width=innerWidth*DPR; H=cv.height=innerHeight*DPR; cv.style.width=innerWidth+'px'; cv.style.height=innerHeight+'px'; }
+    size(); addEventListener('resize',size);
+
+    var GOLD=['#FFE9A8','#F6C544','#FFD56A','#FFFFFF','#E0A92E'];
+    function pick(a){ return a[(Math.random()*a.length)|0]; }
+    var parts=[], raf=null, t1=null, t2=null, startTs=0;
+
+    function burst(){
+      var cx=W/2, cy=H*0.46;
+      // 火花喷射
+      for(var i=0;i<140;i++){
+        var a=Math.random()*Math.PI*2, sp=(4+Math.random()*13)*DPR;
+        parts.push({x:cx,y:cy,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,g:0.05*DPR,drag:0.95,
+          r:(1+Math.random()*2.4)*DPR,life:1,decay:0.012+Math.random()*0.02,c:pick(GOLD),add:true});
+      }
+      // 上升金尘
+      for(var j=0;j<46;j++){
+        parts.push({x:Math.random()*W,y:cy+(Math.random()*0.5-0.25)*H,vx:(Math.random()*2-1)*0.6*DPR,vy:-(0.4+Math.random()*1.4)*DPR,g:-0.004*DPR,drag:0.99,
+          r:(0.8+Math.random()*1.6)*DPR,life:1,decay:0.004+Math.random()*0.006,c:pick(GOLD),add:true});
+      }
+      // 彩带(金箔片)
+      for(var k=0;k<70;k++){
+        parts.push({x:Math.random()*W,y:-Math.random()*H*0.3,vx:(Math.random()*2-1)*1.2*DPR,vy:(2+Math.random()*3)*DPR,g:0.06*DPR,drag:1,
+          w:(3+Math.random()*4)*DPR,h:(7+Math.random()*8)*DPR,rot:Math.random()*6.28,vr:(Math.random()*2-1)*0.3,
+          life:1,decay:0.003+Math.random()*0.004,c:pick(GOLD),flake:true});
       }
     }
-    var t1,t2;
+
+    function frame(ts){
+      if(!startTs) startTs=ts;
+      ctx.clearRect(0,0,W,H);
+      for(var i=parts.length-1;i>=0;i--){
+        var p=parts[i];
+        p.vx*=p.drag; p.vy=p.vy*p.drag+p.g; p.x+=p.vx; p.y+=p.vy; p.life-=p.decay;
+        if(p.life<=0||p.y>H+40){ parts.splice(i,1); continue; }
+        if(p.flake){
+          p.rot+=p.vr;
+          ctx.save(); ctx.globalAlpha=Math.max(0,Math.min(1,p.life)); ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+          ctx.fillStyle=p.c; ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h*(0.5+0.5*Math.abs(Math.cos(p.rot)))); ctx.restore();
+        } else {
+          ctx.globalCompositeOperation=p.add?'lighter':'source-over';
+          ctx.globalAlpha=Math.max(0,Math.min(1,p.life));
+          ctx.beginPath(); ctx.fillStyle=p.c; ctx.arc(p.x,p.y,p.r,0,6.283); ctx.fill();
+          ctx.globalCompositeOperation='source-over';
+        }
+      }
+      ctx.globalAlpha=1;
+      raf=requestAnimationFrame(frame);
+    }
+
+    function transient(cls,ms){
+      var d=document.createElement('div'); d.className=cls; wrap.appendChild(d);
+      setTimeout(function(){ d.remove(); }, ms);
+    }
     function play(){
-      clearTimeout(t1); clearTimeout(t2);
-      stage.classList.remove('out');
-      stage.innerHTML='<div class="rays"></div><div class="core"><div class="big">🔥 BIG PULL 🔥</div><div class="sub">RARE PULL — CONGRATS!</div></div>';
-      confetti(120);
-      t1=setTimeout(function(){ stage.classList.add('out'); },4400);
-      t2=setTimeout(function(){ stage.innerHTML=''; stage.classList.remove('out'); },5000);
+      clearTimeout(t1); clearTimeout(t2); if(raf) cancelAnimationFrame(raf);
+      wrap.classList.remove('out'); parts=[]; startTs=0;
+      rays.style.animation='none'; void rays.offsetWidth; rays.style.animation='spin 14s linear infinite';
+      rays.style.opacity=''; rays.animate([{opacity:0},{opacity:1}],{duration:600,fill:'forwards'});
+      transient('flash',600); transient('shock',1000);
+      burst(); raf=requestAnimationFrame(frame);
+      // 二次小喷,层次更足
+      setTimeout(burst,260);
+      t1=setTimeout(function(){ wrap.classList.add('out'); },4600);
+      t2=setTimeout(function(){ if(raf) cancelAnimationFrame(raf); parts=[]; ctx.clearRect(0,0,W,H); },5200);
     }
     play();
     document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='visible') play(); });
