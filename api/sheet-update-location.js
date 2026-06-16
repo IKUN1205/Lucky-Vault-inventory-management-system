@@ -96,6 +96,7 @@ export default async function handler(req, res) {
 
   try {
     const results = new Map()  // cert → result object (first write wins)
+    const lastBinByCert = new Map()  // cert → remembered shelf bin (Slab Room return)
     const setOnce = (cert, r) => { if (!results.has(cert)) results.set(cert, { cert_number: cert, ...r }) }
 
     // 1. Room must be in the keyword map — never write raw caller text.
@@ -109,16 +110,29 @@ export default async function handler(req, res) {
     //    requested room (legit callers moved it there before calling us).
     if (pending.length > 0) {
       const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } })
-      const { data: dbRows, error: dbErr } = await supabase
-        .from('slabs')
-        .select('cert_number, location:locations(name)')
-        .in('cert_number', pending.map(i => i.cert))
-        .eq('deleted', false)
+      // last_slab_bin (a slab's remembered shelf bin) is selected when the
+      // column exists; on a return into the Slab Room we write THAT bin
+      // back to the sheet instead of the generic "slab room", so a card
+      // coming home from a show lands in its original bin (2026-06-16).
+      let selectCols = 'cert_number, location:locations(name), last_slab_bin'
+      let dbRows, dbErr
+      ;({ data: dbRows, error: dbErr } = await supabase
+        .from('slabs').select(selectCols)
+        .in('cert_number', pending.map(i => i.cert)).eq('deleted', false))
+      if (dbErr && /last_slab_bin/.test(dbErr.message || '')) {
+        // column not migrated yet — fall back without bin memory
+        ;({ data: dbRows, error: dbErr } = await supabase
+          .from('slabs').select('cert_number, location:locations(name)')
+          .in('cert_number', pending.map(i => i.cert)).eq('deleted', false))
+      }
       if (dbErr) throw dbErr
       const dbRoomByCert = new Map()
       for (const r of dbRows || []) {
         const c = String(r.cert_number).trim()
-        if (!dbRoomByCert.has(c)) dbRoomByCert.set(c, r.location?.name || null)
+        if (!dbRoomByCert.has(c)) {
+          dbRoomByCert.set(c, r.location?.name || null)
+          if (r.last_slab_bin) lastBinByCert.set(c, r.last_slab_bin)
+        }
       }
       for (const i of [...pending]) {
         if (!dbRoomByCert.has(i.cert)) {
@@ -157,9 +171,15 @@ export default async function handler(req, res) {
           const isDead = gr.struck[0] || gr.struck[2]
             || /sold|traded/i.test(locText) || /sold/i.test(statusText)
           if (isDead) { deadOnly.add(cert); continue }
+          // Returning to the Slab Room → write the remembered shelf bin
+          // (e.g. "2V-01") if we have one, else the generic "slab room".
+          // Going anywhere else → the room keyword.
+          const value = (item.room === 'Slab Room' && lastBinByCert.get(cert))
+            ? lastBinByCert.get(cert)
+            : KEYWORD_BY_ROOM[item.room]
           const cell = `${t.tab}!${colLetter(t.locationColumn)}${r + 1}`
-          updates.push({ range: cell, values: [[KEYWORD_BY_ROOM[item.room]]] })
-          setOnce(cert, { outcome: 'updated', cell, wrote: KEYWORD_BY_ROOM[item.room] })
+          updates.push({ range: cell, values: [[value]] })
+          setOnce(cert, { outcome: 'updated', cell, wrote: value, restored_bin: value !== KEYWORD_BY_ROOM[item.room] })
           wanted.delete(cert)
           deadOnly.delete(cert)
         }

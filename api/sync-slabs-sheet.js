@@ -247,6 +247,21 @@ export default async function handler(req, res) {
         console.warn('[sync-slabs-sheet] sheet_bin column missing — bin sync skipped (run scripts/add_slabs_sheet_bin.sql)')
       }
     }
+    // last_slab_bin remembers the most recent REAL shelf bin so a slab
+    // returning from a show lands back in its bin (added by
+    // scripts/add_slabs_last_bin.sql). Probe so we degrade gracefully.
+    let hasLastBinColumn = true
+    {
+      const { error: probeErr } = await supabase
+        .from('slabs').select('last_slab_bin').limit(1)
+      if (probeErr) {
+        hasLastBinColumn = false
+        console.warn('[sync-slabs-sheet] last_slab_bin column missing — bin memory skipped (run scripts/add_slabs_last_bin.sql)')
+      }
+    }
+    // A real shelf bin starts with a digit ("2V-01", "03-05", "3-11");
+    // room keywords (lucky/show/slab room/…) start with a letter.
+    const isBinCode = (s) => /^\d/.test(String(s || '').trim())
 
     // 4. Which certs exist? Pull current MP/LV/note + name too so we only
     //    PATCH deltas (item_name is needed for placeholder-name healing).
@@ -255,6 +270,7 @@ export default async function handler(req, res) {
     const existCols = 'id, cert_number, item_name, grading_company, market_price_usd, lv_price_usd, location_id'
       + (hasNoteColumn ? ', sheet_note' : '')
       + (hasBinColumn ? ', sheet_bin' : '')
+      + (hasLastBinColumn ? ', last_slab_bin' : '')
     for (let i = 0; i < certs.length; i += 150) {
       const { data, error } = await supabase
         .from('slabs')
@@ -337,6 +353,14 @@ export default async function handler(req, res) {
       if (hasBinColumn && (it.sheet_location_raw || null) !== (ex.sheet_bin || null)) {
         patch.sheet_bin = it.sheet_location_raw
       }
+      // Remember the most recent REAL shelf bin (digit-prefixed). When the
+      // slab later leaves to a show its Location cell becomes "show" (not a
+      // bin) — we deliberately DON'T overwrite last_slab_bin then, so the
+      // shelf is preserved for the return trip.
+      if (hasLastBinColumn && isBinCode(it.sheet_location_raw)
+          && it.sheet_location_raw !== ex.last_slab_bin) {
+        patch.last_slab_bin = it.sheet_location_raw
+      }
       // Names are SHEET-OWNED (boss directive 2026-06-11 "我们以sheet作为
       // 基础"): whenever the sheet has a real Item Name and the app
       // disagrees, the sheet wins — hourly, same as prices. The old rule
@@ -392,6 +416,7 @@ export default async function handler(req, res) {
       }
       if (hasNoteColumn) row.sheet_note = it.sheet_note
       if (hasBinColumn) row.sheet_bin = it.sheet_location_raw
+      if (hasLastBinColumn && isBinCode(it.sheet_location_raw)) row.last_slab_bin = it.sheet_location_raw
       return row
     })
     let ins = 0, insErr = 0
