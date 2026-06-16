@@ -53,6 +53,11 @@ const SHEET_CONFIG = {
     idColumn: 0,         // A = Cert
     nameColumn: 2,       // C = Item Name (for name-integrity check)
     statusColumn: 11,    // L = Status
+    // Real PSA/CGC certs are all 6+ digits (verified live 2026-06-16:
+    // zero real certs under 6 digits). A 1-5 digit value in the cert
+    // column is a mid-edit fat-finger (e.g. "89"), not a slab — skip it
+    // so it never raises a phantom "missing_in_db" critical alert.
+    minIdLength: 6,
     // Slabs have no qty (always 1) — set to null below in the scan call
     // so the comparator skips it cleanly.
     table: 'slabs',
@@ -177,6 +182,7 @@ async function loadSheetRows(cfg) {
       if (idCell == null || idCell === '') continue
       const idStr = String(idCell).trim()
       if (!/^\d+$/.test(idStr)) continue   // skip headers + junk
+      if (cfg.minIdLength && idStr.length < cfg.minIdLength) continue   // skip mid-edit short numbers
       // If an id appears in BOTH tabs, the first hit wins (loops in
       // SHEET_TABS order). That mirrors how the forward sync resolves
       // dupes and keeps the audit deterministic.

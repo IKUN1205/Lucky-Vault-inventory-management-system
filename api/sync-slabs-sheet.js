@@ -158,6 +158,9 @@ export default async function handler(req, res) {
       for (const gr of gridRows) {
         const cert = String(gr.cells[0] || '').trim()
         if (!/^\d+$/.test(cert)) { skippedJunk++; continue }
+        // Real PSA/CGC certs are 6+ digits; a 1-5 digit value is a
+        // mid-edit fat-finger, never a slab — don't import it as new.
+        if (cert.length < 6) { skippedJunk++; continue }
         // Ledger source: keep a sold-sheet-shaped copy (cols A..L) of every
         // cert row BEFORE any skip, so the sold-ledger appender below can
         // copy Pop/CL/Trend etc. faithfully when a cert sells. The two tabs
