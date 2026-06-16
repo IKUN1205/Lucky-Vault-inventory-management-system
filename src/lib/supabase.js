@@ -2203,6 +2203,128 @@ export const upsertProducts = async (rows) => {
   return { created, updated, data: data || [] }
 }
 
+// Guard shared by the edit + undo flows: a Japan→US shipment can only be
+// touched from the Japan side while it's still purely pending — status
+// 'Purchased' AND nothing received yet on the US side. Once the US team
+// starts receiving (Partially / Received, or quantity_received > 0) the row
+// is co-owned with US Master inventory and editing/canceling here would
+// desync the two. Throws a user-facing message in that case.
+const assertShipmentEditable = (ship) => {
+  if (!ship) throw new Error('Shipment not found')
+  if (ship.origin !== 'jp_to_us_shipment') throw new Error('Not a Japan→US shipment')
+  if (ship.deleted) throw new Error('This shipment was already canceled')
+  if (ship.status !== 'Purchased' || (ship.quantity_received || 0) > 0) {
+    throw new Error('Already arriving in the US — edit/cancel must be handled by the US team (Intake to Master)')
+  }
+}
+
+// Cancel (撤销) a still-pending Japan→US shipment. Refunds Japan Warehouse
+// inventory, then soft-deletes the acquisition row (so it also drops out of
+// the US Intake to Master pending list). Inventory is refunded FIRST so a
+// mid-flow crash leaves the row visible-but-refunded (recoverable), matching
+// the undoJapanStreamSale ordering convention.
+export const undoJapanToUSShipment = async (shipmentId, { deletedById = null, reason = null } = {}) => {
+  const { data: ship, error: getErr } = await supabase
+    .from('acquisitions')
+    .select('id, product_id, quantity_purchased, quantity_received, status, origin, deleted, carrier, tracking_number, date_purchased')
+    .eq('id', shipmentId)
+    .maybeSingle()
+  if (getErr) throw getErr
+  assertShipmentEditable(ship)
+
+  const locId = await fetchJapanWarehouseLocation()
+  await updateInventory(ship.product_id, locId, ship.quantity_purchased)  // refund
+  const { error: delErr } = await supabase
+    .from('acquisitions')
+    .update({
+      deleted: true,
+      deleted_at: new Date().toISOString(),
+      deleted_by_id: deletedById || null,
+      deleted_reason: reason || 'Japan→US shipment canceled from Japan shipments page',
+    })
+    .eq('id', shipmentId)
+  if (delErr) throw delErr
+  return ship
+}
+
+// Edit (修改) a still-pending Japan→US shipment. Re-points Japan Warehouse
+// stock to reflect the corrected (product, qty) before updating the row:
+//   - same product, qty changed → adjust the delta (refund or take more,
+//     with a stock check when taking more)
+//   - product changed → refund the old product fully, take the new one out
+//     (stock-checked)
+// Metadata-only edits (carrier / tracking / cost / date / notes) skip the
+// inventory math. Returns the updated row.
+export const updateJapanToUSShipment = async (shipmentId, {
+  product_id, quantity, unit_cost_jpy, source_acquisition_id,
+  carrier, tracking_number, shipped_date, notes,
+}) => {
+  const { data: old, error: getErr } = await supabase
+    .from('acquisitions')
+    .select('id, product_id, quantity_purchased, quantity_received, status, origin, deleted, date_purchased')
+    .eq('id', shipmentId)
+    .maybeSingle()
+  if (getErr) throw getErr
+  assertShipmentEditable(old)
+
+  if (!product_id) throw new Error('Product is required')
+  const newQty = parseInt(quantity, 10)
+  if (!Number.isFinite(newQty) || newQty <= 0) throw new Error('Quantity must be at least 1')
+
+  const locId = await fetchJapanWarehouseLocation()
+  const oldQty = old.quantity_purchased || 0
+  const oldProduct = old.product_id
+
+  const availFor = async (pid) => {
+    const { data } = await supabase
+      .from('inventory')
+      .select('quantity')
+      .eq('product_id', pid)
+      .eq('location_id', locId)
+      .maybeSingle()
+    return data?.quantity || 0
+  }
+
+  if (product_id === oldProduct) {
+    const diff = newQty - oldQty  // >0 take more out of Japan, <0 refund
+    if (diff > 0) {
+      const avail = await availFor(product_id)
+      if (diff > avail) throw new Error(`Not enough Japan stock — need ${diff} more, only ${avail} available`)
+    }
+    if (diff !== 0) await updateInventory(product_id, locId, -diff)
+  } else {
+    const availNew = await availFor(product_id)
+    if (newQty > availNew) throw new Error(`Not enough Japan stock for the new product — need ${newQty}, only ${availNew} available`)
+    await updateInventory(oldProduct, locId, oldQty)   // refund old fully
+    await updateInventory(product_id, locId, -newQty)  // take new out
+  }
+
+  const costJpy = parseFloat(unit_cost_jpy) || 0
+  const totalCostJpy = costJpy * newQty
+  const totalCostUsd = convertToUSD(totalCostJpy, 'JPY')
+
+  const { data: updated, error: upErr } = await supabase
+    .from('acquisitions')
+    .update({
+      product_id,
+      quantity_purchased: newQty,
+      cost: totalCostJpy,
+      cost_usd: totalCostUsd,
+      currency: 'JPY',
+      source_acquisition_id: source_acquisition_id || null,
+      carrier: carrier || null,
+      tracking_number: tracking_number?.trim() || null,
+      date_purchased: shipped_date || old.date_purchased,
+      notes: notes ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', shipmentId)
+    .select()
+    .single()
+  if (upErr) throw upErr
+  return updated
+}
+
 // All active Japan→US shipments (for the shipment page's recent list +
 // in-transit visibility). Filters out delivered/canceled by default;
 // pass { includeAll: true } to see everything.

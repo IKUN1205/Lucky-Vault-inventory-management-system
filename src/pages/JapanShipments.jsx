@@ -6,12 +6,14 @@ import {
   fetchJapanAcquisitions,
   fetchJapanToUSShipments,
   createJapanToUSShipment,
+  updateJapanToUSShipment,
+  undoJapanToUSShipment,
   convertToUSD,
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import { useAuth } from '../lib/AuthContext'
-import { Truck, Save, Plus, Trash2, ExternalLink, Package } from 'lucide-react'
+import { Truck, Save, Plus, Trash2, ExternalLink, Package, Pencil, X, RotateCcw, Lock, Loader2 } from 'lucide-react'
 import { variantLabel, variantChipClasses } from '../lib/japanVariants'
 
 // ============================================================================
@@ -85,13 +87,20 @@ export default function JapanShipments() {
   const { toasts, addToast, removeToast } = useToast()
   const { user } = useAuth()
 
-  const [inventory, setInventory] = useState([])
+  const [inventory, setInventory] = useState([])           // qty>0, for the create form picker
+  const [fullInventory, setFullInventory] = useState([])   // all Japan rows, for the edit modal picker
   const [users, setUsers] = useState([])
   const [japanAcqs, setJapanAcqs] = useState([])           // source-acq linkage candidates
   const [shipments, setShipments] = useState([])           // in-transit list
 
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+
+  // Edit/Undo state for the in-transit table. `editing` holds the row being
+  // edited (null = modal closed); `rowBusy` is the id of a row mid-cancel so
+  // we can disable its buttons.
+  const [editing, setEditing] = useState(null)
+  const [rowBusy, setRowBusy] = useState(null)
 
   // Header (per-shipment-batch): one tracking# typically covers multiple SKUs
   const [header, setHeader] = useState({
@@ -117,6 +126,7 @@ export default function JapanShipments() {
         fetchJapanAcquisitions(100),         // wide list for source picker
         fetchJapanToUSShipments({ limit: 30 }),
       ])
+      setFullInventory(inv)
       setInventory(inv.filter(r => (r.quantity || 0) > 0))
       setUsers(usersData)
       setJapanAcqs(acqs)
@@ -287,6 +297,56 @@ export default function JapanShipments() {
       }
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  // A shipment is editable/cancelable from the Japan side only while it's
+  // purely pending (US side hasn't received any). Mirror the server guard so
+  // the UI doesn't even offer the action when it would be rejected.
+  const isPending = (s) => s.status === 'Purchased' && (s.quantity_received || 0) === 0
+
+  const handleCancelShipment = async (s) => {
+    // One dialog doubles as confirm + reason capture: Cancel (null) aborts,
+    // OK (even empty string) proceeds and the text becomes the Lark reason.
+    const reason = window.prompt(
+      `撤销这单发货?\n${extractLaunchName(s.product?.name, s.product?.category)} × ${s.quantity_purchased}\n\n日本库存会退回,美国群会收到「不要收货」提醒。\n可填撤销原因(可留空):`,
+      ''
+    )
+    if (reason === null) return  // user hit Cancel
+
+    setRowBusy(s.id)
+    try {
+      await undoJapanToUSShipment(s.id, { deletedById: user?.id || null, reason: reason || null })
+      addToast('✓ 发货已撤销,日本库存已退回', 'success')
+
+      // Tell the US team to stop expecting the package.
+      try {
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'jp_shipment_canceled',
+            canceledBy: user?.name || 'Unknown',
+            productName: s.product
+              ? `${s.product.brand} | ${extractLaunchName(s.product.name, s.product.category)} | ${s.product.category || s.product.type} | ${s.product.language}`
+              : 'Unknown',
+            quantity: s.quantity_purchased,
+            carrier: s.carrier || null,
+            trackingNumber: s.tracking_number || null,
+            reason: reason || null,
+            shippedDate: s.date_purchased || null,
+          }),
+        }).catch(err => console.error('[lark-notify] jp_shipment_canceled failed:', err))
+      } catch (err) {
+        console.error('[lark-notify] jp_shipment_canceled payload build failed:', err)
+      }
+
+      await load()
+    } catch (err) {
+      console.error('[JapanShipment] cancel failed:', err)
+      addToast(err.message || 'Failed to cancel shipment', 'error')
+    } finally {
+      setRowBusy(null)
     }
   }
 
@@ -474,6 +534,7 @@ export default function JapanShipments() {
                   <th className="pb-2">Carrier / Tracking</th>
                   <th className="pb-2">Status</th>
                   <th className="pb-2">Shipper</th>
+                  <th className="pb-2 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -504,6 +565,37 @@ export default function JapanShipments() {
                       )}
                     </td>
                     <td className="py-1.5 text-gray-400">{s.acquirer?.name || '—'}</td>
+                    <td className="py-1.5 text-right">
+                      {isPending(s) ? (
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setEditing(s)}
+                            disabled={rowBusy === s.id}
+                            className="p-1.5 text-gray-400 hover:text-vault-gold rounded-md hover:bg-vault-gold/10 disabled:opacity-40"
+                            title="修改这单发货"
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleCancelShipment(s)}
+                            disabled={rowBusy === s.id}
+                            className="p-1.5 text-gray-400 hover:text-red-400 rounded-md hover:bg-red-500/10 disabled:opacity-40"
+                            title="撤销这单发货(退回日本库存)"
+                          >
+                            {rowBusy === s.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+                          </button>
+                        </div>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1 text-[11px] text-gray-500"
+                          title="美国端已开始收货,需在美国团队侧处理"
+                        >
+                          <Lock size={11} /> 已锁定
+                        </span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -513,6 +605,167 @@ export default function JapanShipments() {
             </div>
           </div>
         )}
+      </div>
+
+      {editing && (
+        <EditShipmentModal
+          shipment={editing}
+          inventory={fullInventory}
+          onClose={() => setEditing(null)}
+          onSaved={async () => { setEditing(null); await load() }}
+          addToast={addToast}
+        />
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// Edit modal for a still-pending Japan→US shipment.
+// ============================================================================
+// Pre-fills the row's fields. Save routes through updateJapanToUSShipment,
+// which re-points Japan stock for any product/qty change (stock-checked
+// server-side) and rewrites the acquisition row. Edits are intentionally
+// SILENT on Lark (unlike cancel) — the US team reads the live DB value when
+// they receive, so a typo fix doesn't need to spam the group. Only fields
+// likely to be mis-entered are exposed; shipper + source-link stay as-is.
+function EditShipmentModal({ shipment, inventory, onClose, onSaved, addToast }) {
+  const seedUnitJpy = shipment.quantity_purchased > 0
+    ? Math.round((Number(shipment.cost) || 0) / shipment.quantity_purchased)
+    : 0
+
+  const [form, setForm] = useState({
+    product_id: shipment.product_id || '',
+    quantity: shipment.quantity_purchased || 1,
+    unit_cost_jpy: seedUnitJpy ? String(seedUnitJpy) : '',
+    carrier: shipment.carrier || '',
+    tracking_number: shipment.tracking_number || '',
+    shipped_date: shipment.date_purchased || new Date().toLocaleDateString('en-CA'),
+    notes: shipment.notes || '',
+  })
+  const [saving, setSaving] = useState(false)
+
+  const set = (field, value) => setForm(f => ({ ...f, [field]: value }))
+
+  const qty = parseInt(form.quantity) || 0
+  const unit = parseFloat(form.unit_cost_jpy) || 0
+  const lineJpy = qty * unit
+  const lineUsd = convertToUSD(lineJpy, 'JPY')
+
+  const handleSave = async () => {
+    if (!form.product_id) { addToast('Pick a product', 'error'); return }
+    if (qty <= 0) { addToast('Quantity must be at least 1', 'error'); return }
+    setSaving(true)
+    try {
+      await updateJapanToUSShipment(shipment.id, {
+        product_id: form.product_id,
+        quantity: qty,
+        unit_cost_jpy: unit,
+        carrier: form.carrier || null,
+        tracking_number: form.tracking_number || null,
+        shipped_date: form.shipped_date,
+        notes: form.notes || null,
+      })
+      addToast('✓ 发货已更新', 'success')
+      await onSaved()
+    } catch (err) {
+      console.error('[JapanShipment] edit failed:', err)
+      addToast(err.message || 'Failed to update shipment', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+      onClick={() => !saving && onClose()}>
+      <div className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-2xl w-full p-5 shadow-2xl max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center gap-2 text-vault-gold">
+            <Pencil size={18} />
+            <h3 className="font-semibold text-base">修改发货 / Edit shipment</h3>
+          </div>
+          <button onClick={onClose} disabled={saving} className="text-gray-500 hover:text-white p-1 -m-1">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Product (in Japan stock)</label>
+            <SearchableSelect
+              options={inventory}
+              value={form.product_id}
+              onChange={(val) => set('product_id', val)}
+              getOptionValue={(inv) => inv.product_id}
+              getOptionLabel={productOptionLabel}
+              getOptionSearchText={productSearchText}
+              renderOption={renderProductOption}
+              placeholder="搜索 short code / 中文 / English..."
+            />
+            <p className="text-[11px] text-gray-500 mt-1">改产品/数量会自动调整日本库存(库存不足会拦下)。</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Qty</label>
+              <input type="number" min="1" value={form.quantity}
+                onChange={(e) => set('quantity', e.target.value)} className="text-sm w-full" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Unit cost ¥ (basis)</label>
+              <input type="number" min="0" step="0.01" value={form.unit_cost_jpy}
+                onChange={(e) => set('unit_cost_jpy', e.target.value)} className="text-sm w-full" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Carrier</label>
+              <select value={form.carrier} onChange={(e) => set('carrier', e.target.value)} className="text-sm w-full">
+                <option value="">— Select —</option>
+                {CARRIER_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Shipped date</label>
+              <input type="date" value={form.shipped_date}
+                onChange={(e) => set('shipped_date', e.target.value)} className="text-sm w-full" />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Tracking #</label>
+            <input type="text" value={form.tracking_number} spellCheck={false}
+              onChange={(e) => set('tracking_number', e.target.value)}
+              placeholder="e.g. EE123456789JP" className="text-sm w-full" />
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Notes</label>
+            <input type="text" value={form.notes}
+              onChange={(e) => set('notes', e.target.value)} className="text-sm w-full" />
+          </div>
+
+          <div className="text-xs text-gray-400 pt-1">
+            New cost basis: <span className="text-vault-gold font-semibold">¥{lineJpy.toLocaleString()}</span>
+            <span className="text-gray-500 mx-1">≈</span>
+            <span className="text-green-400 font-semibold">${lineUsd.toFixed(2)} USD</span>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} disabled={saving}
+            className="px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-50">
+            Cancel
+          </button>
+          <button onClick={handleSave} disabled={saving}
+            className="btn btn-primary flex items-center gap-2 disabled:opacity-50">
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            保存修改
+          </button>
+        </div>
       </div>
     </div>
   )

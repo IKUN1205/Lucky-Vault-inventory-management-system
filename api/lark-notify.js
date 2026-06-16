@@ -122,6 +122,15 @@ export default async function handler(req, res) {
       alsoToInventoryIo: true,
     })
   }
+  if (type === 'jp_shipment_canceled') {
+    // A pending shipment was canceled from the Japan page. Same 3 targets as
+    // the original dispatch so the US Acquisitions team knows to STOP
+    // expecting the package (otherwise they'd prep an Intake for a ghost).
+    return handleJapanEvent(body, res, buildJpShipmentCanceled, {
+      alsoToAcquisitions: true,
+      alsoToInventoryIo: true,
+    })
+  }
 
   // ----- Singles in-and-out events --------------------------------------
   // All five route to the same "inventory in/out" Lark group, configured
@@ -1378,6 +1387,39 @@ function buildJpLocalSale(body) {
   if (totalJpy != null) totals.push(`¥${Number(totalJpy).toLocaleString()}`)
   if (totalUsd != null) totals.push(`≈ ${fmtUsd(totalUsd)}`)
   if (totals.length) lines.push(`Total: ${totals.join(' / ')}`)
+  lines.push(`Time: ${nowUtcStamp()}`)
+  return lines.join('\n')
+}
+
+// 🚫🇯🇵→🇺🇸 Japan→US Shipment CANCELED
+// Canceled by: Will
+// Originally shipped: 2026-06-12
+// • OP-13 Booster Box × 10
+// Tracking: EE123456789JP — do NOT receive
+// Reason: entered wrong quantity
+// Time: ...
+function buildJpShipmentCanceled(body) {
+  const {
+    canceledBy,
+    productName,
+    quantity,
+    carrier,
+    trackingNumber,
+    reason,
+    shippedDate,
+  } = body
+  const lines = []
+  lines.push('🚫🇯🇵→🇺🇸 Japan→US Shipment CANCELED')
+  if (canceledBy) lines.push(`Canceled by: ${canceledBy}`)
+  if (shippedDate) lines.push(`Originally shipped: ${shippedDate}`)
+  lines.push('')
+  lines.push(`• ${productName || 'Unknown'} × ${quantity ?? 0}`)
+  if (trackingNumber) {
+    const carrierStr = carrier ? `${carrier} ` : ''
+    lines.push(`Tracking: ${carrierStr}${trackingNumber} — do NOT receive`)
+  }
+  if (reason) lines.push(`Reason: ${reason}`)
+  lines.push('⚠️ US team — remove from Intake to Master expectations')
   lines.push(`Time: ${nowUtcStamp()}`)
   return lines.join('\n')
 }
