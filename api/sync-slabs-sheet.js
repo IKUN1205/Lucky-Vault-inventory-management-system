@@ -539,6 +539,7 @@ export default async function handler(req, res) {
     const durationMs = Date.now() - startedAt
     const summary = {
       ok: true, tabs: tabSummary, unique_live_certs: items.length,
+      bin_memory: hasLastBinColumn,   // deploy probe + migration status
       skipped_junk_rows: skippedJunk,
       existing_in_db: existing.size, prices_changed: upd, prices_unchanged: updSkip,
       names_refreshed: renamed, locations_refreshed: relocated,
