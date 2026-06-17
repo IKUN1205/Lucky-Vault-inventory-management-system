@@ -142,6 +142,7 @@ export default function StorefrontSale() {
   // Edit-transaction modal state — null when closed; the full txn object
   // when staff clicks the pencil on a row.
   const [editTxn, setEditTxn] = useState(null)
+  const [cashCountOpen, setCashCountOpen] = useState(false)
 
   const inputRef = useRef(null)
 
@@ -716,6 +717,18 @@ export default function StorefrontSale() {
         onRefresh={() => loadSummary(saleDate)}
       />
 
+      {/* Cash drawer audit — staff count morning + evening, system checks it */}
+      <div className="mb-4 -mt-2 flex justify-end">
+        <button
+          type="button"
+          onClick={() => setCashCountOpen(true)}
+          className="text-xs px-3 py-1.5 border border-emerald-500/40 text-emerald-300 rounded-lg hover:bg-emerald-500/10 flex items-center gap-1.5"
+          title="Count the cash drawer and check it against the system"
+        >
+          💵 Cash count
+        </button>
+      </div>
+
       <Instructions>
         <div className="space-y-2 text-gray-300 text-sm">
           <p>
@@ -1223,6 +1236,149 @@ export default function StorefrontSale() {
           addToast={addToast}
         />
       )}
+
+      {cashCountOpen && (
+        <CashCountModal
+          user={user}
+          onClose={() => setCashCountOpen(false)}
+          addToast={addToast}
+        />
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// CashCountModal — twice-daily cash-drawer audit. Pulls the system-expected
+// drawer balance, lets staff enter their physical count, shows the live
+// over/short, and on submit records it + Larks the Storefront group.
+// ============================================================================
+function CashCountModal({ user, onClose, addToast }) {
+  const guessPeriod = () => {
+    // PT hour → morning before 14:00, evening after
+    const h = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour: '2-digit', hour12: false }).format(new Date()))
+    return h < 14 ? 'morning' : 'evening'
+  }
+  const [loading, setLoading] = useState(true)
+  const [info, setInfo] = useState(null)      // { expected, prior, cash_net_since, baseline, recent }
+  const [period, setPeriod] = useState(guessPeriod())
+  const [counted, setCounted] = useState('')
+  const [removed, setRemoved] = useState('')
+  const [notes, setNotes] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await fetch('/api/cash-count')
+        const d = await r.json()
+        if (cancelled) return
+        if (d.outcome === 'not_migrated') { setErr('Cash audit not enabled yet — run scripts/add_cash_counts.sql in Supabase.'); setInfo(null) }
+        else setInfo(d)
+      } catch (e) { if (!cancelled) setErr(e.message || 'Failed to load') }
+      finally { if (!cancelled) setLoading(false) }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  const money = (n) => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const expected = info && !info.baseline ? Number(info.expected) : null
+  const countedNum = counted === '' ? null : Number(counted)
+  const diff = (expected != null && countedNum != null) ? +(countedNum - expected).toFixed(2) : null
+  const matches = diff != null && Math.abs(diff) <= 1
+
+  const submit = async () => {
+    if (countedNum == null || !Number.isFinite(countedNum)) { addToast('Enter the counted amount', 'error'); return }
+    setSubmitting(true)
+    try {
+      const r = await fetch('/api/cash-count', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          period, counted_amount: countedNum,
+          cash_removed_usd: removed === '' ? 0 : Number(removed),
+          counted_by_id: user?.id || null, counted_by_name: user?.name || null,
+          notes: notes || null,
+        }),
+      })
+      const d = await r.json()
+      if (!r.ok || d.ok === false) { addToast(d.error || 'Failed to record count', 'error'); setSubmitting(false); return }
+      if (d.baseline) addToast(`Baseline cash count set: ${money(countedNum)}`, 'success')
+      else if (d.matches) addToast(`✅ Cash matches (expected ${money(d.expected)})`, 'success')
+      else addToast(`⚠️ Off by ${money(Math.abs(d.difference))} — sent to group`, 'info')
+      onClose()
+    } catch (e) {
+      addToast(e.message || 'Failed to record count', 'error')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-vault-surface border border-emerald-500/40 rounded-xl max-w-md w-full p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-semibold text-base text-white mb-1">💵 Cash drawer count</h3>
+        <p className="text-xs text-gray-500 mb-4">Count the drawer, the system checks it, and the result goes to the Storefront group.</p>
+
+        {loading && <div className="text-sm text-gray-400 py-6 text-center">Loading expected balance…</div>}
+        {err && <div className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/40 rounded p-3 mb-3">{err}</div>}
+
+        {!loading && info && (
+          <>
+            {/* period toggle */}
+            <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40 mb-4">
+              {['morning', 'evening'].map(p => (
+                <button key={p} type="button" onClick={() => setPeriod(p)}
+                  className={`px-4 py-1.5 text-sm rounded-md capitalize ${period === p ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}>
+                  {p}
+                </button>
+              ))}
+            </div>
+
+            {/* expected */}
+            <div className="bg-vault-darker/40 border border-vault-border rounded-lg p-3 mb-3 text-sm">
+              {info.baseline ? (
+                <div className="text-cyan-300">First count — no prior balance. This sets the baseline; future counts compare to it.</div>
+              ) : (
+                <>
+                  <div className="flex justify-between"><span className="text-gray-400">System expects</span><span className="text-white font-semibold">{money(expected)}</span></div>
+                  <div className="text-[11px] text-gray-500 mt-1">
+                    = last count {money(info.prior?.counted_amount)}{info.prior?.cash_removed_usd ? ` − ${money(info.prior.cash_removed_usd)} removed` : ''} + {money(info.cash_net_since)} cash since
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* counted amount */}
+            <label className="block text-xs text-gray-400 mb-1">Counted in drawer <span className="text-red-400">*</span></label>
+            <input type="number" inputMode="decimal" step="0.01" autoFocus value={counted}
+              onChange={(e) => setCounted(e.target.value)} placeholder="0.00" className="w-full mb-2" />
+
+            {/* live diff */}
+            {diff != null && (
+              <div className={`text-sm rounded p-2 mb-3 ${matches ? 'bg-emerald-500/10 border border-emerald-500/40 text-emerald-300' : 'bg-amber-500/10 border border-amber-500/40 text-amber-300'}`}>
+                {matches ? '✅ Matches' : `⚠️ ${diff > 0 ? 'OVER' : 'SHORT'} by ${money(Math.abs(diff))}`}
+              </div>
+            )}
+
+            {/* optional removed + notes */}
+            <label className="block text-xs text-gray-400 mb-1">Cash removed now <span className="text-gray-600">(handed to owner / deposited — optional)</span></label>
+            <input type="number" inputMode="decimal" step="0.01" value={removed}
+              onChange={(e) => setRemoved(e.target.value)} placeholder="0.00" className="w-full mb-2 max-w-[10rem]" />
+
+            <label className="block text-xs text-gray-400 mb-1">Notes <span className="text-gray-600">(optional)</span></label>
+            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. found a $20 under the tray" className="w-full mb-4" />
+
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={onClose} className="px-3 py-2 text-sm text-gray-300 hover:text-white">Cancel</button>
+              <button type="button" onClick={submit} disabled={submitting || countedNum == null}
+                className="px-4 py-2 text-sm bg-emerald-500/20 border border-emerald-500/60 text-emerald-200 hover:bg-emerald-500/30 rounded-lg disabled:opacity-50">
+                {submitting ? 'Recording…' : 'Record & send to group'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
