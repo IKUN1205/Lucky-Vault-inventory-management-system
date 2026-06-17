@@ -18,10 +18,14 @@ import { ShoppingBag, Save, Plus, X, Trash2 } from 'lucide-react'
 // 4 platform/channel combos that Aldo ships from. Internally split into
 // platform + channel (so reports can group either way), single dropdown for UX.
 const PLATFORM_CHANNELS = [
-  { value: 'TikTok|RocketsHQ',     label: 'TikTok @ RocketsHQ',     platform: 'TikTok', channel: 'RocketsHQ' },
-  { value: 'TikTok|Packheads',     label: 'TikTok @ Packheads',     platform: 'TikTok', channel: 'Packheads' },
-  { value: 'eBay|LuckyVaultUS',    label: 'eBay @ LuckyVaultUS',    platform: 'eBay',   channel: 'LuckyVaultUS' },
-  { value: 'eBay|SlabbiePatty',    label: 'eBay @ SlabbiePatty',    platform: 'eBay',   channel: 'SlabbiePatty' }
+  { value: 'TikTok|RocketsHQ',     label: 'TikTok @ RocketsHQ',     platform: 'TikTok',  channel: 'RocketsHQ' },
+  { value: 'TikTok|Packheads',     label: 'TikTok @ Packheads',     platform: 'TikTok',  channel: 'Packheads' },
+  { value: 'eBay|LuckyVaultUS',    label: 'eBay @ LuckyVaultUS',    platform: 'eBay',    channel: 'LuckyVaultUS' },
+  { value: 'eBay|SlabbiePatty',    label: 'eBay @ SlabbiePatty',    platform: 'eBay',    channel: 'SlabbiePatty' },
+  // Shopify is a single storefront (no per-channel split) — value still
+  // uses the platform|channel shape so the split-on-'|' parse downstream
+  // stays uniform; channel mirrors the platform.
+  { value: 'Shopify|Shopify',      label: 'Shopify',                platform: 'Shopify', channel: 'Shopify' }
 ]
 
 const ALLOWED_LOCATION_NAMES = [
