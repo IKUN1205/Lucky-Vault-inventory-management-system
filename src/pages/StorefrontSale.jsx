@@ -717,17 +717,18 @@ export default function StorefrontSale() {
         onRefresh={() => loadSummary(saleDate)}
       />
 
-      {/* Cash drawer audit — staff count morning + evening, system checks it */}
-      <div className="mb-4 -mt-2 flex justify-end">
-        <button
-          type="button"
-          onClick={() => setCashCountOpen(true)}
-          className="text-xs px-3 py-1.5 border border-emerald-500/40 text-emerald-300 rounded-lg hover:bg-emerald-500/10 flex items-center gap-1.5"
-          title="Count the cash drawer and check it against the system"
-        >
-          💵 Cash count
-        </button>
-      </div>
+      {/* Cash drawer audit — big, obvious full-width button so morning/
+          evening staff can't miss it (boss directive 2026-06-17). */}
+      <button
+        type="button"
+        onClick={() => setCashCountOpen(true)}
+        className="w-full mb-4 px-5 py-4 rounded-xl border-2 border-emerald-500/60 bg-emerald-500/10 hover:bg-emerald-500/20 transition flex items-center justify-center gap-3 text-emerald-200 font-semibold text-lg shadow-lg"
+        title="Count the cash drawer and check it against the system"
+      >
+        <span className="text-2xl">💵</span>
+        Count Cash Drawer
+        <span className="text-sm font-normal text-emerald-300/70">(morning &amp; evening)</span>
+      </button>
 
       <Instructions>
         <div className="space-y-2 text-gray-300 text-sm">
