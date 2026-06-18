@@ -2018,6 +2018,135 @@ export const createJapanAcquisition = async ({
   return acq
 }
 
+// Current Japan Warehouse stock for one product (0 if no row). Used by the
+// acquisition undo/edit guards to make sure we never drive inventory negative
+// by reversing a buy whose units have already been sold/shipped.
+const fetchJapanProductStock = async (productId) => {
+  const locId = await fetchJapanWarehouseLocation()
+  const { data } = await supabase
+    .from('inventory')
+    .select('quantity')
+    .eq('product_id', productId)
+    .eq('location_id', locId)
+    .maybeSingle()
+  return data?.quantity || 0
+}
+
+// Undo (撤销) a Japan acquisition. These are instant-receive, so the buy
+// already added qty (at weighted-avg cost) to Japan Warehouse. Undo removes
+// that qty and soft-deletes the row. Guarded: if current stock is below the
+// buy's qty, some of it has already been sold/shipped — block and tell the
+// user to adjust manually rather than silently driving stock negative.
+// Removing stock leaves avg_cost_basis unchanged (the outflow rule in
+// updateInventory), so no cost-basis surgery here.
+export const undoJapanAcquisition = async (acqId, { deletedById = null, reason = null } = {}) => {
+  const { data: acq, error: getErr } = await supabase
+    .from('acquisitions')
+    .select('id, product_id, quantity_purchased, origin, deleted')
+    .eq('id', acqId)
+    .maybeSingle()
+  if (getErr) throw getErr
+  if (!acq) throw new Error('Acquisition not found')
+  if (acq.origin !== 'jp_vendor') throw new Error('Not a Japan acquisition')
+  if (acq.deleted) throw new Error('This acquisition was already undone')
+
+  const qty = acq.quantity_purchased || 0
+  const stock = await fetchJapanProductStock(acq.product_id)
+  if (qty > stock) {
+    throw new Error(`Only ${stock} in Japan stock now, but this buy was ${qty} — some was already sold/shipped. Undo the sale/shipment first, or fix the count in 日本库存.`)
+  }
+
+  const locId = await fetchJapanWarehouseLocation()
+  await updateInventory(acq.product_id, locId, -qty)  // remove (avg unchanged)
+  const { error: delErr } = await supabase
+    .from('acquisitions')
+    .update({
+      deleted: true,
+      deleted_at: new Date().toISOString(),
+      deleted_by_id: deletedById || null,
+      deleted_reason: reason || 'Japan acquisition undone from Japan acquisitions page',
+    })
+    .eq('id', acqId)
+  if (delErr) throw delErr
+  return acq
+}
+
+// Edit (修改) a Japan acquisition. Reconciles Japan Warehouse stock for any
+// product / qty / unit-cost change by reversing the old buy's contribution
+// and re-applying the corrected one, then rewrites the acquisition record.
+// Metadata-only edits (vendor / payment / date / notes) skip the inventory
+// math. Guarded the same way as undo: we must have enough current stock of
+// the OLD product to reverse it.
+//
+// Cost-basis note: reversing an inflow can't perfectly un-weight the average
+// when the same SKU also holds stock from other batches — the remaining
+// units keep the current average. For a low-volume correction tool this is
+// acceptable, and the live average is always adjustable on the 日本库存 page.
+export const updateJapanAcquisition = async (acqId, {
+  product_id, quantity, unit_cost_jpy, vendor_id, payment_method_id,
+  date_purchased, notes,
+}) => {
+  const { data: old, error: getErr } = await supabase
+    .from('acquisitions')
+    .select('id, product_id, quantity_purchased, cost, origin, deleted, date_purchased')
+    .eq('id', acqId)
+    .maybeSingle()
+  if (getErr) throw getErr
+  if (!old) throw new Error('Acquisition not found')
+  if (old.origin !== 'jp_vendor') throw new Error('Not a Japan acquisition')
+  if (old.deleted) throw new Error('This acquisition was undone')
+
+  if (!product_id) throw new Error('Product is required')
+  const newQty = parseInt(quantity, 10)
+  if (!Number.isFinite(newQty) || newQty <= 0) throw new Error('Quantity must be at least 1')
+
+  const locId = await fetchJapanWarehouseLocation()
+  const oldQty = old.quantity_purchased || 0
+  const oldProduct = old.product_id
+  const oldUnitJpy = oldQty > 0 ? (Number(old.cost) || 0) / oldQty : 0
+  const newUnitJpy = parseFloat(unit_cost_jpy) || 0
+
+  const productChanged = product_id !== oldProduct
+  const qtyChanged = newQty !== oldQty
+  const costChanged = Math.abs(newUnitJpy - oldUnitJpy) > 0.5
+  const invChanged = productChanged || qtyChanged || costChanged
+
+  if (invChanged) {
+    // Reverse needs enough of the OLD product on hand.
+    const oldStock = await fetchJapanProductStock(oldProduct)
+    if (oldQty > oldStock) {
+      throw new Error(`Only ${oldStock} of the original product in stock now, but this buy was ${oldQty} — some was already sold/shipped. Fix the sale/shipment first, or adjust in 日本库存.`)
+    }
+    const newTotalUsd = convertToUSD(newUnitJpy * newQty, 'JPY')
+    const newUnitUsd = newQty > 0 ? newTotalUsd / newQty : 0
+    await updateInventory(oldProduct, locId, -oldQty)             // reverse old (avg unchanged)
+    await updateInventory(product_id, locId, newQty, newUnitUsd)  // re-apply new (weighted avg)
+  }
+
+  const totalCostJpy = newUnitJpy * newQty
+  const totalCostUsd = convertToUSD(totalCostJpy, 'JPY')
+  const { data: updated, error: upErr } = await supabase
+    .from('acquisitions')
+    .update({
+      product_id,
+      quantity_purchased: newQty,
+      quantity_received: newQty,   // instant-receive stays in sync
+      cost: totalCostJpy,
+      cost_usd: totalCostUsd,
+      currency: 'JPY',
+      vendor_id: vendor_id || null,
+      payment_method_id: payment_method_id || null,
+      date_purchased: date_purchased || old.date_purchased,
+      notes: notes ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', acqId)
+    .select()
+    .single()
+  if (upErr) throw upErr
+  return updated
+}
+
 // Record a sale out of Japan Warehouse. Decrements inventory + inserts into
 // japan_stream_sales (audit log). USD snapshot uses the static exchange rate
 // at sale time.
@@ -2201,6 +2330,21 @@ export const upsertProducts = async (rows) => {
   const created = inputKeys.filter(k => !existing.has(k)).length
   const updated = inputKeys.length - created
   return { created, updated, data: data || [] }
+}
+
+// Guard shared by the edit + undo flows: a Japan→US shipment can only be
+// touched from the Japan side while it's still purely pending — status
+// 'Purchased' AND nothing received yet on the US side. Once the US team
+// starts receiving (Partially / Received, or quantity_received > 0) the row
+// is co-owned with US Master inventory and editing/canceling here would
+// desync the two. Throws a user-facing message in that case.
+const assertShipmentEditable = (ship) => {
+  if (!ship) throw new Error('Shipment not found')
+  if (ship.origin !== 'jp_to_us_shipment') throw new Error('Not a Japan→US shipment')
+  if (ship.deleted) throw new Error('This shipment was already canceled')
+  if (ship.status !== 'Purchased' || (ship.quantity_received || 0) > 0) {
+    throw new Error('Already arriving in the US — edit/cancel must be handled by the US team (Intake to Master)')
+  }
 }
 
 // Cancel (撤销) a still-pending Japan→US shipment. Refunds Japan Warehouse

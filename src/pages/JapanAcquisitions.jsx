@@ -7,6 +7,8 @@ import {
   fetchPaymentMethods,
   fetchJapanAcquisitions,
   createJapanAcquisition,
+  updateJapanAcquisition,
+  undoJapanAcquisition,
   createVendor,
   createPaymentMethod,
   convertToUSD,
@@ -14,7 +16,7 @@ import {
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import { useAuth } from '../lib/AuthContext'
-import { ShoppingCart, Save, Plus, Trash2, X } from 'lucide-react'
+import { ShoppingCart, Save, Plus, Trash2, X, Pencil, RotateCcw, Loader2 } from 'lucide-react'
 import { variantLabel, variantChipClasses } from '../lib/japanVariants'
 
 // ============================================================================
@@ -82,6 +84,10 @@ export default function JapanAcquisitions() {
 
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+
+  // Edit/Undo state for the recent-acquisitions table.
+  const [editing, setEditing] = useState(null)   // row being edited (null = closed)
+  const [rowBusy, setRowBusy] = useState(null)    // id mid-undo
 
   // Header (shared across all line items in one submission)
   const [header, setHeader] = useState({
@@ -276,6 +282,28 @@ export default function JapanAcquisitions() {
       }
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleUndoAcq = async (a) => {
+    // One dialog = confirm + reason capture. Cancel (null) aborts.
+    const reason = window.prompt(
+      `撤销这笔进货?\n${extractLaunchName(a.product?.name, a.product?.category)} × ${a.quantity_purchased}\n\n会从日本仓扣回 ${a.quantity_purchased} 件。\n(如果这批已经卖掉/发走一部分,会拦下来)\n可填撤销原因(可留空):`,
+      ''
+    )
+    if (reason === null) return
+
+    setRowBusy(a.id)
+    try {
+      await undoJapanAcquisition(a.id, { deletedById: user?.id || null, reason: reason || null })
+      addToast('✓ 进货已撤销,日本库存已扣回', 'success')
+      const recent = await fetchJapanAcquisitions(20)
+      setRecentAcqs(recent)
+    } catch (err) {
+      console.error('[JapanAcq] undo failed:', err)
+      addToast(err.message || 'Failed to undo acquisition', 'error')
+    } finally {
+      setRowBusy(null)
     }
   }
 
@@ -514,6 +542,7 @@ export default function JapanAcquisitions() {
                   <th className="pb-2 text-right">Qty</th>
                   <th className="pb-2 text-right">JPY</th>
                   <th className="pb-2 text-right">USD</th>
+                  <th className="pb-2 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -526,12 +555,202 @@ export default function JapanAcquisitions() {
                     <td className="py-1.5 text-right text-white">{a.quantity_purchased}</td>
                     <td className="py-1.5 text-right text-vault-gold">¥{(a.cost || 0).toLocaleString()}</td>
                     <td className="py-1.5 text-right text-green-400">${(a.cost_usd || 0).toFixed(2)}</td>
+                    <td className="py-1.5 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setEditing(a)}
+                          disabled={rowBusy === a.id}
+                          className="p-1.5 text-gray-400 hover:text-vault-gold rounded-md hover:bg-vault-gold/10 disabled:opacity-40"
+                          title="修改这笔进货"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleUndoAcq(a)}
+                          disabled={rowBusy === a.id}
+                          className="p-1.5 text-gray-400 hover:text-red-400 rounded-md hover:bg-red-500/10 disabled:opacity-40"
+                          title="撤销这笔进货(扣回日本库存)"
+                        >
+                          {rowBusy === a.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+      </div>
+
+      {editing && (
+        <EditAcquisitionModal
+          acq={editing}
+          products={products}
+          vendors={vendors}
+          paymentMethods={paymentMethods}
+          onClose={() => setEditing(null)}
+          onSaved={async () => {
+            setEditing(null)
+            const recent = await fetchJapanAcquisitions(20)
+            setRecentAcqs(recent)
+          }}
+          addToast={addToast}
+        />
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// Edit modal for a Japan acquisition.
+// ============================================================================
+// Pre-fills the row. Save routes through updateJapanAcquisition, which
+// reconciles Japan Warehouse stock for any product/qty/cost change (reversing
+// the old buy + re-applying the corrected one, stock-checked server-side) and
+// rewrites the acquisition record. Edits are SILENT on Lark — this is internal
+// Japan stock bookkeeping; the create already announced the buy and a typo fix
+// doesn't need to re-ping the group. The undo/edit are still fully traceable
+// in the DB (updated_at / deleted_* columns) and drop in/out of 日本日志.
+function EditAcquisitionModal({ acq, products, vendors, paymentMethods, onClose, onSaved, addToast }) {
+  const seedUnitJpy = acq.quantity_purchased > 0
+    ? Math.round((Number(acq.cost) || 0) / acq.quantity_purchased)
+    : 0
+
+  const [form, setForm] = useState({
+    product_id: acq.product_id || '',
+    quantity: acq.quantity_purchased || 1,
+    unit_cost_jpy: seedUnitJpy ? String(seedUnitJpy) : '',
+    vendor_id: acq.vendor_id || '',
+    payment_method_id: acq.payment_method_id || '',
+    date_purchased: acq.date_purchased || new Date().toLocaleDateString('en-CA'),
+    notes: acq.notes || '',
+  })
+  const [saving, setSaving] = useState(false)
+  const set = (field, value) => setForm(f => ({ ...f, [field]: value }))
+
+  const qty = parseInt(form.quantity) || 0
+  const unit = parseFloat(form.unit_cost_jpy) || 0
+  const lineJpy = qty * unit
+  const lineUsd = convertToUSD(lineJpy, 'JPY')
+
+  const handleSave = async () => {
+    if (!form.product_id) { addToast('Pick a product', 'error'); return }
+    if (qty <= 0) { addToast('Quantity must be at least 1', 'error'); return }
+    setSaving(true)
+    try {
+      await updateJapanAcquisition(acq.id, {
+        product_id: form.product_id,
+        quantity: qty,
+        unit_cost_jpy: unit,
+        vendor_id: form.vendor_id || null,
+        payment_method_id: form.payment_method_id || null,
+        date_purchased: form.date_purchased,
+        notes: form.notes || null,
+      })
+      addToast('✓ 进货已更新,日本库存已同步', 'success')
+      await onSaved()
+    } catch (err) {
+      console.error('[JapanAcq] edit failed:', err)
+      addToast(err.message || 'Failed to update acquisition', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+      onClick={() => !saving && onClose()}>
+      <div className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-2xl w-full p-5 shadow-2xl max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center gap-2 text-vault-gold">
+            <Pencil size={18} />
+            <h3 className="font-semibold text-base">修改进货 / Edit acquisition</h3>
+          </div>
+          <button onClick={onClose} disabled={saving} className="text-gray-500 hover:text-white p-1 -m-1">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Product</label>
+            <SearchableSelect
+              options={products}
+              value={form.product_id}
+              onChange={(val) => set('product_id', val)}
+              getOptionValue={(p) => p.id}
+              getOptionLabel={productOptionLabel}
+              getOptionSearchText={productSearchText}
+              renderOption={renderProductOption}
+              placeholder="搜索 short code / 中文 / English..."
+            />
+            <p className="text-[11px] text-gray-500 mt-1">改产品/数量/成本会自动调整日本库存(原批已卖/已发会拦下)。</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Qty</label>
+              <input type="number" min="1" value={form.quantity}
+                onChange={(e) => set('quantity', e.target.value)} className="text-sm w-full" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Unit ¥</label>
+              <input type="number" min="0" step="0.01" value={form.unit_cost_jpy}
+                onChange={(e) => set('unit_cost_jpy', e.target.value)} className="text-sm w-full" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Vendor</label>
+              <select value={form.vendor_id} onChange={(e) => set('vendor_id', e.target.value)} className="text-sm w-full">
+                <option value="">— No specific vendor —</option>
+                {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Payment Method</label>
+              <select value={form.payment_method_id} onChange={(e) => set('payment_method_id', e.target.value)} className="text-sm w-full">
+                <option value="">— Unspecified —</option>
+                {paymentMethods.map(pm => <option key={pm.id} value={pm.id}>{pm.name}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Date</label>
+            <input type="date" value={form.date_purchased}
+              onChange={(e) => set('date_purchased', e.target.value)} className="text-sm w-full" />
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Notes</label>
+            <input type="text" value={form.notes}
+              onChange={(e) => set('notes', e.target.value)} className="text-sm w-full" />
+          </div>
+
+          <div className="text-xs text-gray-400 pt-1">
+            New total: <span className="text-vault-gold font-semibold">¥{lineJpy.toLocaleString()}</span>
+            <span className="text-gray-500 mx-1">≈</span>
+            <span className="text-green-400 font-semibold">${lineUsd.toFixed(2)} USD</span>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} disabled={saving}
+            className="px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-50">
+            Cancel
+          </button>
+          <button onClick={handleSave} disabled={saving}
+            className="btn btn-primary flex items-center gap-2 disabled:opacity-50">
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            保存修改
+          </button>
+        </div>
       </div>
     </div>
   )
