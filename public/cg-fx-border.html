@@ -5,56 +5,68 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>CG — 动态金边框</title>
 <!--
-  常驻动态金色边框。一道高光沿画框四周流动 + 柔和金色内辉光脉冲。
-  这个是「一直显示」的(不像别的播一次就消失)——OBS 里加一个浏览器源、
-  让它常开即可,不用 Stream Deck 触发(也可以用键开关它)。
-  1920×1080 透明背景。
+  常驻动态金色边框。一道高光沿画框四周流动 + 金色内辉光脉冲 + 四角亮点。
+  「一直显示」型:OBS 里加一个浏览器源让它常开即可(不用 Stream Deck)。
+  透明背景 —— 浏览器里看是白底是正常的,盖到 OBS 深色画面上才显金边。
+  想在浏览器里看清楚效果:网址后面加 ?demo  (会铺一层深色背景预览)
+  1920×1080。
 -->
 <style>
   @property --a { syntax:'<angle>'; inherits:false; initial-value:0deg; }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
 
-  /* 柔和金边 + 内辉光,带轻微呼吸 */
+  /* 主金边 + 内辉光,带呼吸脉冲 */
   .frame {
     position:fixed; inset:0;
-    border:0.55vmin solid rgba(246,197,68,.45);
-    box-shadow: inset 0 0 5vmin rgba(246,197,68,.28), inset 0 0 1.2vmin rgba(246,197,68,.5);
-    animation: breathe 3.4s ease-in-out infinite;
+    border:0.6vmin solid rgba(246,197,68,.85);
+    box-shadow: inset 0 0 7vmin rgba(246,197,68,.45), inset 0 0 1.6vmin rgba(255,228,140,.9);
+    animation: breathe 3.2s ease-in-out infinite;
   }
   @keyframes breathe {
-    50% { box-shadow: inset 0 0 7vmin rgba(246,197,68,.42), inset 0 0 1.6vmin rgba(246,197,68,.7); }
+    50% { box-shadow: inset 0 0 10vmin rgba(246,197,68,.62), inset 0 0 2.2vmin rgba(255,228,140,1); }
   }
+  /* 内侧第二条细线,更像精致画框 */
+  .frame2 { position:fixed; inset:1.8vmin; border:0.28vmin solid rgba(255,238,180,.4); }
 
-  /* 沿边框流动的高光(用 conic-gradient + 只露边框的遮罩) */
-  .frame::before {
-    content:''; position:fixed; inset:0; padding:0.7vmin;
+  /* 沿边框流动的高光(conic-gradient + 只露边框的遮罩) */
+  .sweep {
+    position:fixed; inset:0; padding:0.8vmin;
     background: conic-gradient(from var(--a),
-      transparent 0 58%,
-      rgba(255,243,196,.85) 76%,
-      #ffffff 84%,
-      rgba(246,197,68,.9) 92%,
+      transparent 0 48%,
+      rgba(255,243,196,.95) 68%,
+      #ffffff 80%,
+      rgba(246,197,68,1) 90%,
       transparent 100%);
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
             mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor; mask-composite: exclude;
-    filter: drop-shadow(0 0 1.2vmin rgba(246,197,68,.85));
-    animation: travel 4.5s linear infinite;
+    filter: drop-shadow(0 0 1.8vmin rgba(255,210,90,1));
+    animation: travel 4s linear infinite;
   }
   @keyframes travel { to { --a: 360deg; } }
 
-  /* 四角小亮点,提升精致度 */
-  .corner { position:fixed; width:4vmin; height:4vmin; border:0.55vmin solid rgba(255,243,196,.9);
-    filter:drop-shadow(0 0 1vmin rgba(246,197,68,.9)); }
-  .tl{ top:1.4vmin; left:1.4vmin; border-right:none; border-bottom:none; }
-  .tr{ top:1.4vmin; right:1.4vmin; border-left:none; border-bottom:none; }
-  .bl{ bottom:1.4vmin; left:1.4vmin; border-right:none; border-top:none; }
-  .br{ bottom:1.4vmin; right:1.4vmin; border-left:none; border-top:none; }
+  /* 四角亮点 */
+  .corner { position:fixed; width:4.5vmin; height:4.5vmin; border:0.6vmin solid rgba(255,243,196,1);
+    filter:drop-shadow(0 0 1.4vmin rgba(255,210,90,1)); }
+  .tl{ top:1.5vmin; left:1.5vmin; border-right:none; border-bottom:none; }
+  .tr{ top:1.5vmin; right:1.5vmin; border-left:none; border-bottom:none; }
+  .bl{ bottom:1.5vmin; left:1.5vmin; border-right:none; border-top:none; }
+  .br{ bottom:1.5vmin; right:1.5vmin; border-left:none; border-top:none; }
 </style>
 </head>
 <body>
   <div class="frame"></div>
+  <div class="frame2"></div>
+  <div class="sweep"></div>
   <div class="corner tl"></div><div class="corner tr"></div>
   <div class="corner bl"></div><div class="corner br"></div>
+  <script>
+    // ?demo 时铺深色背景,方便在浏览器里预览金边(OBS 里别加 ?demo,要保持透明)
+    if (new URLSearchParams(location.search).get('demo') !== null) {
+      document.body.style.background =
+        'radial-gradient(120% 90% at 50% 30%, #241c10, #0c0905 80%)';
+    }
+  </script>
 </body>
 </html>
