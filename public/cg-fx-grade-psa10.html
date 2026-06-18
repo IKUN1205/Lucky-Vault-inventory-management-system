@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CG — PSA 10 GEM MINT</title>
+<!--
+  评级揭晓:PSA 10 💎 砸出来。金箔流光 + 钻石蓝光爆 + 火花喷射。
+  被 OBS 显示即自动播一遍后透明;visibilitychange 再次显示会重播。
+  想要 PSA 9 / BGS 等其它分:复制本文件改文字即可,我也能帮你批量做。
+  1920×1080 透明背景;OBS 勾「源不可见时关闭」。
+-->
+<style>
+  :root { --gold:#F6C544; --ink:#140d02; --gem:#7fe3ff; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
+  #wrap { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    flex-direction:column; font-family:"Arial Black",system-ui,sans-serif; }
+
+  .glow { position:fixed; left:50%; top:50%; width:115vmin; height:115vmin; transform:translate(-50%,-50%) scale(.4);
+    background:radial-gradient(circle, rgba(127,227,255,.4) 0%, rgba(246,197,68,.22) 30%, transparent 62%);
+    filter:blur(8px); opacity:0; animation:glowIn .9s ease-out forwards; }
+  @keyframes glowIn { 0%{opacity:0;transform:translate(-50%,-50%) scale(.4)} 45%{opacity:1} 100%{opacity:.8;transform:translate(-50%,-50%) scale(1)} }
+  .shock { position:fixed; left:50%; top:46%; width:26vmin; height:26vmin; margin:-13vmin 0 0 -13vmin;
+    border:1.3vmin solid rgba(190,240,255,.9); border-radius:50%; filter:blur(.3vmin);
+    animation:shock .95s cubic-bezier(.2,.7,.3,1) forwards; }
+  @keyframes shock { 0%{transform:scale(.2);opacity:1} 100%{transform:scale(5);opacity:0} }
+  .flash { position:fixed; inset:0; background:radial-gradient(circle at 50% 46%, rgba(255,255,255,.9), rgba(190,240,255,.3) 25%, transparent 55%);
+    animation:flash .5s ease-out forwards; }
+  @keyframes flash { 0%{opacity:0} 14%{opacity:1} 100%{opacity:0} }
+  canvas#fx { position:fixed; inset:0; width:100%; height:100%; pointer-events:none; }
+
+  .grade { position:relative; z-index:5; font-size:21vmin; font-weight:900; letter-spacing:.5vmin;
+    background:linear-gradient(96deg, #9a6708 0%, #F6C544 22%, #FFF7D4 46%, #FFFFFF 50%, #FFF7D4 54%, #F6C544 74%, #a9740c 100%);
+    background-size:260% 100%; -webkit-background-clip:text; background-clip:text; color:transparent;
+    text-shadow:0 0 4vmin rgba(246,197,68,.5), 0 0 9vmin rgba(127,227,255,.35);
+    filter:drop-shadow(0 1vmin .2vmin rgba(0,0,0,.55));
+    transform:scale(0); animation:slam .55s cubic-bezier(.2,1.5,.4,1) forwards, sheen 2.4s linear .35s infinite; }
+  @keyframes slam { 0%{transform:scale(3);opacity:0} 55%{transform:scale(.88);opacity:1} 78%{transform:scale(1.06)} 100%{transform:scale(1)} }
+  @keyframes sheen { 0%{background-position:130% 0} 100%{background-position:-130% 0} }
+  .sub { position:relative; z-index:5; margin-top:1.5vmin; font-size:5.4vmin; font-weight:800; letter-spacing:.6vmin;
+    color:#eafaff; text-shadow:0 0 2vmin rgba(127,227,255,.9), 0 .3vmin 1.2vmin rgba(0,0,0,.85);
+    opacity:0; animation:rise .55s ease .35s forwards; }
+  @keyframes rise { from{opacity:0;transform:translateY(3vmin) scale(.96)} to{opacity:1;transform:none} }
+
+  #wrap.out { animation:fade .55s ease forwards; }
+  @keyframes fade { to{opacity:0} }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div class="glow"></div>
+    <canvas id="fx"></canvas>
+    <div class="grade">PSA&nbsp;10</div>
+    <div class="sub">GEM MINT 💎</div>
+  </div>
+  <script>
+  (function(){
+    var wrap=document.getElementById('wrap');
+    var cv=document.getElementById('fx'), ctx=cv.getContext('2d');
+    var W,H,DPR=Math.min(window.devicePixelRatio||1,2);
+    function size(){ W=cv.width=innerWidth*DPR; H=cv.height=innerHeight*DPR; cv.style.width=innerWidth+'px'; cv.style.height=innerHeight+'px'; }
+    size(); addEventListener('resize',size);
+    var COL=['#FFE9A8','#F6C544','#FFFFFF','#BEF0FF','#7fe3ff'];
+    var pick=function(a){ return a[(Math.random()*a.length)|0]; };
+    var parts=[], raf=null, t1=null, t2=null;
+    function burst(){
+      var cx=W/2, cy=H*0.46;
+      for(var i=0;i<130;i++){
+        var a=Math.random()*Math.PI*2, sp=(4+Math.random()*12)*DPR;
+        parts.push({x:cx,y:cy,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,g:0.05*DPR,drag:0.95,
+          r:(1+Math.random()*2.2)*DPR,life:1,decay:0.013+Math.random()*0.02,c:pick(COL),add:true});
+      }
+      for(var k=0;k<55;k++){
+        parts.push({x:Math.random()*W,y:-Math.random()*H*0.3,vx:(Math.random()*2-1)*1.2*DPR,vy:(2+Math.random()*3)*DPR,g:0.06*DPR,drag:1,
+          w:(3+Math.random()*4)*DPR,h:(7+Math.random()*8)*DPR,rot:Math.random()*6.28,vr:(Math.random()*2-1)*0.3,
+          life:1,decay:0.003+Math.random()*0.004,c:pick(COL),flake:true});
+      }
+    }
+    function frame(){
+      ctx.clearRect(0,0,W,H);
+      for(var i=parts.length-1;i>=0;i--){
+        var p=parts[i];
+        p.vx*=p.drag; p.vy=p.vy*p.drag+p.g; p.x+=p.vx; p.y+=p.vy; p.life-=p.decay;
+        if(p.life<=0||p.y>H+50){ parts.splice(i,1); continue; }
+        var al=Math.max(0,Math.min(1,p.life));
+        if(p.flake){
+          p.rot+=p.vr; ctx.save(); ctx.globalAlpha=al; ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+          ctx.fillStyle=p.c; ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h*(0.5+0.5*Math.abs(Math.cos(p.rot)))); ctx.restore();
+        } else {
+          ctx.globalCompositeOperation='lighter'; ctx.globalAlpha=al;
+          ctx.beginPath(); ctx.fillStyle=p.c; ctx.arc(p.x,p.y,p.r,0,6.283); ctx.fill();
+          ctx.globalCompositeOperation='source-over';
+        }
+      }
+      ctx.globalAlpha=1; raf=requestAnimationFrame(frame);
+    }
+    function transient(cls,ms){ var d=document.createElement('div'); d.className=cls; wrap.appendChild(d); setTimeout(function(){ d.remove(); },ms); }
+    function play(){
+      clearTimeout(t1); clearTimeout(t2); if(raf) cancelAnimationFrame(raf);
+      wrap.classList.remove('out'); parts=[];
+      transient('flash',550); transient('shock',950);
+      burst(); raf=requestAnimationFrame(frame);
+      t1=setTimeout(function(){ wrap.classList.add('out'); },3900);
+      t2=setTimeout(function(){ if(raf) cancelAnimationFrame(raf); parts=[]; ctx.clearRect(0,0,W,H); },4500);
+    }
+    play();
+    document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='visible') play(); });
+  })();
+  </script>
+</body>
+</html>

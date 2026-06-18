@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CG — LAST ONE</title>
+<!--
+  逼单:LAST ONE! 红金紧迫感闪烁。被 OBS 显示即自动播一遍后透明;
+  visibilitychange 再次显示会重播。1920×1080 透明;OBS 勾「源不可见时关闭」。
+-->
+<style>
+  :root { --gold:#F6C544; --ink:#140d02; --red:#ff3b30; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
+  #wrap { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    flex-direction:column; font-family:"Arial Black",system-ui,sans-serif; }
+  /* 顶部红色脉冲条,营造警示 */
+  .bar { position:fixed; left:0; right:0; height:2.2vmin; background:linear-gradient(90deg,transparent,var(--red),transparent);
+    opacity:.0; animation:barpulse 1.6s ease-in-out infinite; }
+  .bar.top { top:0; } .bar.bot { bottom:0; }
+  @keyframes barpulse { 0%,100%{opacity:.15} 50%{opacity:.7} }
+
+  .big { font-size:18vmin; font-weight:900; letter-spacing:.4vmin; line-height:1;
+    background:linear-gradient(96deg,#9a6708,#F6C544 30%,#FFF7D4 50%,#F6C544 70%,#a9740c);
+    background-size:240% 100%; -webkit-background-clip:text; background-clip:text; color:transparent;
+    text-shadow:0 0 4vmin rgba(255,59,48,.5); filter:drop-shadow(0 .8vmin .2vmin rgba(0,0,0,.55));
+    transform:scale(0); animation:pop .45s cubic-bezier(.2,1.7,.4,1) forwards, sheen 1.8s linear .3s infinite, beat 1s ease-in-out .5s infinite; }
+  .sub { margin-top:1.5vmin; font-size:6vmin; font-weight:900; letter-spacing:1vmin; color:#fff;
+    text-shadow:0 0 2.5vmin var(--red), 0 .3vmin 1.2vmin rgba(0,0,0,.85);
+    opacity:0; animation:rise .5s ease .25s forwards; }
+  @keyframes pop { 0%{transform:scale(0)} 70%{transform:scale(1.12)} 100%{transform:scale(1)} }
+  @keyframes beat { 50%{ transform:scale(1.05) } }
+  @keyframes sheen { 0%{background-position:120% 0} 100%{background-position:-120% 0} }
+  @keyframes rise { from{opacity:0;transform:translateY(2vmin)} to{opacity:1;transform:none} }
+  #wrap.out { animation:fade .5s ease forwards; }
+  @keyframes fade { to{opacity:0} }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div class="bar top"></div><div class="bar bot"></div>
+    <div class="big">LAST ONE!</div>
+    <div class="sub">🔥 手慢无 · GET IT NOW</div>
+  </div>
+  <script>
+  (function(){
+    var wrap=document.getElementById('wrap'), t=null;
+    function play(){
+      clearTimeout(t); wrap.classList.remove('out');
+      // 重置动画
+      var big=wrap.querySelector('.big'), sub=wrap.querySelector('.sub');
+      [big,sub].forEach(function(el){ el.style.animation='none'; void el.offsetWidth; el.style.animation=''; });
+      t=setTimeout(function(){ wrap.classList.add('out'); },3600);
+    }
+    play();
+    document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='visible') play(); });
+  })();
+  </script>
+</body>
+</html>
