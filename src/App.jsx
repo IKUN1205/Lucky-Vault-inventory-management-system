@@ -42,6 +42,7 @@ import Inventory from './pages/Inventory'
 import CardsScan from './pages/CardsScan'
 import CardsLog from './pages/CardsLog'
 import CardsAudit from './pages/CardsAudit'
+import ShowReconcile from './pages/ShowReconcile'
 import JapanInventory from './pages/JapanInventory'
 import JapanAcquisitions from './pages/JapanAcquisitions'
 import JapanStreamSales from './pages/JapanStreamSales'
@@ -201,6 +202,9 @@ function AppRoutes() {
       } />
       <Route path="/cards/audit" element={
         <ProtectedRoute path="/cards/audit"><Layout><CardsAudit /></Layout></ProtectedRoute>
+      } />
+      <Route path="/cards/show-return" element={
+        <ProtectedRoute path="/cards/show-return"><Layout><ShowReconcile /></Layout></ProtectedRoute>
       } />
       {/* Japan inventory system — see scripts/add_japan_inventory_system.sql */}
       <Route path="/jp/inventory" element={
