@@ -25,7 +25,11 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
   || process.env.SUPABASE_ANON_KEY
   || process.env.VITE_SUPABASE_ANON_KEY
 const CRON_SECRET = process.env.CRON_SECRET
-const LARK_URL = process.env.LARK_WEBHOOK_INVENTORY_IO
+// Routed to the LV MAG group (boss directive 2026-06-23). Falls back to
+// the inventory-io group / main URL so the message is never dropped if
+// LARK_WEBHOOK_LV_MAG isn't configured yet.
+const LARK_URL = process.env.LARK_WEBHOOK_LV_MAG
+  || process.env.LARK_WEBHOOK_INVENTORY_IO
   || process.env.LARK_WEBHOOK_URL
 
 export const config = { maxDuration: 60 }
@@ -47,6 +51,16 @@ function roomShort(locationName) {
   if (n.includes('show')) return 'Shows'
   return locationName || '?'
 }
+// Full display label: platform + channel (boss asked "what is Lucky?").
+const ROOM_LABEL = {
+  Lucky: 'eBay · LuckyVaultUS',
+  Slabbie: 'eBay · SlabbiePatty',
+  Packheads: 'TikTok · PackHeadsTCG',
+  Rockets: 'TikTok · RocketsHQ',
+  Whatnot: 'Whatnot',
+  Shows: 'Card Show',
+}
+const roomLabel = (short) => ROOM_LABEL[short] || short
 const productLabel = (p) => {
   if (!p) return '(unknown)'
   let s = p.name || '(unnamed)'
@@ -62,6 +76,13 @@ function ptToday() {
 const shiftDate = (dateStr, days) => {
   const d = new Date(`${dateStr}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + days)
   return d.toISOString().slice(0, 10)
+}
+// Mon–Sun week (date strings) containing the given YYYY-MM-DD.
+function weekContaining(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00Z`)
+  const dow = (d.getUTCDay() + 6) % 7   // Mon=0 … Sun=6
+  const mon = shiftDate(dateStr, -dow)
+  return { from: mon, to: shiftDate(mon, 6) }
 }
 function nowPtStamp() {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -83,18 +104,18 @@ async function postLark(text) {
   } catch (e) { console.error('[daily-usage-report] Lark failed:', e); return false }
 }
 
-export async function computeDailyUsage(supabase, date) {
-  // PT-day window for stream counts (count_time is a timestamp; evening
-  // sessions sit inside [date 07:00Z, nextday 07:00Z) for PDT).
-  const from = `${date}T07:00:00Z`
-  const to = `${shiftDate(date, 1)}T07:00:00Z`
+export async function computeDailyUsage(supabase, fromDate, toDate = fromDate) {
+  // PT window for stream counts (count_time is a timestamp; evening
+  // sessions sit inside [from 07:00Z, day-after-to 07:00Z) for PDT).
+  const from = `${fromDate}T07:00:00Z`
+  const to = `${shiftDate(toDate, 1)}T07:00:00Z`
 
   const [{ data: counts, error: cErr }, { data: usage, error: uErr }] = await Promise.all([
     supabase.from('stream_counts').select('id, location:locations(name)')
       .eq('deleted', false).gte('count_time', from).lt('count_time', to),
     supabase.from('platform_sales')
       .select('channel, quantity, product_id, product:products(name, brand, language, type)')
-      .eq('deleted', false).eq('kind', 'sealed').eq('date', date),
+      .eq('deleted', false).eq('kind', 'sealed').gte('date', fromDate).lte('date', toDate),
   ])
   if (cErr) throw cErr
   if (uErr) throw uErr
@@ -150,14 +171,18 @@ export async function computeDailyUsage(supabase, date) {
     })).sort((a, b) => b.usd - a.usd)
     return {
       room,
+      label: roomLabel(room),
       units: items.reduce((s, x) => s + x.units, 0),
       usd: items.reduce((s, x) => s + x.usd, 0),
-      top: items,
+      products: items,   // ALL products (boss wants the full list, expandable)
     }
   }).sort((a, b) => b.usd - a.usd)
 
+  const single = fromDate === toDate
   return {
-    date,
+    period: single ? 'daily' : 'weekly',
+    from: fromDate, to: toDate,
+    range_label: single ? fromDate : `${fromDate} → ${toDate}`,
     rooms,
     total_units: rooms.reduce((s, r) => s + r.units, 0),
     total_usd: rooms.reduce((s, r) => s + r.usd, 0),
@@ -166,14 +191,14 @@ export async function computeDailyUsage(supabase, date) {
 
 function buildText(d) {
   const lines = []
-  lines.push(`📦 Daily Sealed Usage — ${d.date}`)
+  const head = d.period === 'weekly' ? 'Weekly' : 'Daily'
+  lines.push(`📦 ${head} Sealed Usage — ${d.range_label}`)
   lines.push(`Total: ${d.total_units} units · ${fmtUsd(d.total_usd)} at cost`)
-  if (d.rooms.length === 0) { lines.push(''); lines.push('No sealed usage recorded today.'); return lines.join('\n') }
+  if (d.rooms.length === 0) { lines.push(''); lines.push('No sealed usage recorded.'); return lines.join('\n') }
   for (const r of d.rooms) {
     lines.push('')
-    lines.push(`• ${r.room}: ${r.units} units · ${fmtUsd(r.usd)}`)
-    for (const p of r.top.slice(0, 3)) lines.push(`    ${p.name} ×${p.units} (${fmtUsd(p.usd)})`)
-    if (r.top.length > 3) lines.push(`    +${r.top.length - 3} more`)
+    lines.push(`▼ ${r.label}: ${r.units} units · ${fmtUsd(r.usd)}`)
+    for (const p of r.products) lines.push(`    ${p.name} ×${p.units} (${fmtUsd(p.usd)})`)
   }
   lines.push('')
   lines.push(`Time: ${nowPtStamp()}`)
@@ -182,8 +207,9 @@ function buildText(d) {
 
 export default async function handler(req, res) {
   const q = req.query || {}
-  // Cron (no date/today param) requires the secret; manual reads are open.
-  if (CRON_SECRET && !q.date && !q.today) {
+  const isManual = q.date || q.today || q.week
+  // Cron (no manual param) requires the secret; manual reads are open.
+  if (CRON_SECRET && !isManual) {
     if ((req.headers.authorization || '') !== `Bearer ${CRON_SECRET}`) {
       return res.status(401).json({ error: 'Unauthorized' })
     }
@@ -191,11 +217,21 @@ export default async function handler(req, res) {
   if (!SUPABASE_KEY) return res.status(500).json({ error: 'Supabase key not configured' })
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } })
 
-  // default (cron) = the PT day that just ended (yesterday relative to now)
-  const date = q.date ? String(q.date) : q.today ? ptToday() : shiftDate(ptToday(), -1)
+  // Window:
+  //   ?week=YYYY-MM-DD → Mon–Sun week containing that date
+  //   ?date=YYYY-MM-DD → that single day
+  //   ?today=1         → today (single day)
+  //   (cron, no param) → the PT day that just ended (yesterday)
+  let fromDate, toDate
+  if (q.week) {
+    const w = weekContaining(String(q.week)); fromDate = w.from; toDate = w.to
+  } else {
+    const date = q.date ? String(q.date) : q.today ? ptToday() : shiftDate(ptToday(), -1)
+    fromDate = date; toDate = date
+  }
 
   try {
-    const data = await computeDailyUsage(supabase, date)
+    const data = await computeDailyUsage(supabase, fromDate, toDate)
     const text = buildText(data)
     const larked = q.dry ? false : await postLark(text)
     return res.status(200).json({ ok: true, ...data, larked, text })
