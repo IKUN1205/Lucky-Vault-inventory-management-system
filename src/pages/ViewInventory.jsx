@@ -302,6 +302,42 @@ export default function ViewInventory() {
     return acc
   }, {})
 
+  // ---- Card-aware search (boss directive 2026-06-23) ----
+  // The search box used to filter SEALED only. Now it ALSO searches
+  // singles (name / card # / TCG ID / set) and slabs (item name / cert /
+  // grading / bin). When a search is active we surface every LOCATION that
+  // holds a matching card — even card-only locations with no sealed stock
+  // — and auto-expand its card sub-sections, so staff can type a card and
+  // instantly see where it physically is. With NO search the view is
+  // unchanged (sealed-grouped locations, cards rolled up + collapsed).
+  const q = searchTerm.trim().toLowerCase()
+  const searching = q.length > 0
+  const matchSingle = (s) =>
+    (s.card_name || '').toLowerCase().includes(q) ||
+    String(s.card_number || '').toLowerCase().includes(q) ||
+    String(s.tcg_id || '').toLowerCase().includes(q) ||
+    (s.set?.name || '').toLowerCase().includes(q)
+  const matchSlab = (s) =>
+    (s.item_name || '').toLowerCase().includes(q) ||
+    String(s.cert_number || '').toLowerCase().includes(q) ||
+    (s.grading_company || '').toLowerCase().includes(q) ||
+    String(s.sheet_bin || '').toLowerCase().includes(q)
+  const singlesForLoc = (loc) =>
+    searching ? (singlesByLoc[loc] || []).filter(matchSingle) : (singlesByLoc[loc] || [])
+  const slabsForLoc = (loc) =>
+    searching ? (slabsByLoc[loc] || []).filter(matchSlab) : (slabsByLoc[loc] || [])
+
+  // Locations to render. No search → sealed-grouped locations (unchanged).
+  // Search → union of matching-sealed locations + locations holding a
+  // matching single/slab, sorted for stable display.
+  const locationNames = searching
+    ? Array.from(new Set([
+        ...Object.keys(groupedByLocation),
+        ...Object.keys(singlesByLoc).filter(loc => (singlesByLoc[loc] || []).some(matchSingle)),
+        ...Object.keys(slabsByLoc).filter(loc => (slabsByLoc[loc] || []).some(matchSlab)),
+      ])).sort((a, b) => a.localeCompare(b))
+    : Object.keys(groupedByLocation)
+
   // Calculate totals
   const totalValue = filteredInventory.reduce((sum, inv) => 
     sum + (inv.quantity * (inv.avg_cost_basis || 0)), 0
@@ -333,7 +369,7 @@ export default function ViewInventory() {
           <p className="font-medium text-white">View and manage inventory:</p>
           <ul className="list-disc list-inside space-y-2 ml-2">
             <li><span className="text-vault-gold">Filter</span> by location, brand, or type</li>
-            <li><span className="text-vault-gold">Search</span> by product name</li>
+            <li><span className="text-vault-gold">Search</span> a card name, cert #, or TCG ID to see which location it's at (covers sealed, singles & slabs). Card search scans everything to find the physical card, so it ignores the Brand / Market / Sealed filters.</li>
             <li>See <span className="text-vault-gold">quantity</span> and <span className="text-vault-gold">cost basis</span> per item</li>
             <li>Click <span className="text-vault-gold">Edit</span> to adjust quantities directly</li>
             <li>Click <span className="text-vault-gold">Delete</span> to remove a line item</li>
@@ -407,12 +443,17 @@ export default function ViewInventory() {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search by launch name..."
+                placeholder="Search name / cert # / TCG ID — sealed, singles & slabs"
                 className="pl-10"
               />
             </div>
           </div>
         </div>
+        {searching && (filters.brand || filters.type || filters.language) && (
+          <p className="text-amber-300/80 text-xs mt-3">
+            ⚠ Card search scans every single &amp; slab to locate the physical card — it ignores the Brand / Market / Sealed filters above. Clear the search to apply those filters.
+          </p>
+        )}
       </div>
 
       {/* Summary */}
@@ -427,7 +468,7 @@ export default function ViewInventory() {
         </div>
         <div className="card text-center">
           <p className="text-gray-400 text-sm">Locations</p>
-          <p className="text-2xl font-bold text-white">{Object.keys(groupedByLocation).length}</p>
+          <p className="text-2xl font-bold text-white">{locationNames.length}</p>
         </div>
         <div className="card text-center">
           <p className="text-gray-400 text-sm">SKUs</p>
@@ -436,9 +477,13 @@ export default function ViewInventory() {
       </div>
 
       {/* Inventory by Location */}
-      {Object.entries(groupedByLocation).map(([locationName, items]) => {
+      {locationNames.map((locationName) => {
+        const items = groupedByLocation[locationName] || []
         const locationTotal = items.reduce((sum, inv) => sum + (inv.quantity * (inv.avg_cost_basis || 0)), 0)
         const locationItems = items.reduce((sum, inv) => sum + inv.quantity, 0)
+        const locSingles = singlesForLoc(locationName)
+        const locSlabs = slabsForLoc(locationName)
+        const cardCount = locSingles.length + locSlabs.length
 
         return (
           <div key={locationName} className="card mb-6">
@@ -448,14 +493,19 @@ export default function ViewInventory() {
                 <h2 className="font-display text-lg font-semibold text-white">
                   {locationName}
                 </h2>
-                <span className="text-gray-400 text-sm">({locationItems} items)</span>
-                <span className="text-gray-600 text-xs">· all values in USD</span>
+                {items.length > 0
+                  ? <span className="text-gray-400 text-sm">({locationItems} sealed{cardCount > 0 ? ` · ${cardCount} card${cardCount === 1 ? '' : 's'}` : ''})</span>
+                  : <span className="text-gray-400 text-sm">({cardCount} card{cardCount === 1 ? '' : 's'})</span>}
+                {items.length > 0 && <span className="text-gray-600 text-xs">· all values in USD</span>}
               </div>
-              <span className="text-vault-gold font-semibold">
-                ${locationTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-              </span>
+              {items.length > 0 && (
+                <span className="text-vault-gold font-semibold">
+                  ${locationTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </span>
+              )}
             </div>
 
+            {items.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
@@ -593,17 +643,19 @@ export default function ViewInventory() {
                 </tbody>
               </table>
             </div>
+            )}
 
             {/* Collapsible sub-sections — singles + slabs at this location.
                 Default collapsed so the sealed view stays the main story;
                 staff click to expand when they want to see what cards are
-                physically here. */}
+                physically here. While a search is active they're filtered
+                to matches and force-expanded so the found card is visible. */}
             <LocationCardsSubSections
               locationName={locationName}
-              singles={singlesByLoc[locationName] || []}
-              slabs={slabsByLoc[locationName] || []}
-              expandedSingles={expandedSingles.has(locationName)}
-              expandedSlabs={expandedSlabs.has(locationName)}
+              singles={locSingles}
+              slabs={locSlabs}
+              expandedSingles={searching || expandedSingles.has(locationName)}
+              expandedSlabs={searching || expandedSlabs.has(locationName)}
               onToggleSingles={() => toggleSingles(locationName)}
               onToggleSlabs={() => toggleSlabs(locationName)}
             />
@@ -611,10 +663,10 @@ export default function ViewInventory() {
         )
       })}
 
-      {filteredInventory.length === 0 && (
+      {locationNames.length === 0 && (
         <div className="card text-center py-12">
           <Package className="mx-auto text-gray-600 mb-4" size={48} />
-          <p className="text-gray-400">No inventory found</p>
+          <p className="text-gray-400">{searching ? `Nothing matches "${searchTerm.trim()}"` : 'No inventory found'}</p>
         </div>
       )}
     </div>
