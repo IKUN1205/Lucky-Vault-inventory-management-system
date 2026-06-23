@@ -2495,23 +2495,31 @@ export const fetchJapanToUSShipments = async ({ limit = 50, includeAll = false }
 // (transfers), box_breaks (a box becomes packs — counted when those sell),
 // jp_to_us_shipment (warehouse-to-warehouse transfer), platform_sales (legacy).
 //
-// `start` / `end` are inclusive 'YYYY-MM-DD' calendar dates. Returns unit
-// counts per channel + a US subtotal. Weekly volumes are small (low hundreds
-// of rows) so no pagination needed.
+// `start` / `end` are inclusive 'YYYY-MM-DD' calendar dates. Returns channel
+// totals + a US subtotal + a PER-PRODUCT breakdown (which goods, sold from
+// which channel). Only 货物 (sealed boxes/packs) — singles & slabs live in
+// their own tables and never reach these sources, so they're excluded by
+// construction (the `products` table is sealed-only).
+//
+// Stream per-product sold = expected_qty − actual_qty per stream_count_item
+// (difference = actual − expected, so sold rows have difference < 0). Filtering
+// to difference < 0 also keeps the row count tiny. Weekly volumes are small so
+// a single fetch per source is enough.
 export const fetchWeeklyUsage = async (start, end) => {
   // Day after `end`, for the timestamp upper-bound on stream_counts.count_time
   // (the only source on a timestamptz column rather than a plain date).
   const endNextDate = new Date(`${end}T00:00:00`)
   endNextDate.setDate(endNextDate.getDate() + 1)
   const endNext = endNextDate.toISOString().slice(0, 10)
+  const PROD = 'product:products(name,short_code,language,category)'
 
   const [sfRes, scRes, ooRes, jpRes] = await Promise.all([
     supabase.from('storefront_sales')
-      .select('quantity')
+      .select(`quantity, product_id, ${PROD}`)
       .eq('deleted', false)
       .gte('date', start).lte('date', end),
     supabase.from('stream_counts')
-      .select('total_sold')
+      .select('id, total_sold')
       .eq('deleted', false)
       .gte('count_time', start).lt('count_time', endNext),
     supabase.from('online_orders')
@@ -2519,40 +2527,109 @@ export const fetchWeeklyUsage = async (start, end) => {
       .eq('deleted', false)
       .gte('date', start).lte('date', end),
     supabase.from('japan_stream_sales')
-      .select('quantity, channel')
+      .select(`quantity, channel, product_id, ${PROD}`)
       .eq('deleted', false)
       .gte('sale_date', start).lte('sale_date', end),
   ])
   for (const r of [sfRes, scRes, ooRes, jpRes]) if (r.error) throw r.error
 
-  const sum = (rows, key) => (rows || []).reduce((s, x) => s + (Number(x[key]) || 0), 0)
-
-  // Online: orders in window → their line-item quantities.
-  let onlineUnits = 0, onlineLines = 0
-  const orderIds = (ooRes.data || []).map(o => o.id)
-  if (orderIds.length) {
-    const { data: items, error: itemsErr } = await supabase
-      .from('online_order_items')
-      .select('quantity')
-      .in('order_id', orderIds)
-    if (itemsErr) throw itemsErr
-    onlineUnits = sum(items, 'quantity')
-    onlineLines = (items || []).length
+  // Stream line items (sold rows only) for the sessions in window.
+  const scIds = (scRes.data || []).map(s => s.id)
+  let sciData = []
+  if (scIds.length) {
+    const { data, error } = await supabase
+      .from('stream_count_items')
+      .select(`expected_qty, actual_qty, product_id, ${PROD}`)
+      .in('stream_count_id', scIds)
+      .lt('difference', 0)        // difference = actual − expected; <0 means sold
+      .limit(5000)
+    if (error) throw error
+    sciData = data || []
   }
 
-  const storefrontUnits = sum(sfRes.data, 'quantity')
-  const streamUnits = sum(scRes.data, 'total_sold')
-  const japanUnits = sum(jpRes.data, 'quantity')
-  const japanStream = sum((jpRes.data || []).filter(x => x.channel !== 'local'), 'quantity')
-  const japanLocal = sum((jpRes.data || []).filter(x => x.channel === 'local'), 'quantity')
+  // Online line items for the orders in window.
+  const orderIds = (ooRes.data || []).map(o => o.id)
+  let ooiData = []
+  if (orderIds.length) {
+    const { data, error } = await supabase
+      .from('online_order_items')
+      .select(`quantity, product_id, ${PROD}`)
+      .in('order_id', orderIds)
+      .limit(5000)
+    if (error) throw error
+    ooiData = data || []
+  }
+
+  // ---- Merge into a per-product map (US channels) ----
+  const usMap = new Map()
+  const touch = (pid, prod) => {
+    if (!usMap.has(pid)) {
+      usMap.set(pid, {
+        product_id: pid,
+        name: prod?.name || '(unknown)',
+        short_code: prod?.short_code || null,
+        language: prod?.language || null,
+        category: prod?.category || null,
+        storefront: 0, stream: 0, online: 0, total: 0,
+      })
+    }
+    return usMap.get(pid)
+  }
+  for (const r of sfRes.data || []) {
+    const row = touch(r.product_id, r.product); const q = Number(r.quantity) || 0
+    row.storefront += q; row.total += q
+  }
+  for (const r of sciData) {
+    const sold = (Number(r.expected_qty) || 0) - (Number(r.actual_qty) || 0)
+    if (sold <= 0) continue
+    const row = touch(r.product_id, r.product)
+    row.stream += sold; row.total += sold
+  }
+  for (const r of ooiData) {
+    const row = touch(r.product_id, r.product); const q = Number(r.quantity) || 0
+    row.online += q; row.total += q
+  }
+  const products = [...usMap.values()].sort((a, b) => b.total - a.total)
+
+  // ---- Japan per-product (separate warehouse) ----
+  const jpMap = new Map()
+  for (const r of jpRes.data || []) {
+    const pid = r.product_id
+    if (!jpMap.has(pid)) {
+      jpMap.set(pid, {
+        product_id: pid,
+        name: r.product?.name || '(unknown)',
+        short_code: r.product?.short_code || null,
+        language: r.product?.language || null,
+        category: r.product?.category || null,
+        stream: 0, local: 0, total: 0,
+      })
+    }
+    const row = jpMap.get(pid); const q = Number(r.quantity) || 0
+    if (r.channel === 'local') row.local += q; else row.stream += q
+    row.total += q
+  }
+  const japanProducts = [...jpMap.values()].sort((a, b) => b.total - a.total)
+
+  const storefrontUnits = products.reduce((s, p) => s + p.storefront, 0)
+  const streamUnits = products.reduce((s, p) => s + p.stream, 0)
+  const onlineUnits = products.reduce((s, p) => s + p.online, 0)
+  const japanUnits = japanProducts.reduce((s, p) => s + p.total, 0)
 
   return {
     start, end,
     storefront: { units: storefrontUnits, txns: (sfRes.data || []).length },
     stream:     { units: streamUnits, sessions: (scRes.data || []).length },
-    online:     { units: onlineUnits, orders: orderIds.length, lines: onlineLines },
+    online:     { units: onlineUnits, orders: orderIds.length, lines: ooiData.length },
     usSubtotal: storefrontUnits + streamUnits + onlineUnits,
-    japan:      { units: japanUnits, stream: japanStream, local: japanLocal, sales: (jpRes.data || []).length },
+    products,
+    japan: {
+      units: japanUnits,
+      stream: japanProducts.reduce((s, p) => s + p.stream, 0),
+      local: japanProducts.reduce((s, p) => s + p.local, 0),
+      sales: (jpRes.data || []).length,
+      products: japanProducts,
+    },
   }
 }
 

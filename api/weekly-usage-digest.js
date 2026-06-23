@@ -65,20 +65,36 @@ export default async function handler(req, res) {
 
   try {
     const [sfRes, scRes, ooRes, jpRes] = await Promise.all([
-      supabase.from('storefront_sales').select('quantity').eq('deleted', false).gte('date', start).lte('date', end),
-      supabase.from('stream_counts').select('total_sold').eq('deleted', false).gte('count_time', start).lt('count_time', endNext),
+      supabase.from('storefront_sales').select('quantity, product:products(name, short_code, category)').eq('deleted', false).gte('date', start).lte('date', end),
+      supabase.from('stream_counts').select('id, total_sold').eq('deleted', false).gte('count_time', start).lt('count_time', endNext),
       supabase.from('online_orders').select('id').eq('deleted', false).gte('date', start).lte('date', end),
       supabase.from('japan_stream_sales').select('quantity, channel').eq('deleted', false).gte('sale_date', start).lte('sale_date', end),
     ])
     for (const r of [sfRes, scRes, ooRes, jpRes]) if (r.error) throw r.error
 
+    // Stream line items (sold rows) for top-seller detail.
+    const scIds = (scRes.data || []).map(s => s.id)
+    let sciData = []
+    if (scIds.length) {
+      const { data, error } = await supabase
+        .from('stream_count_items')
+        .select('expected_qty, actual_qty, product:products(name, short_code, category)')
+        .in('stream_count_id', scIds).lt('difference', 0).limit(5000)
+      if (error) throw error
+      sciData = data || []
+    }
+
     let onlineUnits = 0
     const orderIds = (ooRes.data || []).map(o => o.id)
+    let ooiData = []
     if (orderIds.length) {
       const { data: items, error } = await supabase
-        .from('online_order_items').select('quantity').in('order_id', orderIds)
+        .from('online_order_items')
+        .select('quantity, product:products(name, short_code, category)')
+        .in('order_id', orderIds).limit(5000)
       if (error) throw error
-      onlineUnits = sumKey(items, 'quantity')
+      ooiData = items || []
+      onlineUnits = sumKey(ooiData, 'quantity')
     }
 
     const storefront = sumKey(sfRes.data, 'quantity')
@@ -86,8 +102,22 @@ export default async function handler(req, res) {
     const usTotal = storefront + stream + onlineUnits
     const japan = sumKey(jpRes.data, 'quantity')
 
+    // Top sellers (US, 货物 only) — combine all three channels per product.
+    const cleanName = (p) => {
+      const name = p?.name || '(unknown)'
+      const cat = p?.category
+      const trimmed = cat ? name.replace(new RegExp(`\\s*${cat}\\s*$`, 'i'), '').trim() || name : name
+      return `${p?.short_code ? p.short_code + ' ' : ''}${trimmed}`
+    }
+    const top = new Map()
+    const bump = (p, q) => { const k = cleanName(p); top.set(k, (top.get(k) || 0) + (Number(q) || 0)) }
+    for (const r of sfRes.data || []) bump(r.product, r.quantity)
+    for (const r of sciData || []) bump(r.product, (Number(r.expected_qty) || 0) - (Number(r.actual_qty) || 0))
+    for (const r of ooiData) bump(r.product, r.quantity)
+    const topSellers = [...top.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
+
     const lines = [
-      '📦 上周货物用量 / Weekly Usage',
+      '📦 上周货物用量 / Weekly Usage (只统计货物,不含散卡/评级卡)',
       `${start} → ${end} (Mon–Sun)`,
       '',
       `🏪 门店 Storefront:  ${storefront.toLocaleString()} 件`,
@@ -97,6 +127,11 @@ export default async function handler(req, res) {
       '',
       `🇯🇵 日本仓 (单独):   ${japan.toLocaleString()} 件`,
     ]
+    if (topSellers.length) {
+      lines.push('')
+      lines.push('🔥 美国卖得最多的货物:')
+      topSellers.forEach(([name, qty], i) => lines.push(`  ${i + 1}. ${name} × ${qty}`))
+    }
     const text = lines.join('\n')
 
     const r = await fetch(LARK_URL, {

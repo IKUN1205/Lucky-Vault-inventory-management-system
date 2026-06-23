@@ -15,6 +15,15 @@ import {
 // number reflects real demand, not stock shuffling. See fetchWeeklyUsage.
 // ============================================================================
 
+// Trim the trailing category off a full product name for a cleaner label
+// (e.g. "OP-15 Adventure ... Booster Box" + category "Booster Box").
+const extractLaunchName = (fullName, category) => {
+  if (!fullName) return ''
+  if (!category) return fullName
+  const re = new RegExp(`\\s*${category}\\s*$`, 'i')
+  return fullName.replace(re, '').trim() || fullName
+}
+
 // Monday (local) of the week containing `d`. Weeks run Mon–Sun.
 const mondayOf = (d) => {
   const x = new Date(d)
@@ -144,22 +153,87 @@ export default function WeeklyUsage() {
             <div className="text-3xl font-bold text-vault-gold">{data.usSubtotal.toLocaleString()} <span className="text-base font-normal text-gray-400">件</span></div>
           </div>
 
-          {/* Japan — reported separately */}
-          <div className="bg-vault-surface border border-vault-border rounded-lg p-5 flex items-center justify-between">
-            <div>
-              <div className="text-sm text-gray-300">🇯🇵 日本仓 (单独,不计入美国合计)</div>
-              <div className="text-xs text-gray-500 mt-0.5">
-                直播 {data.japan.stream.toLocaleString()} · 当地 {data.japan.local.toLocaleString()} · {data.japan.sales} 笔
+          {/* US per-product breakdown: which goods, sold from which channel */}
+          <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+            <h3 className="font-semibold text-white text-sm mb-3">🇺🇸 美国 · 按货物明细(从哪个渠道卖出)</h3>
+            {data.products.length === 0 ? (
+              <p className="text-gray-500 text-sm py-3">本周美国没有货物卖出。</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-400 text-xs border-b border-vault-border">
+                      <th className="pb-2">货物 Product</th>
+                      <th className="pb-2 text-right">🏪 门店</th>
+                      <th className="pb-2 text-right">📺 直播</th>
+                      <th className="pb-2 text-right">🛒 线上</th>
+                      <th className="pb-2 text-right">合计</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.products.map(p => (
+                      <tr key={p.product_id} className="border-b border-vault-border/40">
+                        <td className="py-1.5 text-white">
+                          {p.short_code && <span className="text-[10px] font-mono text-gray-500 mr-1.5">{p.short_code}</span>}
+                          {extractLaunchName(p.name, p.category)}
+                          {p.language && <span className="text-gray-500 text-xs"> [{p.language}]</span>}
+                        </td>
+                        <td className="py-1.5 text-right text-amber-300">{p.storefront || '—'}</td>
+                        <td className="py-1.5 text-right text-blue-300">{p.stream || '—'}</td>
+                        <td className="py-1.5 text-right text-emerald-300">{p.online || '—'}</td>
+                        <td className="py-1.5 text-right text-vault-gold font-semibold">{p.total}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+            )}
+          </div>
+
+          {/* Japan — reported separately */}
+          <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-white text-sm">🇯🇵 日本仓 · 按货物明细(单独,不计入美国合计)</h3>
+              <div className="text-sm font-bold text-white">{data.japan.units.toLocaleString()} <span className="text-xs font-normal text-gray-400">件</span></div>
             </div>
-            <div className="text-2xl font-bold text-white">{data.japan.units.toLocaleString()} <span className="text-base font-normal text-gray-400">件</span></div>
+            {data.japan.products.length === 0 ? (
+              <p className="text-gray-500 text-sm py-3">本周日本仓没有货物卖出。</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-400 text-xs border-b border-vault-border">
+                      <th className="pb-2">货物 Product</th>
+                      <th className="pb-2 text-right">📺 直播</th>
+                      <th className="pb-2 text-right">🏪 当地</th>
+                      <th className="pb-2 text-right">合计</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.japan.products.map(p => (
+                      <tr key={p.product_id} className="border-b border-vault-border/40">
+                        <td className="py-1.5 text-white">
+                          {p.short_code && <span className="text-[10px] font-mono text-gray-500 mr-1.5">{p.short_code}</span>}
+                          {extractLaunchName(p.name, p.category)}
+                          {p.language && <span className="text-gray-500 text-xs"> [{p.language}]</span>}
+                        </td>
+                        <td className="py-1.5 text-right text-blue-300">{p.stream || '—'}</td>
+                        <td className="py-1.5 text-right text-purple-300">{p.local || '—'}</td>
+                        <td className="py-1.5 text-right text-vault-gold font-semibold">{p.total}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* What's counted / excluded */}
           <div className="bg-vault-darker/40 border border-vault-border rounded-lg p-4 text-xs text-gray-400 leading-relaxed">
             <div className="text-gray-300 font-semibold mb-1">口径说明</div>
-            <div>✅ 计入用量:卖给客人的出库 —— 门店(storefront_sales)、直播(每场盘点 total_sold)、线上(订单明细 quantity)。</div>
-            <div>❌ 不计入:调拨库存、拆盒、日本→美国发货(都是内部流转,不是卖货);platform_sales(旧的扫码卡,基本没用)。</div>
+            <div>✅ 只统计货物(封装盒/包)。散卡(single)和评级卡(slab)走各自的系统,不在这里。</div>
+            <div>✅ 计入:卖给客人的出库 —— 门店、直播(每场盘点卖出)、线上(订单)。</div>
+            <div>❌ 不计入:调拨库存、拆盒、日本→美国发货(内部流转);platform_sales(旧扫码卡,基本没用)。</div>
             <div className="mt-1 text-gray-500">周界:周一至周日。直播按盘点时间归周,跨午夜的极少数场次可能有 ±1 天误差。</div>
           </div>
         </>
