@@ -31,6 +31,10 @@
       "schedule": "0 16 * * 1"
     },
     {
+      "path": "/api/weekly-usage-digest",
+      "schedule": "15 16 * * 1"
+    },
+    {
       "path": "/api/sync-digest-eod",
       "schedule": "0 0 * * *"
     }

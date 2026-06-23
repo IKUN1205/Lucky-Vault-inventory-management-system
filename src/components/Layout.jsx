@@ -95,6 +95,7 @@ const navSections = [
     title: 'Reports',
     items: [
       { path: '/reports', label: 'Reports', icon: BarChart3 },
+      { path: '/weekly-usage', label: 'Weekly Usage', icon: BarChart3 },
       { path: '/turnover', label: 'Turnover', icon: Gauge },
       { path: '/executive-report', label: 'Executive Report', icon: TrendingUp },
       { path: '/audit-history', label: 'Audit History', icon: ShieldCheck },

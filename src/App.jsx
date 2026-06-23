@@ -26,6 +26,7 @@ import ProductBarcodes from './pages/ProductBarcodes'
 import UserManagement from './pages/UserManagement'
 import Turnover from './pages/Turnover'
 import ExecutiveReport from './pages/ExecutiveReport'
+import WeeklyUsage from './pages/WeeklyUsage'
 import Audit from './pages/Audit'
 import StorefrontImport from './pages/StorefrontImport'
 import StreamSessions from './pages/StreamSessions'
@@ -143,6 +144,9 @@ function AppRoutes() {
       } />
       <Route path="/turnover" element={
         <ProtectedRoute path="/turnover"><Layout><Turnover /></Layout></ProtectedRoute>
+      } />
+      <Route path="/weekly-usage" element={
+        <ProtectedRoute path="/weekly-usage"><Layout><WeeklyUsage /></Layout></ProtectedRoute>
       } />
       <Route path="/executive-report" element={
         <ProtectedRoute path="/executive-report"><Layout><ExecutiveReport /></Layout></ProtectedRoute>

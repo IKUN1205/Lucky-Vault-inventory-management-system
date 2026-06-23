@@ -2479,6 +2479,83 @@ export const fetchJapanToUSShipments = async ({ limit = 50, includeAll = false }
   return data || []
 }
 
+// ============================================================================
+// WEEKLY USAGE — units that left inventory to customers, by channel
+// ============================================================================
+// "Usage" = goods sold to customers (real outflows), NOT internal moves.
+// Source of truth per channel (chosen after auditing the live tables):
+//   门店 storefront → storefront_sales.quantity
+//   直播 livestream → stream_counts.total_sold (the post-stream count — this
+//                     is where live sales actually live; platform_sales is a
+//                     newer scan-cart that's barely used, excluded on purpose)
+//   线上 online     → online_order_items.quantity for orders in the window
+//   日本 Japan      → japan_stream_sales.quantity (separate warehouse, both
+//                     stream + local channels; reported separately)
+// Deliberately EXCLUDED (internal flows, would double-count): movements
+// (transfers), box_breaks (a box becomes packs — counted when those sell),
+// jp_to_us_shipment (warehouse-to-warehouse transfer), platform_sales (legacy).
+//
+// `start` / `end` are inclusive 'YYYY-MM-DD' calendar dates. Returns unit
+// counts per channel + a US subtotal. Weekly volumes are small (low hundreds
+// of rows) so no pagination needed.
+export const fetchWeeklyUsage = async (start, end) => {
+  // Day after `end`, for the timestamp upper-bound on stream_counts.count_time
+  // (the only source on a timestamptz column rather than a plain date).
+  const endNextDate = new Date(`${end}T00:00:00`)
+  endNextDate.setDate(endNextDate.getDate() + 1)
+  const endNext = endNextDate.toISOString().slice(0, 10)
+
+  const [sfRes, scRes, ooRes, jpRes] = await Promise.all([
+    supabase.from('storefront_sales')
+      .select('quantity')
+      .eq('deleted', false)
+      .gte('date', start).lte('date', end),
+    supabase.from('stream_counts')
+      .select('total_sold')
+      .eq('deleted', false)
+      .gte('count_time', start).lt('count_time', endNext),
+    supabase.from('online_orders')
+      .select('id')
+      .eq('deleted', false)
+      .gte('date', start).lte('date', end),
+    supabase.from('japan_stream_sales')
+      .select('quantity, channel')
+      .eq('deleted', false)
+      .gte('sale_date', start).lte('sale_date', end),
+  ])
+  for (const r of [sfRes, scRes, ooRes, jpRes]) if (r.error) throw r.error
+
+  const sum = (rows, key) => (rows || []).reduce((s, x) => s + (Number(x[key]) || 0), 0)
+
+  // Online: orders in window → their line-item quantities.
+  let onlineUnits = 0, onlineLines = 0
+  const orderIds = (ooRes.data || []).map(o => o.id)
+  if (orderIds.length) {
+    const { data: items, error: itemsErr } = await supabase
+      .from('online_order_items')
+      .select('quantity')
+      .in('order_id', orderIds)
+    if (itemsErr) throw itemsErr
+    onlineUnits = sum(items, 'quantity')
+    onlineLines = (items || []).length
+  }
+
+  const storefrontUnits = sum(sfRes.data, 'quantity')
+  const streamUnits = sum(scRes.data, 'total_sold')
+  const japanUnits = sum(jpRes.data, 'quantity')
+  const japanStream = sum((jpRes.data || []).filter(x => x.channel !== 'local'), 'quantity')
+  const japanLocal = sum((jpRes.data || []).filter(x => x.channel === 'local'), 'quantity')
+
+  return {
+    start, end,
+    storefront: { units: storefrontUnits, txns: (sfRes.data || []).length },
+    stream:     { units: streamUnits, sessions: (scRes.data || []).length },
+    online:     { units: onlineUnits, orders: orderIds.length, lines: onlineLines },
+    usSubtotal: storefrontUnits + streamUnits + onlineUnits,
+    japan:      { units: japanUnits, stream: japanStream, local: japanLocal, sales: (jpRes.data || []).length },
+  }
+}
+
 // ============================================
 // STOREFRONT — UNIFIED CHECKOUT (Phase 1)
 // ============================================

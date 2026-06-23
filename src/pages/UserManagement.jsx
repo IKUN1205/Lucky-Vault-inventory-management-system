@@ -48,6 +48,7 @@ const PAGE_SECTIONS = [
   ]},
   { title: 'Reports', items: [
     { path: '/reports', label: 'Reports' },
+    { path: '/weekly-usage', label: 'Weekly Usage' },
     { path: '/turnover', label: 'Turnover' },
     { path: '/executive-report', label: 'Executive Report' },
     { path: '/audit-history', label: 'Audit History' },
