@@ -1,8 +1,8 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { 
-  Package, 
-  ShoppingCart, 
+import {
+  Package,
+  ShoppingCart,
   Receipt,
   ArrowRightLeft,
   Box,
@@ -13,7 +13,9 @@ import {
   BarChart3,
   Plus,
   PackagePlus,
-  ClipboardList
+  ClipboardList,
+  Boxes,
+  Loader2
 } from 'lucide-react'
 
 const actions = [
@@ -141,6 +143,88 @@ export default function Dashboard() {
           <p className="font-display text-2xl font-bold text-purple-400">--</p>
         </div>
       </div>
+
+      {/* Daily sealed usage by stream room (boss directive 2026-06-23) */}
+      <DailyUsageCard />
+    </div>
+  )
+}
+
+// Per-stream-room SEALED usage for a chosen day — same data the daily
+// Lark report sends (/api/daily-usage-report). Defaults to today; the
+// date picker lets staff look back. "Usage" = expected − actual from the
+// stream-count handoffs + any sealed sold via Platform Sales, valued at
+// cost.
+function DailyUsageCard() {
+  const todayStr = () => new Date().toLocaleDateString('en-CA')
+  const [date, setDate] = useState(todayStr())
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true); setErr(null)
+    const param = date === todayStr() ? 'today=1' : `date=${date}`
+    fetch(`/api/daily-usage-report?${param}&dry=1`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) { if (d.error) setErr(d.error); else setData(d) } })
+      .catch(e => { if (!cancelled) setErr(String(e)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [date])
+
+  const usd = (n) => `$${(Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+
+  return (
+    <div className="mt-8 card">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <h2 className="font-display text-lg font-semibold text-white flex items-center gap-2">
+          <Boxes className="text-vault-gold" size={20} /> Sealed usage by room
+        </h2>
+        <input
+          type="date"
+          value={date}
+          max={todayStr()}
+          onChange={(e) => setDate(e.target.value || todayStr())}
+          className="text-sm py-1.5 px-2 bg-vault-darker/40 border border-vault-border rounded-md text-white"
+        />
+      </div>
+
+      {loading && <div className="text-gray-400 flex items-center gap-2 py-4"><Loader2 size={16} className="animate-spin" /> Loading…</div>}
+      {err && !loading && <div className="text-red-300 text-sm py-4">Couldn't load usage: {err}</div>}
+
+      {!loading && !err && data && (
+        data.rooms.length === 0 ? (
+          <p className="text-gray-500 py-4">No sealed usage recorded {date === todayStr() ? 'today yet' : 'that day'}.</p>
+        ) : (
+          <>
+            <p className="text-sm text-gray-400 mb-3">
+              Total <span className="text-white font-semibold">{data.total_units} units</span> ·
+              <span className="text-vault-gold font-semibold"> {usd(data.total_usd)}</span> at cost
+            </p>
+            <div className="space-y-3">
+              {data.rooms.map((r) => (
+                <div key={r.room} className="rounded-lg border border-vault-border bg-vault-darker/30 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="font-medium text-white">{r.room}</span>
+                    <span className="text-sm text-gray-300">{r.units} units · <span className="text-vault-gold">{usd(r.usd)}</span></span>
+                  </div>
+                  <div className="text-xs text-gray-500 space-y-0.5">
+                    {r.top.slice(0, 3).map((p, i) => (
+                      <div key={i} className="flex justify-between gap-2">
+                        <span className="truncate">{p.name} ×{p.units}</span>
+                        <span className="flex-shrink-0">{usd(p.usd)}</span>
+                      </div>
+                    ))}
+                    {r.top.length > 3 && <div className="text-gray-600">+{r.top.length - 3} more products</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )
+      )}
     </div>
   )
 }
