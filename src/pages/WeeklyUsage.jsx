@@ -2,8 +2,21 @@ import React, { useState, useEffect } from 'react'
 import { fetchWeeklyUsage } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import {
-  BarChart3, ChevronLeft, ChevronRight, RefreshCw, Store, Tv2, ShoppingBag,
+  BarChart3, ChevronLeft, ChevronRight, RefreshCw, ChevronDown, ChevronUp,
 } from 'lucide-react'
+
+// How many goods to show before "展开全部".
+const TOP_N = 8
+
+// Compact "where it sold from" tag for one product row. One channel → label;
+// multiple → ranked breakdown. `defs` is [{ key, label, cls }] in display order.
+function channelBreakdown(p, defs) {
+  const parts = defs
+    .map(d => ({ ...d, n: p[d.key] || 0 }))
+    .filter(d => d.n > 0)
+    .sort((a, b) => b.n - a.n)
+  return parts
+}
 
 // ============================================================================
 // 每周用量 / Weekly Usage
@@ -45,6 +58,8 @@ export default function WeeklyUsage() {
   const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()))
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [showAllUs, setShowAllUs] = useState(false)
+  const [showAllJp, setShowAllJp] = useState(false)
 
   const weekEnd = addDays(weekStart, 6)
   const start = toYMD(weekStart)
@@ -122,119 +137,75 @@ export default function WeeklyUsage() {
         <p className="text-gray-500 text-sm">No data.</p>
       ) : (
         <>
-          {/* US channels */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <ChannelCard
-              icon={Store} colorClass="text-amber-400"
-              zh="门店" en="Storefront"
-              units={data.storefront.units}
-              sub={`${data.storefront.txns} 笔`}
-            />
-            <ChannelCard
-              icon={Tv2} colorClass="text-blue-400"
-              zh="直播" en="Livestream"
-              units={data.stream.units}
-              sub={`${data.stream.sessions} 场`}
-            />
-            <ChannelCard
-              icon={ShoppingBag} colorClass="text-emerald-400"
-              zh="线上" en="Online"
-              units={data.online.units}
-              sub={`${data.online.orders} 单`}
-            />
-          </div>
-
-          {/* US subtotal */}
-          <div className="bg-vault-gold/10 border border-vault-gold/40 rounded-lg p-5 flex items-center justify-between">
-            <div>
-              <div className="text-sm text-gray-300">🇺🇸 美国合计 (门店 + 直播 + 线上)</div>
-              <div className="text-xs text-gray-500 mt-0.5">{rangeLabel}</div>
+          {/* 1️⃣ 本周卖出 — headline + channel split + Japan separate */}
+          <Section n="1️⃣" title="本周卖出">
+            <div className="flex items-baseline gap-2">
+              <span className="text-gray-400 text-sm">🇺🇸 美国合计</span>
+              <span className="text-3xl font-bold text-vault-gold">{data.usSubtotal.toLocaleString()}</span>
+              <span className="text-gray-400 text-sm">件</span>
             </div>
-            <div className="text-3xl font-bold text-vault-gold">{data.usSubtotal.toLocaleString()} <span className="text-base font-normal text-gray-400">件</span></div>
-          </div>
+            <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-sm">
+              <span><span className="text-amber-400">🏪 门店</span> <b className="text-white">{data.storefront.units.toLocaleString()}</b> <span className="text-gray-600 text-xs">· {data.storefront.txns} 笔</span></span>
+              <span><span className="text-blue-400">📺 直播</span> <b className="text-white">{data.stream.units.toLocaleString()}</b> <span className="text-gray-600 text-xs">· {data.stream.sessions} 场</span></span>
+              <span><span className="text-emerald-400">🛒 线上</span> <b className="text-white">{data.online.units.toLocaleString()}</b> <span className="text-gray-600 text-xs">· {data.online.orders} 单</span></span>
+            </div>
+            <div className="mt-3 pt-3 border-t border-vault-border/60 text-sm text-gray-400">
+              🇯🇵 日本仓(单独) <b className="text-white">{data.japan.units.toLocaleString()}</b> 件
+              <span className="text-gray-600 text-xs"> · 📺 直播 {data.japan.stream.toLocaleString()} · 🏪 当地 {data.japan.local.toLocaleString()}</span>
+            </div>
+          </Section>
 
-          {/* US per-product breakdown: which goods, sold from which channel */}
-          <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-            <h3 className="font-semibold text-white text-sm mb-3">🇺🇸 美国 · 按货物明细(从哪个渠道卖出)</h3>
+          {/* 2️⃣ 美国卖得最多的货物 — top N + fold */}
+          <Section n="2️⃣" title="美国卖得最多的货物" right={`${data.products.length} 种`}>
             {data.products.length === 0 ? (
-              <p className="text-gray-500 text-sm py-3">本周美国没有货物卖出。</p>
+              <p className="text-gray-500 text-sm py-1">本周美国没有货物卖出。</p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-gray-400 text-xs border-b border-vault-border">
-                      <th className="pb-2">货物 Product</th>
-                      <th className="pb-2 text-right">🏪 门店</th>
-                      <th className="pb-2 text-right">📺 直播</th>
-                      <th className="pb-2 text-right">🛒 线上</th>
-                      <th className="pb-2 text-right">合计</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.products.map(p => (
-                      <tr key={p.product_id} className="border-b border-vault-border/40">
-                        <td className="py-1.5 text-white">
-                          {p.short_code && <span className="text-[10px] font-mono text-gray-500 mr-1.5">{p.short_code}</span>}
-                          {extractLaunchName(p.name, p.category)}
-                          {p.language && <span className="text-gray-500 text-xs"> [{p.language}]</span>}
-                        </td>
-                        <td className="py-1.5 text-right text-amber-300">{p.storefront || '—'}</td>
-                        <td className="py-1.5 text-right text-blue-300">{p.stream || '—'}</td>
-                        <td className="py-1.5 text-right text-emerald-300">{p.online || '—'}</td>
-                        <td className="py-1.5 text-right text-vault-gold font-semibold">{p.total}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <>
+                <div className="divide-y divide-vault-border/40">
+                  {(showAllUs ? data.products : data.products.slice(0, TOP_N)).map((p, i) => (
+                    <ProductLine key={p.product_id} rank={i + 1} p={p}
+                      defs={[
+                        { key: 'storefront', label: '门店', cls: 'text-amber-300' },
+                        { key: 'stream', label: '直播', cls: 'text-blue-300' },
+                        { key: 'online', label: '线上', cls: 'text-emerald-300' },
+                      ]} />
+                  ))}
+                </div>
+                {data.products.length > TOP_N && (
+                  <FoldToggle open={showAllUs} onClick={() => setShowAllUs(s => !s)}
+                    moreCount={data.products.length - TOP_N} />
+                )}
+              </>
             )}
-          </div>
+          </Section>
 
-          {/* Japan — reported separately */}
-          <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-white text-sm">🇯🇵 日本仓 · 按货物明细(单独,不计入美国合计)</h3>
-              <div className="text-sm font-bold text-white">{data.japan.units.toLocaleString()} <span className="text-xs font-normal text-gray-400">件</span></div>
-            </div>
+          {/* 3️⃣ 日本仓货物 — top N + fold */}
+          <Section n="3️⃣" title="日本仓卖得最多的货物" right={`${data.japan.products.length} 种 · 单独`}>
             {data.japan.products.length === 0 ? (
-              <p className="text-gray-500 text-sm py-3">本周日本仓没有货物卖出。</p>
+              <p className="text-gray-500 text-sm py-1">本周日本仓没有货物卖出。</p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-gray-400 text-xs border-b border-vault-border">
-                      <th className="pb-2">货物 Product</th>
-                      <th className="pb-2 text-right">📺 直播</th>
-                      <th className="pb-2 text-right">🏪 当地</th>
-                      <th className="pb-2 text-right">合计</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.japan.products.map(p => (
-                      <tr key={p.product_id} className="border-b border-vault-border/40">
-                        <td className="py-1.5 text-white">
-                          {p.short_code && <span className="text-[10px] font-mono text-gray-500 mr-1.5">{p.short_code}</span>}
-                          {extractLaunchName(p.name, p.category)}
-                          {p.language && <span className="text-gray-500 text-xs"> [{p.language}]</span>}
-                        </td>
-                        <td className="py-1.5 text-right text-blue-300">{p.stream || '—'}</td>
-                        <td className="py-1.5 text-right text-purple-300">{p.local || '—'}</td>
-                        <td className="py-1.5 text-right text-vault-gold font-semibold">{p.total}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <>
+                <div className="divide-y divide-vault-border/40">
+                  {(showAllJp ? data.japan.products : data.japan.products.slice(0, TOP_N)).map((p, i) => (
+                    <ProductLine key={p.product_id} rank={i + 1} p={p}
+                      defs={[
+                        { key: 'stream', label: '直播', cls: 'text-blue-300' },
+                        { key: 'local', label: '当地', cls: 'text-purple-300' },
+                      ]} />
+                  ))}
+                </div>
+                {data.japan.products.length > TOP_N && (
+                  <FoldToggle open={showAllJp} onClick={() => setShowAllJp(s => !s)}
+                    moreCount={data.japan.products.length - TOP_N} />
+                )}
+              </>
             )}
-          </div>
+          </Section>
 
-          {/* What's counted / excluded */}
-          <div className="bg-vault-darker/40 border border-vault-border rounded-lg p-4 text-xs text-gray-400 leading-relaxed">
-            <div className="text-gray-300 font-semibold mb-1">口径说明</div>
-            <div>✅ 只统计货物(封装盒/包)。散卡(single)和评级卡(slab)走各自的系统,不在这里。</div>
-            <div>✅ 计入:卖给客人的出库 —— 门店、直播(每场盘点卖出)、线上(订单)。</div>
-            <div>❌ 不计入:调拨库存、拆盒、日本→美国发货(内部流转);platform_sales(旧扫码卡,基本没用)。</div>
-            <div className="mt-1 text-gray-500">周界:周一至周日。直播按盘点时间归周,跨午夜的极少数场次可能有 ±1 天误差。</div>
+          {/* 口径说明 — small footnote */}
+          <div className="text-[11px] text-gray-500 leading-relaxed px-1">
+            只统计货物(封装盒/包),散卡和评级卡走各自系统不在此。计入卖给客人的出库(门店/直播/线上);
+            不计入调拨、拆盒、日本→美国发货等内部流转。周一至周日。
           </div>
         </>
       )}
@@ -242,16 +213,50 @@ export default function WeeklyUsage() {
   )
 }
 
-function ChannelCard({ icon: Icon, colorClass, zh, en, units, sub }) {
+// Numbered section wrapper — gives every block the same "n️⃣ Title …… right"
+// header so the page reads top-to-bottom like the Buy Report template.
+function Section({ n, title, right, children }) {
   return (
-    <div className="bg-vault-surface border border-vault-border rounded-lg p-4">
-      <div className="flex items-center gap-2 text-sm text-gray-400">
-        {Icon && <Icon size={16} className={colorClass} />}
-        <span className="text-white font-medium">{zh}</span>
-        <span className="text-gray-500">{en}</span>
+    <div className="bg-vault-surface border border-vault-border rounded-lg p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-semibold text-white text-sm flex items-center gap-2">
+          <span>{n}</span> {title}
+        </h3>
+        {right && <span className="text-xs text-gray-500">{right}</span>}
       </div>
-      <div className={`text-3xl font-bold mt-2 ${colorClass}`}>{units.toLocaleString()} <span className="text-base font-normal text-gray-500">件</span></div>
-      <div className="text-xs text-gray-500 mt-1">{sub}</div>
+      {children}
     </div>
+  )
+}
+
+// One product row: rank · name · total (big) · where-it-sold-from breakdown.
+function ProductLine({ rank, p, defs }) {
+  const parts = channelBreakdown(p, defs)
+  return (
+    <div className="flex items-center gap-3 py-2">
+      <span className="text-gray-600 text-xs w-5 text-right flex-shrink-0">{rank}</span>
+      <div className="flex-1 min-w-0">
+        <div className="text-white text-sm truncate">
+          {p.short_code && <span className="text-[10px] font-mono text-gray-500 mr-1.5">{p.short_code}</span>}
+          {extractLaunchName(p.name, p.category)}
+          {p.language && <span className="text-gray-500 text-xs"> [{p.language}]</span>}
+        </div>
+        <div className="text-[11px] text-gray-500 mt-0.5 flex flex-wrap gap-x-2">
+          {parts.map(d => (
+            <span key={d.key}><span className={d.cls}>{d.label}</span> {d.n}</span>
+          ))}
+        </div>
+      </div>
+      <span className="text-vault-gold font-semibold text-sm flex-shrink-0">{p.total.toLocaleString()}</span>
+    </div>
+  )
+}
+
+function FoldToggle({ open, onClick, moreCount }) {
+  return (
+    <button onClick={onClick}
+      className="w-full mt-2 py-1.5 text-xs text-gray-400 hover:text-vault-gold flex items-center justify-center gap-1">
+      {open ? <><ChevronUp size={13} /> 收起</> : <><ChevronDown size={13} /> 展开全部(还有 {moreCount} 种)</>}
+    </button>
   )
 }

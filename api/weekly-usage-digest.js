@@ -102,7 +102,8 @@ export default async function handler(req, res) {
     const usTotal = storefront + stream + onlineUnits
     const japan = sumKey(jpRes.data, 'quantity')
 
-    // Top sellers (US, 货物 only) — combine all three channels per product.
+    // Top sellers (US, 货物 only) — per-product per-channel so we can show
+    // WHERE each top item sold from, not just the count.
     const cleanName = (p) => {
       const name = p?.name || '(unknown)'
       const cat = p?.category
@@ -110,27 +111,41 @@ export default async function handler(req, res) {
       return `${p?.short_code ? p.short_code + ' ' : ''}${trimmed}`
     }
     const top = new Map()
-    const bump = (p, q) => { const k = cleanName(p); top.set(k, (top.get(k) || 0) + (Number(q) || 0)) }
-    for (const r of sfRes.data || []) bump(r.product, r.quantity)
-    for (const r of sciData || []) bump(r.product, (Number(r.expected_qty) || 0) - (Number(r.actual_qty) || 0))
-    for (const r of ooiData) bump(r.product, r.quantity)
-    const topSellers = [...top.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
+    const bump = (p, q, ch) => {
+      const n = Number(q) || 0
+      if (n <= 0) return
+      const k = cleanName(p)
+      const cur = top.get(k) || { total: 0, 门店: 0, 直播: 0, 线上: 0 }
+      cur.total += n; cur[ch] += n; top.set(k, cur)
+    }
+    for (const r of sfRes.data || []) bump(r.product, r.quantity, '门店')
+    for (const r of sciData || []) bump(r.product, (Number(r.expected_qty) || 0) - (Number(r.actual_qty) || 0), '直播')
+    for (const r of ooiData) bump(r.product, r.quantity, '线上')
+    const topSellers = [...top.entries()].sort((a, b) => b[1].total - a[1].total)
+    // "where from" tag: dominant channel(s), e.g. "📺直播" or "📺直播 +🏪门店"
+    const chEmoji = { 门店: '🏪', 直播: '📺', 线上: '🛒' }
+    const fromTag = (v) => {
+      const parts = ['直播', '门店', '线上'].filter(c => v[c] > 0).sort((a, b) => v[b] - v[a])
+      return parts.map(c => `${chEmoji[c]}${c} ${v[c]}`).join(' · ')
+    }
 
     const lines = [
-      '📦 上周货物用量 / Weekly Usage (只统计货物,不含散卡/评级卡)',
-      `${start} → ${end} (Mon–Sun)`,
+      `📦 Weekly Usage Report — ${start} → ${end}`,
+      '(只统计货物,不含散卡/评级卡)',
       '',
-      `🏪 门店 Storefront:  ${storefront.toLocaleString()} 件`,
-      `📺 直播 Livestream:  ${stream.toLocaleString()} 件`,
-      `🛒 线上 Online:      ${onlineUnits.toLocaleString()} 件`,
-      `🇺🇸 美国合计:        ${usTotal.toLocaleString()} 件`,
-      '',
-      `🇯🇵 日本仓 (单独):   ${japan.toLocaleString()} 件`,
+      '1️⃣ 本周卖出',
+      `🇺🇸 美国合计: ${usTotal.toLocaleString()} 件`,
+      `   🏪 门店 ${storefront.toLocaleString()} · 📺 直播 ${stream.toLocaleString()} · 🛒 线上 ${onlineUnits.toLocaleString()}`,
+      `🇯🇵 日本仓(单独): ${japan.toLocaleString()} 件`,
     ]
     if (topSellers.length) {
       lines.push('')
-      lines.push('🔥 美国卖得最多的货物:')
-      topSellers.forEach(([name, qty], i) => lines.push(`  ${i + 1}. ${name} × ${qty}`))
+      lines.push('2️⃣ 美国卖得最多的货物')
+      const SHOW = 7
+      topSellers.slice(0, SHOW).forEach(([name, v], i) => {
+        lines.push(`  ${i + 1}. ${name} × ${v.total}  (${fromTag(v)})`)
+      })
+      if (topSellers.length > SHOW) lines.push(`  …还有 ${topSellers.length - SHOW} 种`)
     }
     const text = lines.join('\n')
 
