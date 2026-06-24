@@ -39,6 +39,35 @@ import {
 
 const today = () => new Date().toLocaleDateString('en-CA')
 
+// ---- Summary date-range helpers (Day / Week / Month / Custom) ----
+const ymd = (d) => d.toLocaleDateString('en-CA')
+// Mon–Sun week containing dateStr.
+const weekMonSun = (dateStr) => {
+  const d = new Date(`${dateStr}T00:00:00`)
+  const dow = (d.getDay() + 6) % 7
+  const mon = new Date(d); mon.setDate(d.getDate() - dow)
+  const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
+  return { from: ymd(mon), to: ymd(sun) }
+}
+// 1st–last day of dateStr's month.
+const monthRange = (dateStr) => {
+  const d = new Date(`${dateStr}T00:00:00`)
+  return {
+    from: ymd(new Date(d.getFullYear(), d.getMonth(), 1)),
+    to: ymd(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
+  }
+}
+// Resolve a {mode, anchor, from, to} range spec into concrete {from, to}.
+const resolveSummaryWindow = ({ mode, anchor, from, to }) => {
+  if (mode === 'week') return weekMonSun(anchor)
+  if (mode === 'month') return monthRange(anchor)
+  if (mode === 'custom') {
+    const f = from || to || anchor, t = to || from || anchor
+    return f <= t ? { from: f, to: t } : { from: t, to: f }
+  }
+  return { from: anchor, to: anchor }   // day
+}
+
 const KIND_META = {
   sealed:        { icon: Package, color: 'text-amber-300',   label: 'Sealed'    },
   slab:          { icon: Diamond, color: 'text-emerald-300', label: 'Slab'      },
@@ -134,10 +163,13 @@ export default function StorefrontSale() {
   }, [priceMode])
   const [manualLineDraft, setManualLineDraft] = useState(null)  // open modal state
 
-  // Daily summary state. Re-fetched after each successful submit so the
-  // widget always reflects today's running totals.
+  // Sales-data summary widget. Has its OWN date range (decoupled from the
+  // cart's saleDate) so staff can check Day / Week / Month / Custom totals
+  // while the cart still logs to saleDate. Re-fetched after each submit/edit.
   const [summary, setSummary] = useState(null)
   const [summaryLoading, setSummaryLoading] = useState(true)
+  // { mode: 'day'|'week'|'month'|'custom', anchor, from, to }
+  const [sumRange, setSumRange] = useState({ mode: 'day', anchor: today(), from: today(), to: today() })
 
   // Edit-transaction modal state — null when closed; the full txn object
   // when staff clicks the pencil on a row.
@@ -146,17 +178,20 @@ export default function StorefrontSale() {
 
   const inputRef = useRef(null)
 
-  const loadSummary = useCallback(async (date) => {
+  // Resolve the picked mode/anchor/custom-dates into concrete {from, to}.
+  const sumWindow = useMemo(() => resolveSummaryWindow(sumRange), [sumRange])
+
+  const loadSummary = useCallback(async () => {
     setSummaryLoading(true)
     try {
-      const data = await fetchStorefrontDailySummary(date || saleDate)
+      const data = await fetchStorefrontDailySummary(sumWindow.from, sumWindow.to)
       setSummary(data)
     } catch (err) {
       console.error('[StorefrontSale] summary load failed:', err)
     } finally {
       setSummaryLoading(false)
     }
-  }, [saleDate])
+  }, [sumWindow.from, sumWindow.to])
 
   useEffect(() => {
     fetchPaymentMethods()
@@ -166,16 +201,14 @@ export default function StorefrontSale() {
         if (cash) setPaymentMethodId(cash.id)
       })
       .catch(err => addToast(`Failed to load payment methods: ${err.message}`, 'error'))
-    loadSummary(saleDate)
     inputRef.current?.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Refresh summary whenever the selected date changes (e.g. cashier
-  // backdates a transaction to fix a missed entry from yesterday).
+  // Re-fetch whenever the summary window changes (mode / anchor / custom).
   useEffect(() => {
-    loadSummary(saleDate)
-  }, [saleDate, loadSummary])
+    loadSummary()
+  }, [loadSummary])
 
   // Per-line mode: cart total auto-sums from each row's price × qty.
   // Total mode: cashier owns one number (legacy behavior).
@@ -662,7 +695,7 @@ export default function StorefrontSale() {
           console.error('[StorefrontSale] failed to build Lark payload:', err)
         }
         // Refresh today's summary widget so the cashier sees the update.
-        loadSummary(saleDate)
+        loadSummary()
         // Reset trade-in input + split-payment state when the cart fully cleared
         if (cart.length === ok.length) {
           setTradeInValue('')
@@ -709,12 +742,14 @@ export default function StorefrontSale() {
         </p>
       </div>
 
-      {/* Today's summary widget */}
+      {/* Sales-data summary widget — Day / Week / Month / Custom */}
       <DailySummaryCard
         summary={summary}
         loading={summaryLoading}
+        range={sumRange}
+        onRangeChange={setSumRange}
         onEditTransaction={(txn) => setEditTxn(txn)}
-        onRefresh={() => loadSummary(saleDate)}
+        onRefresh={() => loadSummary()}
       />
 
       {/* Cash drawer audit — big, obvious full-width button so morning/
@@ -1232,7 +1267,7 @@ export default function StorefrontSale() {
           onClose={() => setEditTxn(null)}
           onSaved={() => {
             setEditTxn(null)
-            loadSummary(saleDate)
+            loadSummary()
           }}
           addToast={addToast}
         />
@@ -1727,26 +1762,31 @@ function ManualResultRow({ row, onPick, disabled, isBuy }) {
 // Refreshes after each successful submit. Manual refresh button for the
 // rare case where another tab on another machine wrote rows.
 // ============================================================================
-function DailySummaryCard({ summary, loading, onRefresh, onEditTransaction }) {
+function DailySummaryCard({ summary, loading, range, onRangeChange, onRefresh, onEditTransaction }) {
   // Toggle for the collapsible per-transaction breakdown. Default
   // collapsed so the card stays compact; one click expands to show
   // every sale/trade/buy with its items.
   const [showDetails, setShowDetails] = useState(false)
 
+  // Range controls (Day / Week / Month / Custom) drive the parent's fetch.
+  const r = range || { mode: 'day', anchor: today(), from: today(), to: today() }
+  const setMode = (mode) => onRangeChange?.({ ...r, mode })
+  const patch = (p) => onRangeChange?.({ ...r, ...p })
+
   if (loading && !summary) {
     return (
       <div className="card mb-4 flex items-center justify-center py-6 text-gray-500 text-sm">
-        <Loader2 size={14} className="animate-spin mr-2" /> Loading today's numbers…
+        <Loader2 size={14} className="animate-spin mr-2" /> Loading sales…
       </div>
     )
   }
   if (!summary) return null
 
-  const { totals = {}, by_payment = {}, date, transactions = [] } = summary
-  // Compare the summary's date against PT today. When the cashier picks a
-  // past date the widget header swaps "Today" → "Day" + flips to amber so
-  // it's visually obvious you're looking at historical numbers, not live.
-  const isViewingToday = date === today()
+  const { totals = {}, by_payment = {}, transactions = [] } = summary
+  const rangeLabel = summary.range_label || summary.date || ''
+  // A range counts as "live" if it includes PT today; otherwise tint amber
+  // so it's obvious you're looking at historical numbers, not the live drawer.
+  const isLive = (summary.from || '') <= today() && (summary.to || '') >= today()
   const paymentEntries = Object.entries(by_payment)
     .sort((a, b) => (b[1].total_net_cash || 0) - (a[1].total_net_cash || 0))
 
@@ -1754,82 +1794,92 @@ function DailySummaryCard({ summary, loading, onRefresh, onEditTransaction }) {
     || (totals.trade_count || 0) > 0
     || (totals.buy_count || 0) > 0
 
+  const sign = (n) => (n || 0) > 0 ? 'text-emerald-300' : (n || 0) < 0 ? 'text-red-300' : 'text-gray-300'
+  const inputCls = 'text-xs py-1 px-1.5 bg-vault-darker/40 border border-vault-border rounded text-white'
+
   return (
-    <div className={`card mb-4 ${isViewingToday ? 'border-vault-gold/20' : 'border-amber-500/40'}`}>
-      <div className="flex items-center justify-between mb-3">
+    <div className={`card mb-4 ${isLive ? 'border-vault-gold/20' : 'border-amber-500/40'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
         <div className="flex items-center gap-2">
-          <TrendingUp size={16} className={isViewingToday ? 'text-vault-gold' : 'text-amber-300'} />
-          <h2 className="font-display text-sm font-semibold text-white uppercase tracking-wider">
-            {isViewingToday ? 'Today' : 'Day'} ({date})
-          </h2>
-          {!isViewingToday && (
+          <TrendingUp size={16} className={isLive ? 'text-vault-gold' : 'text-amber-300'} />
+          <h2 className="font-display text-sm font-semibold text-white uppercase tracking-wider">Sales data</h2>
+          <span className="text-xs text-gray-400">{rangeLabel}</span>
+          {!isLive && (
             <span className="text-[10px] uppercase tracking-wider text-amber-300 bg-amber-500/15 border border-amber-500/30 rounded px-1.5 py-0.5">
-              Viewing past day
+              Past
             </span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={loading}
-          className="text-xs text-gray-400 hover:text-white p-1 disabled:opacity-50"
-          title="Refresh"
-        >
-          {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40">
+            {['day', 'week', 'month', 'custom'].map(m => (
+              <button key={m} type="button" onClick={() => setMode(m)}
+                className={`px-2.5 py-1 text-xs rounded-md capitalize transition ${r.mode === m ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}>
+                {m}
+              </button>
+            ))}
+          </div>
+          {r.mode === 'custom' ? (
+            <div className="flex items-center gap-1">
+              <input type="date" value={r.from} max={today()} onChange={(e) => patch({ from: e.target.value })} className={inputCls} />
+              <span className="text-gray-500 text-xs">→</span>
+              <input type="date" value={r.to} max={today()} onChange={(e) => patch({ to: e.target.value })} className={inputCls} />
+            </div>
+          ) : (
+            <input type="date" value={r.anchor} max={today()} onChange={(e) => patch({ anchor: e.target.value })} className={inputCls} />
+          )}
+          <button type="button" onClick={onRefresh} disabled={loading}
+            className="text-xs text-gray-400 hover:text-white p-1 disabled:opacity-50" title="Refresh">
+            {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+          </button>
+        </div>
       </div>
 
       {!hasActivity ? (
-        <p className="text-sm text-gray-500 text-center py-2">No transactions yet today.</p>
+        <p className="text-sm text-gray-500 text-center py-2">No transactions in this range.</p>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {/* Sales column */}
+          {/* Sales — value of goods sold */}
           <div>
             <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Sales</div>
             <div className="flex items-baseline gap-2 flex-wrap">
-              <span className="text-2xl font-bold text-vault-gold">{fmtUsd(totals.sale_net_cash)}</span>
+              <span className="text-2xl font-bold text-vault-gold">{fmtUsd(totals.sale_value)}</span>
               <span className="text-xs text-gray-400">/ {totals.sale_count} sale{totals.sale_count === 1 ? '' : 's'}</span>
             </div>
           </div>
 
-          {/* Trades column */}
+          {/* Trades — NET VALUE (goods moved, always ≥0); signed cash beneath.
+              A trade where we paid cash out is no longer read as a loss. */}
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Trades (net)</div>
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Trades (net value)</div>
             <div className="flex items-baseline gap-2 flex-wrap">
-              <span className={`text-2xl font-bold ${
-                (totals.trade_net_cash || 0) > 0 ? 'text-emerald-300'
-                  : (totals.trade_net_cash || 0) < 0 ? 'text-red-300'
-                  : 'text-gray-300'
-              }`}>
-                {fmtUsd(totals.trade_net_cash)}
-              </span>
+              <span className="text-2xl font-bold text-emerald-300">{fmtUsd(totals.trade_value)}</span>
               <span className="text-xs text-gray-400">/ {totals.trade_count} trade{totals.trade_count === 1 ? '' : 's'}</span>
             </div>
+            {(totals.trade_count || 0) > 0 && (
+              <div className="text-[11px] text-gray-500 mt-0.5">
+                cash <span className={sign(totals.trade_net_cash)}>{fmtUsd(totals.trade_net_cash)}</span>
+              </div>
+            )}
           </div>
 
-          {/* Buys column — cash flows OUT, so usually negative */}
+          {/* Buys — cash flows OUT, so usually negative */}
           <div>
             <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Buys</div>
             <div className="flex items-baseline gap-2 flex-wrap">
-              <span className={`text-2xl font-bold ${
-                (totals.buy_net_cash || 0) < 0 ? 'text-red-300'
-                  : 'text-gray-300'
-              }`}>
+              <span className={`text-2xl font-bold ${(totals.buy_net_cash || 0) < 0 ? 'text-red-300' : 'text-gray-300'}`}>
                 {fmtUsd(totals.buy_net_cash)}
               </span>
               <span className="text-xs text-gray-400">/ {totals.buy_count} buy{totals.buy_count === 1 ? '' : 's'}</span>
             </div>
           </div>
 
-          {/* Net total column */}
+          {/* Totals — value sold (positive headline) + signed net cash */}
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Net cash today</div>
-            <div className={`text-2xl font-bold ${
-              (totals.total_net_cash || 0) > 0 ? 'text-emerald-300'
-                : (totals.total_net_cash || 0) < 0 ? 'text-red-300'
-                : 'text-white'
-            }`}>
-              {fmtUsd(totals.total_net_cash)}
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Value sold</div>
+            <div className="text-2xl font-bold text-vault-gold">{fmtUsd(totals.total_value_sold)}</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">
+              net cash <span className={sign(totals.total_net_cash)}>{fmtUsd(totals.total_net_cash)}</span>
             </div>
           </div>
         </div>

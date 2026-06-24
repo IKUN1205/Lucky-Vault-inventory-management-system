@@ -3888,8 +3888,11 @@ export const updateStorefrontTransaction = async (transactionId, patch = {}) => 
 //   }
 // The page widget at top of StorefrontSale renders this so the cashier sees
 // daily numbers without leaving the page they're working in.
-export const fetchStorefrontDailySummary = async (date) => {
-  const dayStr = date || new Date().toLocaleDateString('en-CA')
+export const fetchStorefrontDailySummary = async (from, to) => {
+  // Accepts a single day (pass `from` only) or a range (`from`..`to`).
+  // Back-compatible: existing single-arg callers get to === from.
+  const fromStr = from || new Date().toLocaleDateString('en-CA')
+  const toStr = to || fromStr
 
   // Pull header-relevant fields from each table for this date.
   // singles / slabs are filtered by sale_date + transaction_id IS NOT NULL
@@ -3902,7 +3905,7 @@ export const fetchStorefrontDailySummary = async (date) => {
         payment_method_id, sale_price, quantity, trade_in_value_usd, notes,
         product:products(name, brand, category)
       `)
-      .eq('date', dayStr)
+      .gte('date', fromStr).lte('date', toStr)
       .eq('deleted', false)
       .order('created_at', { ascending: false }),
     supabase
@@ -3912,7 +3915,7 @@ export const fetchStorefrontDailySummary = async (date) => {
         payment_method_id, sale_price_usd, quantity, trade_in_value_usd,
         status, card_name, card_number, condition
       `)
-      .eq('sale_date', dayStr)
+      .gte('sale_date', fromStr).lte('sale_date', toStr)
       .not('transaction_id', 'is', null)
       .eq('status', 'sold')
       .order('updated_at', { ascending: false }),
@@ -3923,7 +3926,7 @@ export const fetchStorefrontDailySummary = async (date) => {
         payment_method_id, sale_price_usd, trade_in_value_usd, status,
         item_name, cert_number, grading_company
       `)
-      .eq('sale_date', dayStr)
+      .gte('sale_date', fromStr).lte('sale_date', toStr)
       .not('transaction_id', 'is', null)
       .eq('status', 'sold')
       .order('updated_at', { ascending: false }),
@@ -3937,8 +3940,8 @@ export const fetchStorefrontDailySummary = async (date) => {
     supabase
       .from('storefront_payments')
       .select('transaction_id, payment_method_id, amount_usd')
-      .gte('created_at', `${dayStr}T00:00:00`)
-      .lt('created_at', `${dayStr}T23:59:59.999`),
+      .gte('created_at', `${fromStr}T00:00:00`)
+      .lt('created_at', `${toStr}T23:59:59.999`),
   ])
   if (salesRes.error) throw salesRes.error
   if (singlesRes.error) throw singlesRes.error
@@ -4082,18 +4085,23 @@ export const fetchStorefrontDailySummary = async (date) => {
   // the customer) which pulls down the daily net. The per-payment-method
   // breakdown sums signed net_cash too, so "Cash: -$120" can show up when
   // the day's buys outweigh the day's cash sales.
-  let saleCount = 0, saleNetCash = 0
-  let tradeCount = 0, tradeNetCash = 0
+  let saleCount = 0, saleNetCash = 0, saleValue = 0
+  let tradeCount = 0, tradeNetCash = 0, tradeValue = 0
   let buyCount = 0, buyNetCash = 0
   const byPayment = {}
   for (const t of transactions) {
     const cash = Number(t.net_cash || 0)
+    const gross = Number(t.gross_value || 0)   // retail value of goods that left the store
     if (t.type === 'trade') {
-      tradeCount++; tradeNetCash += cash
+      // Trade NET VALUE = goods moved out (gross, always ≥0). The signed
+      // cash is tracked separately so a trade where we pay cash out isn't
+      // read as a loss — value brought in − cash given out = this gross
+      // (boss 2026-06-24).
+      tradeCount++; tradeNetCash += cash; tradeValue += gross
     } else if (t.type === 'buy') {
       buyCount++; buyNetCash += cash
     } else {
-      saleCount++; saleNetCash += cash
+      saleCount++; saleNetCash += cash; saleValue += gross
     }
 
     // Per-payment-method attribution. When we have ledger rows, distribute
@@ -4121,15 +4129,23 @@ export const fetchStorefrontDailySummary = async (date) => {
   }
 
   return {
-    date: dayStr,
+    date: fromStr === toStr ? fromStr : null,
+    from: fromStr,
+    to: toStr,
+    range_label: fromStr === toStr ? fromStr : `${fromStr} → ${toStr}`,
     transactions,
     totals: {
       sale_count: saleCount,
       sale_net_cash: saleNetCash,
+      sale_value: saleValue,
       trade_count: tradeCount,
       trade_net_cash: tradeNetCash,
+      trade_value: tradeValue,
       buy_count: buyCount,
       buy_net_cash: buyNetCash,
+      // total_value_sold = retail value of everything that left the store
+      // (sales + trades), always ≥ 0. total_net_cash = signed cash flow.
+      total_value_sold: saleValue + tradeValue,
       total_net_cash: saleNetCash + tradeNetCash + buyNetCash,
     },
     by_payment: byPayment,
