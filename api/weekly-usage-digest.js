@@ -66,23 +66,43 @@ export default async function handler(req, res) {
   try {
     const [sfRes, scRes, ooRes, jpRes] = await Promise.all([
       supabase.from('storefront_sales').select('quantity, product:products(name, short_code, category)').eq('deleted', false).gte('date', start).lte('date', end),
-      supabase.from('stream_counts').select('id, total_sold').eq('deleted', false).gte('count_time', start).lt('count_time', endNext),
+      supabase.from('stream_counts').select('id, total_sold, location:locations(name)').eq('deleted', false).gte('count_time', start).lt('count_time', endNext),
       supabase.from('online_orders').select('id').eq('deleted', false).gte('date', start).lte('date', end),
       supabase.from('japan_stream_sales').select('quantity, channel').eq('deleted', false).gte('sale_date', start).lte('sale_date', end),
     ])
     for (const r of [sfRes, scRes, ooRes, jpRes]) if (r.error) throw r.error
 
-    // Stream line items (sold rows) for top-seller detail.
+    // Map each session to its stream room + count sessions per room.
+    const scRoom = new Map()
+    const roomAgg = new Map()
+    const cleanRoom = (n) => (n || '(no room)').replace(/^Stream Room\s*-\s*/i, '')
+    for (const s of scRes.data || []) {
+      const name = cleanRoom(s.location?.name)
+      scRoom.set(s.id, name)
+      const cur = roomAgg.get(name) || { units: 0, sessions: 0 }
+      cur.sessions += 1; roomAgg.set(name, cur)
+    }
+
+    // Stream line items (sold rows) for top-seller + per-room detail.
     const scIds = (scRes.data || []).map(s => s.id)
     let sciData = []
     if (scIds.length) {
       const { data, error } = await supabase
         .from('stream_count_items')
-        .select('expected_qty, actual_qty, product:products(name, short_code, category)')
+        .select('stream_count_id, expected_qty, actual_qty, product:products(name, short_code, category)')
         .in('stream_count_id', scIds).lt('difference', 0).limit(5000)
       if (error) throw error
       sciData = data || []
     }
+    for (const r of sciData) {
+      const sold = (Number(r.expected_qty) || 0) - (Number(r.actual_qty) || 0)
+      if (sold <= 0) continue
+      const name = scRoom.get(r.stream_count_id)
+      if (!name) continue
+      const cur = roomAgg.get(name) || { units: 0, sessions: 0 }
+      cur.units += sold; roomAgg.set(name, cur)
+    }
+    const rooms = [...roomAgg.entries()].sort((a, b) => b[1].units - a[1].units)
 
     let onlineUnits = 0
     const orderIds = (ooRes.data || []).map(o => o.id)
@@ -138,9 +158,16 @@ export default async function handler(req, res) {
       `   🏪 门店 ${storefront.toLocaleString()} · 📺 直播 ${stream.toLocaleString()} · 🛒 线上 ${onlineUnits.toLocaleString()}`,
       `🇯🇵 日本仓(单独): ${japan.toLocaleString()} 件`,
     ]
+    if (rooms.length) {
+      lines.push('')
+      lines.push('2️⃣ 各直播间售卖')
+      rooms.forEach(([name, v]) => {
+        lines.push(`  • ${name}: ${v.units.toLocaleString()} 件 · ${v.sessions} 场`)
+      })
+    }
     if (topSellers.length) {
       lines.push('')
-      lines.push('2️⃣ 美国卖得最多的货物')
+      lines.push('3️⃣ 美国卖得最多的货物')
       const SHOW = 7
       topSellers.slice(0, SHOW).forEach(([name, v], i) => {
         lines.push(`  ${i + 1}. ${name} × ${v.total}  (${fromTag(v)})`)

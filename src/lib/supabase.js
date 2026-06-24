@@ -2519,7 +2519,7 @@ export const fetchWeeklyUsage = async (start, end) => {
       .eq('deleted', false)
       .gte('date', start).lte('date', end),
     supabase.from('stream_counts')
-      .select('id, total_sold')
+      .select('id, total_sold, location_id, location:locations(name)')
       .eq('deleted', false)
       .gte('count_time', start).lt('count_time', endNext),
     supabase.from('online_orders')
@@ -2539,7 +2539,7 @@ export const fetchWeeklyUsage = async (start, end) => {
   if (scIds.length) {
     const { data, error } = await supabase
       .from('stream_count_items')
-      .select(`expected_qty, actual_qty, product_id, ${PROD}`)
+      .select(`stream_count_id, expected_qty, actual_qty, product_id, ${PROD}`)
       .in('stream_count_id', scIds)
       .lt('difference', 0)        // difference = actual − expected; <0 means sold
       .limit(5000)
@@ -2579,12 +2579,58 @@ export const fetchWeeklyUsage = async (start, end) => {
     const row = touch(r.product_id, r.product); const q = Number(r.quantity) || 0
     row.storefront += q; row.total += q
   }
+
+  // ---- Per stream-room breakdown (直播间) ----
+  // Map each stream_count session to its room, count sessions per room, then
+  // attribute each sold line item to that room (units + per-product list).
+  const scMap = new Map()
+  const roomMap = new Map()
+  const touchRoom = (locId, name) => {
+    const key = locId || name || 'unknown'
+    if (!roomMap.has(key)) {
+      roomMap.set(key, { location_id: locId || null, name: name || '(no room)', units: 0, sessions: 0, productMap: new Map() })
+    }
+    return roomMap.get(key)
+  }
+  for (const s of scRes.data || []) {
+    const name = s.location?.name || '(no room)'
+    scMap.set(s.id, { location_id: s.location_id, name })
+    touchRoom(s.location_id, name).sessions += 1
+  }
+
   for (const r of sciData) {
     const sold = (Number(r.expected_qty) || 0) - (Number(r.actual_qty) || 0)
     if (sold <= 0) continue
     const row = touch(r.product_id, r.product)
     row.stream += sold; row.total += sold
+    // attribute to the room this session belonged to
+    const sc = scMap.get(r.stream_count_id)
+    if (sc) {
+      const room = touchRoom(sc.location_id, sc.name)
+      room.units += sold
+      const pm = room.productMap
+      if (!pm.has(r.product_id)) {
+        pm.set(r.product_id, {
+          product_id: r.product_id,
+          name: r.product?.name || '(unknown)',
+          short_code: r.product?.short_code || null,
+          language: r.product?.language || null,
+          category: r.product?.category || null,
+          units: 0,
+        })
+      }
+      pm.get(r.product_id).units += sold
+    }
   }
+  const rooms = [...roomMap.values()]
+    .map(rm => ({
+      location_id: rm.location_id,
+      name: rm.name,
+      units: rm.units,
+      sessions: rm.sessions,
+      products: [...rm.productMap.values()].sort((a, b) => b.units - a.units),
+    }))
+    .sort((a, b) => b.units - a.units)
   for (const r of ooiData) {
     const row = touch(r.product_id, r.product); const q = Number(r.quantity) || 0
     row.online += q; row.total += q
@@ -2619,7 +2665,7 @@ export const fetchWeeklyUsage = async (start, end) => {
   return {
     start, end,
     storefront: { units: storefrontUnits, txns: (sfRes.data || []).length },
-    stream:     { units: streamUnits, sessions: (scRes.data || []).length },
+    stream:     { units: streamUnits, sessions: (scRes.data || []).length, rooms },
     online:     { units: onlineUnits, orders: orderIds.length, lines: ooiData.length },
     usSubtotal: storefrontUnits + streamUnits + onlineUnits,
     products,

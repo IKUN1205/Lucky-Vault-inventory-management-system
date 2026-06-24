@@ -37,6 +37,10 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(re, '').trim() || fullName
 }
 
+// Stream-room location names are stored as "Stream Room - eBay SlabbiePatty";
+// drop the boilerplate prefix for display.
+const cleanRoom = (name) => (name || '(no room)').replace(/^Stream Room\s*-\s*/i, '')
+
 // Monday (local) of the week containing `d`. Weeks run Mon–Sun.
 const mondayOf = (d) => {
   const x = new Date(d)
@@ -155,8 +159,21 @@ export default function WeeklyUsage() {
             </div>
           </Section>
 
-          {/* 2️⃣ 美国卖得最多的货物 — top N + fold */}
-          <Section n="2️⃣" title="美国卖得最多的货物" right={`${data.products.length} 种`}>
+          {/* 2️⃣ 各直播间售卖 — per-room units + sessions + top goods */}
+          <Section n="2️⃣" title="各直播间售卖" right={`${data.stream.rooms.length} 间 · 共 ${data.stream.units.toLocaleString()} 件`}>
+            {data.stream.rooms.length === 0 ? (
+              <p className="text-gray-500 text-sm py-1">本周没有直播售卖。</p>
+            ) : (
+              <div className="space-y-3">
+                {data.stream.rooms.map((rm, i) => (
+                  <RoomBlock key={rm.location_id || rm.name} rank={i + 1} room={rm} />
+                ))}
+              </div>
+            )}
+          </Section>
+
+          {/* 3️⃣ 美国卖得最多的货物 — top N + fold */}
+          <Section n="3️⃣" title="美国卖得最多的货物" right={`${data.products.length} 种`}>
             {data.products.length === 0 ? (
               <p className="text-gray-500 text-sm py-1">本周美国没有货物卖出。</p>
             ) : (
@@ -179,8 +196,8 @@ export default function WeeklyUsage() {
             )}
           </Section>
 
-          {/* 3️⃣ 日本仓货物 — top N + fold */}
-          <Section n="3️⃣" title="日本仓卖得最多的货物" right={`${data.japan.products.length} 种 · 单独`}>
+          {/* 4️⃣ 日本仓货物 — top N + fold */}
+          <Section n="4️⃣" title="日本仓卖得最多的货物" right={`${data.japan.products.length} 种 · 单独`}>
             {data.japan.products.length === 0 ? (
               <p className="text-gray-500 text-sm py-1">本周日本仓没有货物卖出。</p>
             ) : (
@@ -248,6 +265,46 @@ function ProductLine({ rank, p, defs }) {
         </div>
       </div>
       <span className="text-vault-gold font-semibold text-sm flex-shrink-0">{p.total.toLocaleString()}</span>
+    </div>
+  )
+}
+
+// One stream room: name + units (big) + sessions, with its top goods listed
+// below (collapsible if the room sold many distinct SKUs).
+function RoomBlock({ rank, room }) {
+  const [open, setOpen] = useState(false)
+  const ROOM_TOP = 4
+  const shown = open ? room.products : room.products.slice(0, ROOM_TOP)
+  return (
+    <div className="bg-vault-darker/40 border border-vault-border/60 rounded-lg p-3">
+      <div className="flex items-center gap-3">
+        <span className="text-gray-600 text-xs w-5 text-right flex-shrink-0">{rank}</span>
+        <div className="flex-1 min-w-0">
+          <div className="text-white text-sm font-medium truncate">{cleanRoom(room.name)}</div>
+          <div className="text-[11px] text-gray-500">{room.sessions} 场</div>
+        </div>
+        <span className="text-blue-300 font-semibold text-base flex-shrink-0">{room.units.toLocaleString()} <span className="text-xs font-normal text-gray-500">件</span></span>
+      </div>
+      {room.products.length > 0 && (
+        <div className="mt-2 pl-8 space-y-0.5">
+          {shown.map(p => (
+            <div key={p.product_id} className="text-[12px] text-gray-400 flex items-center gap-2">
+              <span className="flex-1 truncate">
+                {p.short_code && <span className="text-[10px] font-mono text-gray-600 mr-1">{p.short_code}</span>}
+                {extractLaunchName(p.name, p.category)}
+                {p.language && <span className="text-gray-600"> [{p.language}]</span>}
+              </span>
+              <span className="text-gray-300 flex-shrink-0">{p.units}</span>
+            </div>
+          ))}
+          {room.products.length > ROOM_TOP && (
+            <button onClick={() => setOpen(o => !o)}
+              className="text-[11px] text-gray-500 hover:text-vault-gold pt-0.5">
+              {open ? '收起' : `展开全部(还有 ${room.products.length - ROOM_TOP} 种)`}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
