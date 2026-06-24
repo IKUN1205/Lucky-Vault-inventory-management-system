@@ -111,18 +111,24 @@ export async function computeDailyUsage(supabase, fromDate, toDate = fromDate) {
   const to = `${shiftDate(toDate, 1)}T07:00:00Z`
 
   const [{ data: counts, error: cErr }, { data: usage, error: uErr }] = await Promise.all([
-    supabase.from('stream_counts').select('id, location:locations(name)')
+    // streamer_id = the SELLER (whose sells these are). Per the TikTok
+    // handoff convention the NEXT streamer counts the PREVIOUS streamer's
+    // sales, so the count's counted_by_id is the next person but
+    // streamer_id is correctly the seller — we attribute usage to that.
+    supabase.from('stream_counts')
+      .select('id, location:locations(name), streamer:users!stream_counts_streamer_id_fkey(name)')
       .eq('deleted', false).gte('count_time', from).lt('count_time', to),
     supabase.from('platform_sales')
-      .select('channel, quantity, product_id, product:products(name, brand, language, type)')
+      .select('channel, quantity, product_id, product:products(name, brand, language, type), streamer:users!platform_sales_streamer_id_fkey(name)')
       .eq('deleted', false).eq('kind', 'sealed').gte('date', fromDate).lte('date', toDate),
   ])
   if (cErr) throw cErr
   if (uErr) throw uErr
 
-  const roomByCount = new Map((counts || []).map(c => [c.id, roomShort(c.location?.name)]))
+  // count_id → { room, streamer name }
+  const countMeta = new Map((counts || []).map(c => [c.id, { room: roomShort(c.location?.name), streamer: c.streamer?.name || '(unknown)' }]))
   const countItems = []
-  const ids = [...roomByCount.keys()]
+  const ids = [...countMeta.keys()]
   for (let i = 0; i < ids.length; i += 100) {
     const { data, error } = await supabase.from('stream_count_items')
       .select('stream_count_id, expected_qty, actual_qty, product_id, product:products(name, brand, language, type)')
@@ -131,20 +137,25 @@ export async function computeDailyUsage(supabase, fromDate, toDate = fromDate) {
     countItems.push(...(data || []))
   }
 
-  // room → Map(pid → { product, units })
-  const roomProducts = new Map()
+  // room → { label, byStreamer: Map(streamer → Map(pid → { product, units })) }
+  const roomData = new Map()
   const usedPids = new Set()
-  const add = (room, pid, product, units) => {
+  const add = (room, streamer, pid, product, units) => {
     if (!units || units <= 0) return
-    const rp = roomProducts.get(room) || new Map()
-    const e = rp.get(pid) || { product, units: 0 }
+    const rd = roomData.get(room) || { byStreamer: new Map() }
+    const sp = rd.byStreamer.get(streamer) || new Map()
+    const e = sp.get(pid) || { product, units: 0 }
     e.units += units
-    rp.set(pid, e)
-    roomProducts.set(room, rp)
+    sp.set(pid, e)
+    rd.byStreamer.set(streamer, sp)
+    roomData.set(room, rd)
     if (pid) usedPids.add(pid)
   }
-  for (const u of usage || []) add(CHANNEL_SHORT[u.channel] || u.channel || '?', u.product_id, u.product, Number(u.quantity) || 0)
-  for (const it of countItems) add(roomByCount.get(it.stream_count_id) || '?', it.product_id, it.product, (Number(it.expected_qty) || 0) - (Number(it.actual_qty) || 0))
+  for (const u of usage || []) add(CHANNEL_SHORT[u.channel] || u.channel || '?', u.streamer?.name || '(unknown)', u.product_id, u.product, Number(u.quantity) || 0)
+  for (const it of countItems) {
+    const m = countMeta.get(it.stream_count_id) || { room: '?', streamer: '(unknown)' }
+    add(m.room, m.streamer, it.product_id, it.product, (Number(it.expected_qty) || 0) - (Number(it.actual_qty) || 0))
+  }
 
   // unit cost per used product
   const unitCost = new Map()
@@ -165,16 +176,28 @@ export async function computeDailyUsage(supabase, fromDate, toDate = fromDate) {
     for (const [pid, a] of agg) if (a.u > 0) unitCost.set(pid, a.usd / a.u)
   }
 
-  const rooms = [...roomProducts.entries()].map(([room, rp]) => {
-    const items = [...rp.entries()].map(([pid, e]) => ({
-      name: productLabel(e.product), units: e.units, usd: e.units * (unitCost.get(pid) || 0),
-    })).sort((a, b) => b.usd - a.usd)
+  const priceItems = (pidMap) => [...pidMap.entries()]
+    .map(([pid, e]) => ({ name: productLabel(e.product), units: e.units, usd: e.units * (unitCost.get(pid) || 0) }))
+    .sort((a, b) => b.usd - a.usd)
+
+  const rooms = [...roomData.entries()].map(([room, rd]) => {
+    // per-streamer breakdown (sorted by spend)
+    const streamers = [...rd.byStreamer.entries()].map(([name, pidMap]) => {
+      const products = priceItems(pidMap)
+      return { name, products, units: products.reduce((s, x) => s + x.units, 0), usd: products.reduce((s, x) => s + x.usd, 0) }
+    }).sort((a, b) => b.usd - a.usd)
+    // aggregate products across all streamers for the room-level view
+    const agg = new Map()
+    for (const sp of rd.byStreamer.values()) for (const [pid, e] of sp) {
+      const a = agg.get(pid) || { product: e.product, units: 0 }; a.units += e.units; agg.set(pid, a)
+    }
+    const products = priceItems(agg)
     return {
-      room,
-      label: roomLabel(room),
-      units: items.reduce((s, x) => s + x.units, 0),
-      usd: items.reduce((s, x) => s + x.usd, 0),
-      products: items,   // ALL products (boss wants the full list, expandable)
+      room, label: roomLabel(room),
+      units: streamers.reduce((s, x) => s + x.units, 0),
+      usd: streamers.reduce((s, x) => s + x.usd, 0),
+      products,    // ALL products (room total)
+      streamers,   // per-streamer breakdown (boss directive 2026-06-23)
     }
   }).sort((a, b) => b.usd - a.usd)
 
@@ -198,7 +221,10 @@ function buildText(d) {
   for (const r of d.rooms) {
     lines.push('')
     lines.push(`▼ ${r.label}: ${r.units} units · ${fmtUsd(r.usd)}`)
-    for (const p of r.products) lines.push(`    ${p.name} ×${p.units} (${fmtUsd(p.usd)})`)
+    for (const s of (r.streamers || [])) {
+      lines.push(`  ─ ${s.name}: ${s.units} units · ${fmtUsd(s.usd)}`)
+      for (const p of s.products) lines.push(`      ${p.name} ×${p.units} (${fmtUsd(p.usd)})`)
+    }
   }
   lines.push('')
   lines.push(`Time: ${nowPtStamp()}`)

@@ -106,15 +106,23 @@ export default function Dashboard() {
   return (
     <div className="fade-in">
       {/* Header */}
-      <div className="mb-8">
+      <div className="mb-6">
         <h1 className="font-display text-3xl font-bold text-white mb-2">
           Welcome to Lucky Vault
         </h1>
         <p className="text-gray-400">What do you want to do today?</p>
       </div>
 
+      {/* Sealed usage by stream room — moved to the TOP (boss 2026-06-23).
+          Daily / weekly, per room → per streamer → full product list. */}
+      <DailyUsageCard />
+
+      {/* Quick Stats — wired to real data; each card hides itself when
+          it has nothing to show. */}
+      <QuickStats />
+
       {/* Action Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+      <div className="mt-8 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
         {actions.map((action) => (
           <Link
             key={action.path}
@@ -130,13 +138,6 @@ export default function Dashboard() {
           </Link>
         ))}
       </div>
-
-      {/* Quick Stats — wired to real data; each card hides itself when
-          it has nothing to show (boss directive 2026-06-23). */}
-      <QuickStats />
-
-      {/* Sealed usage by stream room — daily / weekly (boss 2026-06-23) */}
-      <DailyUsageCard />
     </div>
   )
 }
@@ -215,7 +216,7 @@ function DailyUsageCard() {
             </p>
             <div className="space-y-2">
               {data.rooms.map((r) => {
-                const products = r.products || r.top || []
+                const streamers = r.streamers || []
                 const isOpen = !!open[r.room]
                 return (
                   <div key={r.room} className="rounded-lg border border-vault-border bg-vault-darker/30">
@@ -224,16 +225,26 @@ function DailyUsageCard() {
                       <span className="flex items-center gap-2 font-medium text-white">
                         {isOpen ? <ChevronDown size={15} className="text-gray-400" /> : <ChevronRight size={15} className="text-gray-400" />}
                         {r.label || r.room}
-                        <span className="text-xs text-gray-500">({products.length} product{products.length === 1 ? '' : 's'})</span>
+                        <span className="text-xs text-gray-500">({streamers.length} streamer{streamers.length === 1 ? '' : 's'})</span>
                       </span>
                       <span className="text-sm text-gray-300">{r.units} units · <span className="text-vault-gold">{usd(r.usd)}</span></span>
                     </button>
                     {isOpen && (
-                      <div className="px-3 pb-3 text-xs text-gray-400 space-y-0.5 max-h-80 overflow-y-auto">
-                        {products.map((p, i) => (
-                          <div key={i} className="flex justify-between gap-2 border-b border-vault-border/20 py-1 last:border-0">
-                            <span className="truncate">{p.name} ×{p.units}</span>
-                            <span className="flex-shrink-0 text-gray-300">{usd(p.usd)}</span>
+                      <div className="px-3 pb-3 space-y-3 max-h-96 overflow-y-auto">
+                        {streamers.map((s, si) => (
+                          <div key={si}>
+                            <div className="flex items-center justify-between text-sm border-b border-vault-border/40 pb-1 mb-1">
+                              <span className="text-blue-300 font-medium">👤 {s.name}</span>
+                              <span className="text-gray-300">{s.units} units · <span className="text-vault-gold">{usd(s.usd)}</span></span>
+                            </div>
+                            <div className="text-xs text-gray-400 space-y-0.5 pl-2">
+                              {s.products.map((p, i) => (
+                                <div key={i} className="flex justify-between gap-2">
+                                  <span className="truncate">{p.name} ×{p.units}</span>
+                                  <span className="flex-shrink-0 text-gray-300">{usd(p.usd)}</span>
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         ))}
                       </div>
