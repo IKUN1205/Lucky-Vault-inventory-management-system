@@ -166,21 +166,18 @@ export default function PurchasedItems() {
     if (parsed.vendor?.id) {
       setHeader(h => ({ ...h, vendor_id: parsed.vendor.id }))
     }
-    setLineItems(lines.map((li, idx) => {
-      // Parser returns per-unit `cost` and a computed `total`. Default to
-      // per-unit entry (system multiplies by qty on save). This also fixes
-      // the old bug where the per-unit price got stored as the whole-line
-      // total. If only a total was found, fall back to total mode.
-      const hasUnit = li.cost != null
-      return {
-        id: idx + 1,
-        product_id: li.productMatch.id,
-        quantity: li.qty || 1,
-        price_mode: hasUnit ? 'unit' : 'total',
-        cost: hasUnit ? String(li.cost) : (li.total != null ? String(li.total) : ''),
-        notes: '',
-      }
-    }))
+    setLineItems(lines.map((li, idx) => ({
+      id: idx + 1,
+      product_id: li.productMatch.id,
+      quantity: li.qty || 1,
+      // Carry the unit/total choice the staffer confirmed per line in the
+      // paste modal straight through — `cost` already holds the number in
+      // that mode. (Fixes the old bug where a per-unit price was always
+      // stored as the whole-line total.)
+      price_mode: li.price_mode || 'unit',
+      cost: li.cost != null ? String(li.cost) : (li.total != null ? String(li.total) : ''),
+      notes: '',
+    })))
     addToast(
       `Filled ${lines.length} line${lines.length === 1 ? '' : 's'} from message`,
       'success'
@@ -209,18 +206,14 @@ export default function PurchasedItems() {
     return item.price_mode === 'unit' ? round2(c * q) : c
   }
 
-  // Flip a line between per-unit and total entry, preserving its actual
-  // dollar amount across the switch (toggling never changes the money —
-  // it only re-expresses the same line total as unit-or-total).
+  // Flip a line between per-unit and total entry. KEEP the number the
+  // staffer typed and only change what it means — flipping is "I picked the
+  // wrong kind of price," not "convert my number." The live readout under
+  // the field shows the resulting total / per-unit so the effect is obvious.
   const setPriceMode = (id, mode) => {
-    setLineItems(items => items.map(it => {
-      if (it.id !== id || it.price_mode === mode) return it
-      const c = parseFloat(it.cost)
-      const q = parseInt(it.quantity) || 0
-      let cost = it.cost
-      if (!isNaN(c) && q > 0) cost = String(mode === 'total' ? round2(c * q) : round2(c / q))
-      return { ...it, price_mode: mode, cost }
-    }))
+    setLineItems(items => items.map(it =>
+      it.id === id ? { ...it, price_mode: mode } : it
+    ))
   }
 
   // Called by BarcodeScanner when a UPC matches a known SKU. Fills the
@@ -798,6 +791,11 @@ function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, 
     // doesn't feel like the click did nothing on big pastes.
     setTimeout(() => {
       const result = parsePurchaseText(text, { products, paymentMethods, vendors })
+      // Parser pulls a per-unit price out of the "unit × qty" pattern, so each
+      // line starts in per-unit mode. But a message can genuinely quote a line
+      // TOTAL — staff flip individual lines to Total after eyeballing the
+      // original text (shown on each line). Can't be auto-detected reliably.
+      result.lineItems = (result.lineItems || []).map(li => ({ ...li, price_mode: 'unit' }))
       setParsed(result)
       setParsing(false)
     }, 50)
@@ -811,6 +809,25 @@ function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, 
   }
   const removeLine = (idx) => {
     setParsed(p => ({ ...p, lineItems: p.lineItems.filter((_, i) => i !== idx) }))
+  }
+
+  const round2 = (n) => Math.round(n * 100) / 100
+  // A parsed line's total in the entered currency, honoring its unit/total mode.
+  const lineTotalOfParsed = (li) => {
+    const c = Number(li.cost) || 0, q = Number(li.qty) || 0
+    return (li.price_mode || 'unit') === 'unit' ? round2(c * q) : c
+  }
+  // Flip one parsed line unit↔total. KEEP the parsed number and only change
+  // what it means — this is the whole point of the boss's note: the parser
+  // grabbed a number that might actually be a line total, so flipping to
+  // Total must leave the number alone (never multiply it by qty).
+  const setLineMode = (idx, mode) => {
+    setParsed(p => ({
+      ...p,
+      lineItems: p.lineItems.map((li, i) =>
+        i === idx ? { ...li, price_mode: mode } : li
+      ),
+    }))
   }
 
   const productOptions = products.map(p => ({ value: p.id, label: getProductLabel(p) }))
@@ -983,7 +1000,9 @@ function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, 
                         />
                       </div>
                       <div className="col-span-3">
-                        <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Cost / unit</label>
+                        <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+                          {(li.price_mode || 'unit') === 'unit' ? 'Cost / unit' : 'Line total'}
+                        </label>
                         <div className="relative">
                           <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-xs pointer-events-none">$</span>
                           <input
@@ -1005,11 +1024,26 @@ function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, 
                         </button>
                       </div>
                     </div>
-                    {li.cost != null && li.qty > 0 && (
-                      <div className="text-[11px] text-gray-500 text-right mt-1">
-                        line total: ${(li.cost * li.qty).toFixed(2)}
+                    {/* Per-line entry mode + live cross-check. Default per-unit
+                        (parser native), but flip to Total when the message
+                        actually quoted a line total. */}
+                    <div className="flex items-center justify-between gap-2 mt-1.5">
+                      <div className="inline-flex rounded border border-vault-border overflow-hidden shrink-0">
+                        {['unit', 'total'].map(m => (
+                          <button key={m} type="button" onClick={() => setLineMode(idx, m)}
+                            className={`px-1.5 py-0.5 text-[10px] transition ${(li.price_mode || 'unit') === m ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}>
+                            {m === 'unit' ? 'Per unit' : 'Total'}
+                          </button>
+                        ))}
                       </div>
-                    )}
+                      {li.cost != null && li.qty > 0 && (
+                        <div className="text-[11px] text-gray-500 text-right">
+                          {(li.price_mode || 'unit') === 'unit'
+                            ? <>= <span className="text-vault-gold">${lineTotalOfParsed(li).toFixed(2)}</span> total</>
+                            : <>= ${(Number(li.cost) / (Number(li.qty) || 1)).toFixed(2)} / unit</>}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
