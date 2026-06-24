@@ -61,8 +61,12 @@ export default function PurchasedItems() {
     tracking_number: ''
   })
 
+  // price_mode: 'unit' = the cost field holds the per-unit price (system
+  // multiplies by qty on save); 'total' = it holds the whole-line total.
+  // Default 'unit' because that's how vendors quote and how staff think —
+  // it makes the common "typed unit price into total" mistake self-correct.
   const [lineItems, setLineItems] = useState([
-    { id: 1, product_id: '', quantity: 1, cost: '', notes: '' }
+    { id: 1, product_id: '', quantity: 1, cost: '', price_mode: 'unit', notes: '' }
   ])
 
   const [productFilters, setProductFilters] = useState({
@@ -114,7 +118,7 @@ export default function PurchasedItems() {
 
   const addLineItem = () => {
     const newId = Math.max(...lineItems.map(i => i.id), 0) + 1
-    setLineItems([...lineItems, { id: newId, product_id: '', quantity: 1, cost: '', notes: '' }])
+    setLineItems([...lineItems, { id: newId, product_id: '', quantity: 1, cost: '', price_mode: 'unit', notes: '' }])
   }
 
   // Take a confirmed parse result (from PasteParseModal — already edited
@@ -162,13 +166,21 @@ export default function PurchasedItems() {
     if (parsed.vendor?.id) {
       setHeader(h => ({ ...h, vendor_id: parsed.vendor.id }))
     }
-    setLineItems(lines.map((li, idx) => ({
-      id: idx + 1,
-      product_id: li.productMatch.id,
-      quantity: li.qty || 1,
-      cost: li.cost != null ? String(li.cost) : '',
-      notes: '',
-    })))
+    setLineItems(lines.map((li, idx) => {
+      // Parser returns per-unit `cost` and a computed `total`. Default to
+      // per-unit entry (system multiplies by qty on save). This also fixes
+      // the old bug where the per-unit price got stored as the whole-line
+      // total. If only a total was found, fall back to total mode.
+      const hasUnit = li.cost != null
+      return {
+        id: idx + 1,
+        product_id: li.productMatch.id,
+        quantity: li.qty || 1,
+        price_mode: hasUnit ? 'unit' : 'total',
+        cost: hasUnit ? String(li.cost) : (li.total != null ? String(li.total) : ''),
+        notes: '',
+      }
+    }))
     addToast(
       `Filled ${lines.length} line${lines.length === 1 ? '' : 's'} from message`,
       'success'
@@ -185,6 +197,30 @@ export default function PurchasedItems() {
     setLineItems(lineItems.map(item =>
       item.id === id ? { ...item, [field]: value } : item
     ))
+  }
+
+  const round2 = (n) => Math.round(n * 100) / 100
+
+  // A line's total cost in the entered currency, regardless of entry mode.
+  // This is the single source of truth for what gets saved and summed.
+  const lineTotalOf = (item) => {
+    const c = parseFloat(item.cost) || 0
+    const q = parseInt(item.quantity) || 0
+    return item.price_mode === 'unit' ? round2(c * q) : c
+  }
+
+  // Flip a line between per-unit and total entry, preserving its actual
+  // dollar amount across the switch (toggling never changes the money —
+  // it only re-expresses the same line total as unit-or-total).
+  const setPriceMode = (id, mode) => {
+    setLineItems(items => items.map(it => {
+      if (it.id !== id || it.price_mode === mode) return it
+      const c = parseFloat(it.cost)
+      const q = parseInt(it.quantity) || 0
+      let cost = it.cost
+      if (!isNaN(c) && q > 0) cost = String(mode === 'total' ? round2(c * q) : round2(c / q))
+      return { ...it, price_mode: mode, cost }
+    }))
   }
 
   // Called by BarcodeScanner when a UPC matches a known SKU. Fills the
@@ -204,7 +240,7 @@ export default function PurchasedItems() {
       const newId = Math.max(...lineItems.map(i => i.id), 0) + 1
       setLineItems(prev => [
         ...prev,
-        { id: newId, product_id: product.id, quantity: 1, cost: '', notes: '' },
+        { id: newId, product_id: product.id, quantity: 1, cost: '', price_mode: 'unit', notes: '' },
       ])
       addToast(`Added new item: ${product.name}`, 'success')
     }
@@ -269,7 +305,10 @@ export default function PurchasedItems() {
 
     try {
       for (const item of validItems) {
-        const costNum = parseFloat(item.cost)
+        // `cost`/`cost_usd` are stored as the LINE TOTAL (the buy reports
+        // sum cost_usd as spend). In per-unit mode the staffer typed the
+        // unit price, so multiply by qty here.
+        const costNum = lineTotalOf(item)
         const costUSD = convertToUSD(costNum, header.currency)
 
         const acq = await createAcquisition({
@@ -351,7 +390,7 @@ export default function PurchasedItems() {
         'success',
         createdIds.length > 0 ? { action: { label: 'Undo', onClick: undo } } : undefined
       )
-      setLineItems([{ id: 1, product_id: '', quantity: 1, cost: '', notes: '' }])
+      setLineItems([{ id: 1, product_id: '', quantity: 1, cost: '', price_mode: 'unit', notes: '' }])
       // Reset shipping fields so the next entry starts clean — date/acquirer/vendor
       // intentionally stay so users can log multiple shipments from the same trip.
       setHeader(h => ({ ...h, carrier: '', tracking_number: '' }))
@@ -395,8 +434,9 @@ export default function PurchasedItems() {
     return `${product.brand} | ${launchName} | ${product.category} | ${product.language}`
   }
 
-  const totalCost = lineItems.reduce((sum, item) => sum + (parseFloat(item.cost) || 0), 0)
+  const totalCost = lineItems.reduce((sum, item) => sum + lineTotalOf(item), 0)
   const totalItems = lineItems.filter(i => i.product_id).length
+  const cur = header.currency === 'USD' ? '$' : '¥'
 
   if (loading) {
     return <div className="flex items-center justify-center h-64"><div className="spinner"></div></div>
@@ -451,7 +491,7 @@ export default function PurchasedItems() {
                 <li>Select or add <span className="text-vault-gold">vendor</span></li>
                 <li>Select <span className="text-vault-gold">payment method</span></li>
                 <li>Select <span className="text-vault-gold">currency</span> (USD, YEN, RMB)</li>
-                <li>Add products with <span className="text-vault-gold">quantity and cost</span></li>
+                <li>Add products with <span className="text-vault-gold">quantity and cost</span> — pick <span className="text-vault-gold">Per unit</span> (auto ×qty) or <span className="text-vault-gold">Total</span></li>
                 <li>Click <span className="text-vault-gold">Log Purchase</span></li>
               </ol>
               <p className="text-blue-400 text-xs mt-3">💡 Items will appear in "Intake to Master" for receiving into inventory</p>
@@ -631,7 +671,7 @@ export default function PurchasedItems() {
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                  <div className="md:col-span-2">
+                  <div className="md:col-span-3">
                     <label className="block text-xs font-medium text-gray-400 mb-1">Product *</label>
                     <SearchableSelect
                       options={filteredProducts}
@@ -647,12 +687,44 @@ export default function PurchasedItems() {
                     <label className="block text-xs font-medium text-gray-400 mb-1">Qty *</label>
                     <input type="number" value={item.quantity} onChange={(e) => updateLineItem(item.id, 'quantity', e.target.value)} min="1" className="w-full text-sm" />
                   </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-400 mb-1">Cost ({header.currency}) *</label>
-                    <input type="number" value={item.cost} onChange={(e) => updateLineItem(item.id, 'cost', e.target.value)} min="0" step="0.01" className="w-full text-sm" />
-                  </div>
                 </div>
-                
+
+                {/* Cost — choose how you're entering it. "Per unit" multiplies
+                    by qty on save (prevents the unit-price-as-total mistake);
+                    "Total" stores the number as-is. The live line below
+                    cross-checks the other value so either error is obvious. */}
+                <div className="mt-3">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="block text-xs font-medium text-gray-400">
+                      {item.price_mode === 'unit' ? 'Cost per unit' : 'Total cost'} ({header.currency}) *
+                    </label>
+                    <div className="inline-flex rounded-md border border-vault-border overflow-hidden shrink-0">
+                      {['unit', 'total'].map(m => (
+                        <button key={m} type="button" onClick={() => setPriceMode(item.id, m)}
+                          className={`px-2 py-0.5 text-[11px] transition ${item.price_mode === m ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}>
+                          {m === 'unit' ? 'Per unit' : 'Total'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <input
+                    type="number" value={item.cost}
+                    onChange={(e) => updateLineItem(item.id, 'cost', e.target.value)}
+                    min="0" step="0.01" className="w-full text-sm"
+                    placeholder={item.price_mode === 'unit' ? 'Price for ONE unit' : 'Total for the whole line'}
+                  />
+                  {item.cost !== '' && !isNaN(parseFloat(item.cost)) && (parseInt(item.quantity) || 0) > 0 && (
+                    <p className="text-[11px] mt-1 text-gray-500">
+                      {item.price_mode === 'unit' ? (
+                        <>= <span className="text-vault-gold font-medium">{cur}{lineTotalOf(item).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> total
+                          <span className="text-gray-600"> ({item.quantity} × {cur}{parseFloat(item.cost).toLocaleString(undefined, { maximumFractionDigits: 2 })})</span></>
+                      ) : (
+                        <>= <span className="text-gray-300">{cur}{(parseFloat(item.cost) / (parseInt(item.quantity) || 1)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> per unit</>
+                      )}
+                    </p>
+                  )}
+                </div>
+
                 <div className="mt-3">
                   <label className="block text-xs font-medium text-gray-400 mb-1">Notes</label>
                   <input type="text" value={item.notes} onChange={(e) => updateLineItem(item.id, 'notes', e.target.value)} placeholder="Optional" className="w-full text-sm" />
