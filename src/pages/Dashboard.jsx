@@ -175,6 +175,15 @@ function DailyUsageCard() {
   }, [date, mode])
 
   const usd = (n) => `$${(Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+  // Quantity is what matters here (cost is only an estimate and can be off),
+  // so we lead with it — gold/bold — and split units into boxes vs packs so
+  // it's clear at a glance (boss 2026-06-24).
+  const qtyLabel = (boxes, packs) => {
+    const parts = []
+    if (boxes) parts.push(`${boxes} box${boxes === 1 ? '' : 'es'}`)
+    if (packs) parts.push(`${packs} pack${packs === 1 ? '' : 's'}`)
+    return parts.length ? parts.join(' · ') : '0 units'
+  }
   const toggle = (room) => setOpen(o => ({ ...o, [room]: !o[room] }))
 
   return (
@@ -215,8 +224,8 @@ function DailyUsageCard() {
         ) : (
           <>
             <p className="text-sm text-gray-400 mb-3">
-              Total <span className="text-white font-semibold">{data.total_units} units</span> ·
-              <span className="text-vault-gold font-semibold"> {usd(data.total_usd)}</span> at cost
+              Total <span className="text-vault-gold font-semibold">{qtyLabel(data.total_boxes, data.total_packs)}</span>
+              <span className="text-gray-500"> · {usd(data.total_usd)} at cost</span>
             </p>
             <div className="space-y-2">
               {data.rooms.map((r) => {
@@ -231,7 +240,10 @@ function DailyUsageCard() {
                         {r.label || r.room}
                         <span className="text-xs text-gray-500">({streamers.length} streamer{streamers.length === 1 ? '' : 's'})</span>
                       </span>
-                      <span className="text-sm text-gray-300">{r.units} units · <span className="text-vault-gold">{usd(r.usd)}</span></span>
+                      <span className="text-sm">
+                        <span className="text-vault-gold font-semibold">{qtyLabel(r.boxes, r.packs)}</span>
+                        <span className="text-gray-500"> · {usd(r.usd)}</span>
+                      </span>
                     </button>
                     {isOpen && (
                       <div className="px-3 pb-3 space-y-3 max-h-96 overflow-y-auto">
@@ -239,13 +251,16 @@ function DailyUsageCard() {
                           <div key={si}>
                             <div className="flex items-center justify-between text-sm border-b border-vault-border/40 pb-1 mb-1">
                               <span className="text-blue-300 font-medium">👤 {s.name}</span>
-                              <span className="text-gray-300">{s.units} units · <span className="text-vault-gold">{usd(s.usd)}</span></span>
+                              <span className="text-sm">
+                                <span className="text-vault-gold font-medium">{qtyLabel(s.boxes, s.packs)}</span>
+                                <span className="text-gray-500"> · {usd(s.usd)}</span>
+                              </span>
                             </div>
                             <div className="text-xs text-gray-400 space-y-0.5 pl-2">
                               {s.products.map((p, i) => (
                                 <div key={i} className="flex justify-between gap-2">
-                                  <span className="truncate">{p.name} ×{p.units}</span>
-                                  <span className="flex-shrink-0 text-gray-300">{usd(p.usd)}</span>
+                                  <span className="truncate">{p.name} <span className="text-vault-gold">×{p.units}</span></span>
+                                  <span className="flex-shrink-0 text-gray-500">{usd(p.usd)}</span>
                                 </div>
                               ))}
                             </div>

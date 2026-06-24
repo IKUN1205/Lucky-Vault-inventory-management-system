@@ -36,6 +36,17 @@ export const config = { maxDuration: 60 }
 
 const fmtUsd = (n) => `$${(Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
 
+// Sealed moves as whole boxes (product type 'Sealed') or loose packs (type
+// 'Pack'). Quantity matters more than the cost ESTIMATE, so we surface the
+// box/pack split everywhere instead of a flat "units" (boss 2026-06-24).
+const isPackType = (p) => p?.type === 'Pack'
+const fmtQty = (boxes, packs) => {
+  const parts = []
+  if (boxes) parts.push(`${boxes} box${boxes === 1 ? '' : 'es'}`)
+  if (packs) parts.push(`${packs} pack${packs === 1 ? '' : 's'}`)
+  return parts.length ? parts.join(' · ') : '0 units'
+}
+
 const CHANNEL_SHORT = {
   PackHeadsTCG: 'Packheads', Packheads: 'Packheads',
   RocketsHQ: 'Rockets', LuckyVaultUS: 'Lucky',
@@ -177,14 +188,21 @@ export async function computeDailyUsage(supabase, fromDate, toDate = fromDate) {
   }
 
   const priceItems = (pidMap) => [...pidMap.entries()]
-    .map(([pid, e]) => ({ name: productLabel(e.product), units: e.units, usd: e.units * (unitCost.get(pid) || 0) }))
+    .map(([pid, e]) => ({ name: productLabel(e.product), units: e.units, usd: e.units * (unitCost.get(pid) || 0), type: e.product?.type }))
     .sort((a, b) => b.usd - a.usd)
+  // boxes vs packs for a pid→{product,units} map
+  const splitBoxPack = (pidMap) => {
+    let boxes = 0, packs = 0
+    for (const e of pidMap.values()) { if (isPackType(e.product)) packs += e.units; else boxes += e.units }
+    return { boxes, packs }
+  }
 
   const rooms = [...roomData.entries()].map(([room, rd]) => {
     // per-streamer breakdown (sorted by spend)
     const streamers = [...rd.byStreamer.entries()].map(([name, pidMap]) => {
       const products = priceItems(pidMap)
-      return { name, products, units: products.reduce((s, x) => s + x.units, 0), usd: products.reduce((s, x) => s + x.usd, 0) }
+      const { boxes, packs } = splitBoxPack(pidMap)
+      return { name, products, boxes, packs, units: products.reduce((s, x) => s + x.units, 0), usd: products.reduce((s, x) => s + x.usd, 0) }
     }).sort((a, b) => b.usd - a.usd)
     // aggregate products across all streamers for the room-level view
     const agg = new Map()
@@ -195,6 +213,8 @@ export async function computeDailyUsage(supabase, fromDate, toDate = fromDate) {
     return {
       room, label: roomLabel(room),
       units: streamers.reduce((s, x) => s + x.units, 0),
+      boxes: streamers.reduce((s, x) => s + x.boxes, 0),
+      packs: streamers.reduce((s, x) => s + x.packs, 0),
       usd: streamers.reduce((s, x) => s + x.usd, 0),
       products,    // ALL products (room total)
       streamers,   // per-streamer breakdown (boss directive 2026-06-23)
@@ -208,6 +228,8 @@ export async function computeDailyUsage(supabase, fromDate, toDate = fromDate) {
     range_label: single ? fromDate : `${fromDate} → ${toDate}`,
     rooms,
     total_units: rooms.reduce((s, r) => s + r.units, 0),
+    total_boxes: rooms.reduce((s, r) => s + r.boxes, 0),
+    total_packs: rooms.reduce((s, r) => s + r.packs, 0),
     total_usd: rooms.reduce((s, r) => s + r.usd, 0),
   }
 }
@@ -216,13 +238,13 @@ function buildText(d) {
   const lines = []
   const head = d.period === 'weekly' ? 'Weekly' : 'Daily'
   lines.push(`📦 ${head} Sealed Usage — ${d.range_label}`)
-  lines.push(`Total: ${d.total_units} units · ${fmtUsd(d.total_usd)} at cost`)
+  lines.push(`Total: ${fmtQty(d.total_boxes, d.total_packs)} · ${fmtUsd(d.total_usd)} at cost`)
   if (d.rooms.length === 0) { lines.push(''); lines.push('No sealed usage recorded.'); return lines.join('\n') }
   for (const r of d.rooms) {
     lines.push('')
-    lines.push(`▼ ${r.label}: ${r.units} units · ${fmtUsd(r.usd)}`)
+    lines.push(`▼ ${r.label}: ${fmtQty(r.boxes, r.packs)} · ${fmtUsd(r.usd)}`)
     for (const s of (r.streamers || [])) {
-      lines.push(`  ─ ${s.name}: ${s.units} units · ${fmtUsd(s.usd)}`)
+      lines.push(`  ─ ${s.name}: ${fmtQty(s.boxes, s.packs)} · ${fmtUsd(s.usd)}`)
       for (const p of s.products) lines.push(`      ${p.name} ×${p.units} (${fmtUsd(p.usd)})`)
     }
   }
