@@ -117,6 +117,10 @@ export default function Dashboard() {
           Daily / weekly, per room → per streamer → full product list. */}
       <DailyUsageCard />
 
+      {/* Sealed BUYS — the purchasing mirror of the usage card above
+          (boss 2026-06-24). One 进 / one 出, shown together. */}
+      <DailyBuyCard />
+
       {/* Quick Stats — wired to real data; each card hides itself when
           it has nothing to show. */}
       <QuickStats />
@@ -239,6 +243,197 @@ function DailyUsageCard() {
                             </div>
                             <div className="text-xs text-gray-400 space-y-0.5 pl-2">
                               {s.products.map((p, i) => (
+                                <div key={i} className="flex justify-between gap-2">
+                                  <span className="truncate">{p.name} ×{p.units}</span>
+                                  <span className="flex-shrink-0 text-gray-300">{usd(p.usd)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </>
+        )
+      )}
+    </div>
+  )
+}
+
+// Mon–Sun week (date strings, en-CA) containing the given YYYY-MM-DD —
+// the in-app analog of weekContaining() used by the buy/usage reports.
+function weekRange(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`)
+  const dow = (d.getDay() + 6) % 7              // Mon=0 … Sun=6
+  const mon = new Date(d); mon.setDate(d.getDate() - dow)
+  const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
+  const f = (x) => x.toLocaleDateString('en-CA')
+  return { from: f(mon), to: f(sun) }
+}
+
+// Aggregate raw `acquisitions` rows into 🇺🇸 US / 🇯🇵 Japan → who bought →
+// product. Mirrors api/weekly-buy-report.js: spend = real cost_usd on both
+// sides; origin 'jp_to_us_shipment' is logistics (already counted when
+// bought in Japan), surfaced as a 🚢 FYI line and NEVER in the totals.
+function buildBuys(rows, from, to) {
+  let totalUsd = 0, totalUnits = 0
+  const side = {
+    us: { usd: 0, units: 0, buyers: new Map() },
+    jp: { usd: 0, units: 0, buyers: new Map() },
+  }
+  const shipped = { units: 0, usd: 0 }
+  const plabel = (p) => {
+    if (!p) return '(unknown product)'
+    let s = p.name || '(unnamed)'
+    if (p.language && p.language !== 'EN') s += ` [${p.language}]`
+    return s
+  }
+  for (const b of rows) {
+    const units = Number(b.quantity_purchased) || 0
+    const cu = Number(b.cost_usd) || (b.currency === 'USD' ? Number(b.cost) || 0 : 0)
+    if (b.origin === 'jp_to_us_shipment') { shipped.units += units; shipped.usd += cu; continue }
+    const s = side[b.origin === 'jp_vendor' ? 'jp' : 'us']
+    s.usd += cu; s.units += units
+    totalUsd += cu; totalUnits += units
+    const who = b.acquirer?.name || '(unknown)'
+    const bu = s.buyers.get(who) || { usd: 0, units: 0, products: new Map() }
+    bu.usd += cu; bu.units += units
+    const label = plabel(b.product)
+    const pr = bu.products.get(label) || { name: label, units: 0, usd: 0 }
+    pr.units += units; pr.usd += cu
+    bu.products.set(label, pr)
+    s.buyers.set(who, bu)
+  }
+  const groups = [
+    { key: 'us', label: '🇺🇸 US', ...side.us },
+    { key: 'jp', label: '🇯🇵 Japan', ...side.jp },
+  ].filter(g => g.units > 0 || g.usd > 0).map(g => ({
+    key: g.key, label: g.label, units: g.units, usd: g.usd,
+    buyers: [...g.buyers.entries()].map(([name, b]) => ({
+      name, units: b.units, usd: b.usd,
+      products: [...b.products.values()].sort((a, c) => c.usd - a.usd),
+    })).sort((a, c) => c.usd - a.usd),
+  }))
+  return {
+    range_label: from === to ? from : `${from} → ${to}`,
+    total_units: totalUnits, total_usd: totalUsd,
+    us: { usd: side.us.usd, units: side.us.units },
+    jp: { usd: side.jp.usd, units: side.jp.units },
+    shipped, groups,
+  }
+}
+
+// Per-day / per-week SEALED BUYS — the purchasing mirror of the usage card
+// (boss 2026-06-24: "记录每天/每周 buy 的 record like 记录每天用量"). Pulled
+// straight from `acquisitions` (single table, real cost_usd — no valued-
+// at-cost estimate needed), grouped 🇺🇸 US / 🇯🇵 Japan → who bought →
+// product. Same daily/weekly UX as the usage card above it.
+function DailyBuyCard() {
+  const todayStr = () => new Date().toLocaleDateString('en-CA')
+  const [mode, setMode] = useState('daily')    // 'daily' | 'weekly'
+  const [date, setDate] = useState(todayStr())
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(null)
+  const [open, setOpen] = useState({})          // group key → expanded?
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true); setErr(null); setOpen({})
+    ;(async () => {
+      try {
+        const { from, to } = mode === 'weekly' ? weekRange(date) : { from: date, to: date }
+        const { data: rows, error } = await supabase
+          .from('acquisitions')
+          .select('quantity_purchased, cost, currency, cost_usd, origin, acquirer:users!acquisitions_acquirer_id_fkey(name), product:products(name, brand, language, type)')
+          .eq('deleted', false)
+          .gte('date_purchased', from)
+          .lte('date_purchased', to)
+        if (error) throw error
+        if (!cancelled) setData(buildBuys(rows || [], from, to))
+      } catch (e) { if (!cancelled) setErr(e.message || String(e)) }
+      finally { if (!cancelled) setLoading(false) }
+    })()
+    return () => { cancelled = true }
+  }, [date, mode])
+
+  const usd = (n) => `$${(Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+  const toggle = (k) => setOpen(o => ({ ...o, [k]: !o[k] }))
+
+  return (
+    <div className="mt-8 card">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <h2 className="font-display text-lg font-semibold text-white flex items-center gap-2">
+          <ShoppingCart className="text-vault-gold" size={20} /> Sealed buys by side
+        </h2>
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40">
+            {['daily', 'weekly'].map(m => (
+              <button key={m} type="button" onClick={() => setMode(m)}
+                className={`px-3 py-1 text-xs rounded-md transition ${mode === m ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}>
+                {m === 'daily' ? 'Daily' : 'Weekly'}
+              </button>
+            ))}
+          </div>
+          <input
+            type="date"
+            value={date}
+            max={todayStr()}
+            onChange={(e) => setDate(e.target.value || todayStr())}
+            className="text-sm py-1.5 px-2 bg-vault-darker/40 border border-vault-border rounded-md text-white"
+          />
+        </div>
+      </div>
+
+      {data?.range_label && !loading && !err && (
+        <p className="text-xs text-gray-500 mb-3">{mode === 'weekly' ? 'Week' : 'Day'}: {data.range_label}</p>
+      )}
+
+      {loading && <div className="text-gray-400 flex items-center gap-2 py-4"><Loader2 size={16} className="animate-spin" /> Loading…</div>}
+      {err && !loading && <div className="text-red-300 text-sm py-4">Couldn't load buys: {err}</div>}
+
+      {!loading && !err && data && (
+        data.groups.length === 0 ? (
+          <p className="text-gray-500 py-4">No buys recorded for this {mode === 'weekly' ? 'week' : 'day'}.</p>
+        ) : (
+          <>
+            <p className="text-sm text-gray-400 mb-1">
+              Total <span className="text-white font-semibold">{data.total_units} units</span> ·
+              <span className="text-vault-gold font-semibold"> {usd(data.total_usd)}</span> spent
+            </p>
+            <p className="text-xs text-gray-500 mb-3">
+              🇺🇸 US {usd(data.us.usd)} ({data.us.units}u) · 🇯🇵 Japan {usd(data.jp.usd)} ({data.jp.units}u)
+              {data.shipped.units > 0 && <span> · 🚢 JP→US {data.shipped.units}u (logistics, not spend)</span>}
+            </p>
+            <div className="space-y-2">
+              {data.groups.map((g) => {
+                const buyers = g.buyers || []
+                const isOpen = !!open[g.key]
+                return (
+                  <div key={g.key} className="rounded-lg border border-vault-border bg-vault-darker/30">
+                    <button type="button" onClick={() => toggle(g.key)}
+                      className="w-full flex items-center justify-between gap-2 p-3 hover:bg-vault-darker/50 rounded-lg">
+                      <span className="flex items-center gap-2 font-medium text-white">
+                        {isOpen ? <ChevronDown size={15} className="text-gray-400" /> : <ChevronRight size={15} className="text-gray-400" />}
+                        {g.label}
+                        <span className="text-xs text-gray-500">({buyers.length} buyer{buyers.length === 1 ? '' : 's'})</span>
+                      </span>
+                      <span className="text-sm text-gray-300">{g.units} units · <span className="text-vault-gold">{usd(g.usd)}</span></span>
+                    </button>
+                    {isOpen && (
+                      <div className="px-3 pb-3 space-y-3 max-h-96 overflow-y-auto">
+                        {buyers.map((b, bi) => (
+                          <div key={bi}>
+                            <div className="flex items-center justify-between text-sm border-b border-vault-border/40 pb-1 mb-1">
+                              <span className="text-emerald-300 font-medium">👤 {b.name}</span>
+                              <span className="text-gray-300">{b.units} units · <span className="text-vault-gold">{usd(b.usd)}</span></span>
+                            </div>
+                            <div className="text-xs text-gray-400 space-y-0.5 pl-2">
+                              {b.products.map((p, i) => (
                                 <div key={i} className="flex justify-between gap-2">
                                   <span className="truncate">{p.name} ×{p.units}</span>
                                   <span className="flex-shrink-0 text-gray-300">{usd(p.usd)}</span>
