@@ -327,15 +327,25 @@ export default function ViewInventory() {
   const slabsForLoc = (loc) =>
     searching ? (slabsByLoc[loc] || []).filter(matchSlab) : (slabsByLoc[loc] || [])
 
+  // When a specific Location is picked, the card search must stay WITHIN it
+  // too. The sealed side is already location-filtered server-side; the
+  // singles/slabs buckets hold every location, so constrain them here by the
+  // selected location's NAME (selectedLocation is the location id).
+  const selectedLocName = selectedLocation
+    ? (locations.find(l => String(l.id) === String(selectedLocation))?.name || null)
+    : null
+
   // Locations to render. No search → sealed-grouped locations (unchanged).
   // Search → union of matching-sealed locations + locations holding a
-  // matching single/slab, sorted for stable display.
+  // matching single/slab, then narrowed to the selected location (if any).
   const locationNames = searching
     ? Array.from(new Set([
         ...Object.keys(groupedByLocation),
         ...Object.keys(singlesByLoc).filter(loc => (singlesByLoc[loc] || []).some(matchSingle)),
         ...Object.keys(slabsByLoc).filter(loc => (slabsByLoc[loc] || []).some(matchSlab)),
-      ])).sort((a, b) => a.localeCompare(b))
+      ]))
+        .filter(loc => !selectedLocName || loc === selectedLocName)
+        .sort((a, b) => a.localeCompare(b))
     : Object.keys(groupedByLocation)
 
   // Calculate totals
@@ -369,7 +379,7 @@ export default function ViewInventory() {
           <p className="font-medium text-white">View and manage inventory:</p>
           <ul className="list-disc list-inside space-y-2 ml-2">
             <li><span className="text-vault-gold">Filter</span> by location, brand, or type</li>
-            <li><span className="text-vault-gold">Search</span> a card name, cert #, or TCG ID to see which location it's at (covers sealed, singles & slabs). Card search scans everything to find the physical card, so it ignores the Brand / Market / Sealed filters.</li>
+            <li><span className="text-vault-gold">Search</span> a card name, cert #, or TCG ID to see which location it's at (covers sealed, singles & slabs). Card search stays within the selected Location, but ignores the Brand / Market / Sealed filters.</li>
             <li>See <span className="text-vault-gold">quantity</span> and <span className="text-vault-gold">cost basis</span> per item</li>
             <li>Click <span className="text-vault-gold">Edit</span> to adjust quantities directly</li>
             <li>Click <span className="text-vault-gold">Delete</span> to remove a line item</li>
