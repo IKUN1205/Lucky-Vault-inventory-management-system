@@ -531,7 +531,8 @@ export default function StorefrontSale() {
 
   const validateCart = () => {
     if (cart.length === 0) return 'Cart is empty'
-    if (!paymentMethodId) return 'Pick a payment method'
+    // An even trade (net cash = 0) moves no money, so no payment method needed.
+    if (!paymentMethodId && netCash !== 0) return 'Pick a payment method'
     if (!saleDate) return 'Pick a date'
     if (splitPayment && splitEligible) {
       if (!paymentMethodId2) return 'Pick the second payment method (or turn off Split payment)'
@@ -597,6 +598,7 @@ export default function StorefrontSale() {
     // Build the payments array. Single-method: [{ method, amount: due }].
     // Split: [{ method1, amount1 }, { method2, amount2 }].
     const submittedPayments = (() => {
+      if (netCash === 0) return []   // even trade — no cash moves, record no payment
       if (splitPayment && splitEligible) {
         return [
           { payment_method_id: paymentMethodId,  amount: amount1Num },

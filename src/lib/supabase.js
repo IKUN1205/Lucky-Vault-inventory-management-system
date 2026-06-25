@@ -3526,36 +3526,11 @@ export const submitStorefrontTransaction = async ({
     throw new Error('Cart is empty')
   }
 
-  // Normalize payments. Two valid input shapes:
-  //   A) Legacy: paymentMethodId is set, payments is empty → single-method.
-  //   B) New:    payments = [{ payment_method_id, amount }, ...] with 1 or 2 rows.
-  // Internally we always work with an array of {method_id, amount} so the
-  // line writers + ledger insert + Lark builder all use one shape.
-  let normalizedPayments
-  if (Array.isArray(payments) && payments.length > 0) {
-    normalizedPayments = payments
-      .filter(p => p && p.payment_method_id)
-      .map(p => ({
-        payment_method_id: p.payment_method_id,
-        amount: Number(p.amount) || 0,
-      }))
-      .filter(p => p.amount > 0)
-    if (normalizedPayments.length === 0) {
-      throw new Error('No valid payment entries (each needs method + amount > 0)')
-    }
-    if (normalizedPayments.length > 2) {
-      throw new Error('At most 2 payment methods per transaction')
-    }
-  } else if (paymentMethodId) {
-    normalizedPayments = [{ payment_method_id: paymentMethodId, amount: null }]
-    // amount=null → "use the transaction's full net cash" (filled below after we know netCash)
-  } else {
-    normalizedPayments = []   // no payment recorded — only valid for "we pay customer" flows
-  }
-
-  // Compute gross + net cash up-front so each line write gets the same value.
-  // grossValue is the absolute total value of items in the cart, regardless
-  // of direction (we receive or we pay).
+  // Compute gross + net cash up-front (independent of payments) so each line
+  // write gets the same value AND the payment normalization below can tell an
+  // EVEN trade (net = 0, no cash to record) apart from a genuinely-missing
+  // payment. grossValue is the absolute total value of items in the cart,
+  // regardless of direction (we receive or we pay).
   const grossValue = cart.reduce((s, l) => {
     const qty = Number(l.quantity ?? 1) || 0
     const price = Number(l.price) || 0
@@ -3566,7 +3541,7 @@ export const submitStorefrontTransaction = async ({
     : null
   // Net cash direction by transaction type:
   //   sale  → customer pays us the gross. net = +gross
-  //   trade → net = gross − tradeIn (signed; can be negative if we pay them)
+  //   trade → net = gross − tradeIn (signed; negative if we pay, 0 if even)
   //   buy   → WE pay the customer the gross. net = -gross (always negative)
   let netCash
   if (transactionType === 'buy') netCash = -grossValue
@@ -3578,20 +3553,38 @@ export const submitStorefrontTransaction = async ({
     tradeInNotes: transactionType === 'trade' ? (tradeInNotes || null) : null,
     netCash,
   }
-
-  // Now we know netCash → fill in the legacy single-method amount (it
-  // covers the full transaction). For split payments validate the sum
-  // matches the amount the customer is paying.
-  //
-  // "Amount paid by customer" = absolute(netCash) when money flows IN
-  // (sale, or trade w/ positive net). For "we pay customer" flows the
-  // split UI is disabled upstream, so we don't have to validate sums.
+  // "Amount paid by customer" = absolute(netCash) when money flows IN (sale,
+  // or trade w/ positive net). For "we pay customer" flows the split UI is
+  // disabled upstream, so we don't validate sums.
   const customerPaysIn =
     transactionType === 'sale' ||
     (transactionType === 'trade' && netCash > 0)
-  if (normalizedPayments.length === 1 && normalizedPayments[0].amount == null) {
-    // Legacy single-method path — amount is the absolute value of netCash.
-    normalizedPayments[0].amount = Math.abs(netCash)
+
+  // Normalize payments into [{ method_id, amount }] (1–2 rows) so the line
+  // writers + ledger insert + Lark builder all use one shape. An EVEN trade
+  // (net cash = 0) moves no money, so it legitimately records NO payment —
+  // empty payments is allowed when netCash is 0 (and for we-pay flows that
+  // pass no method). A missing payment when cash SHOULD move is still an error.
+  let normalizedPayments
+  if (Array.isArray(payments) && payments.length > 0) {
+    normalizedPayments = payments
+      .filter(p => p && p.payment_method_id)
+      .map(p => ({
+        payment_method_id: p.payment_method_id,
+        amount: Number(p.amount) || 0,
+      }))
+      .filter(p => p.amount > 0)
+    if (normalizedPayments.length === 0 && netCash !== 0) {
+      throw new Error('No valid payment entries (each needs method + amount > 0)')
+    }
+    if (normalizedPayments.length > 2) {
+      throw new Error('At most 2 payment methods per transaction')
+    }
+  } else if (paymentMethodId && netCash !== 0) {
+    // Legacy single-method path — the one method covers the whole net cash.
+    normalizedPayments = [{ payment_method_id: paymentMethodId, amount: Math.abs(netCash) }]
+  } else {
+    normalizedPayments = []   // no cash recorded (even trade, or we-pay flow w/ no method)
   }
   if (normalizedPayments.length === 2) {
     if (!customerPaysIn) {
