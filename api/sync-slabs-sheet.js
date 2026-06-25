@@ -106,6 +106,17 @@ const routeLocation = (locText) => {
 export const config = { maxDuration: 300 }
 
 const money = (s) => { if (!s) return null; const m = String(s).replace(/,/g, '').match(/-?[\d.]+/); return m ? Number(m[0]) : null }
+// Slabs effectively have NO acquisition cost (boss 2026-06-25). The sheet's
+// Cost Basis column is usually blank or, on Pokemon Master, holds a stray
+// date SERIAL (e.g. 46180 ≈ a 2026 date) or a bare intake YEAR (2026). Reject
+// those so they never import as a cost; a genuine dollar price still imports.
+const cleanCost = (v) => {
+  const n = money(v)
+  if (n == null) return null
+  if (n >= 40000 && n <= 60000) return null                        // Google Sheets date serial
+  if (Number.isInteger(n) && n >= 1990 && n <= 2035) return null    // bare year mistaken for a price
+  return n
+}
 const dateOrNull = (s) => { const t = String(s || '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : null }
 
 async function postLark(text) {
@@ -193,7 +204,7 @@ export default async function handler(req, res) {
           list_price_usd: money(gr.cells[cfg.list]),
           lv_price_usd: money(gr.cells[cfg.lv]),
           sheet_note: String(gr.cells[cfg.note] || '').trim() || null,
-          acquisition_cost_usd: money(gr.cells[cfg.cost]),
+          acquisition_cost_usd: cleanCost(gr.cells[cfg.cost]),
           date_acquired: dateOrNull(gr.cells[cfg.intake]),
           location_route: routeLocation(locText),
           // Raw Location cell ("H-01", "lucky", …) — stored as sheet_bin

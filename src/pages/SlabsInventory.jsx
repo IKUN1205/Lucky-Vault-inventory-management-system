@@ -127,20 +127,22 @@ export default function SlabsInventory() {
 
   // ---- Summary metrics (filtered view) ----
   const metrics = useMemo(() => {
-    let totalCost = 0
+    // Slabs have no acquisition cost (boss 2026-06-25) — value the book by
+    // MARKET price (MP) instead.
+    let totalMarket = 0
     let totalList = 0
     let totalSale = 0
-    let costRows = 0
+    let marketRows = 0
     let listRows = 0
     let saleRows = 0
     let byStatus = { in_inventory: 0, listed: 0, sold: 0, sent_out: 0, lost: 0 }
     for (const s of filteredSlabs) {
       byStatus[s.status] = (byStatus[s.status] || 0) + 1
-      if (s.acquisition_cost_usd != null) { totalCost += Number(s.acquisition_cost_usd); costRows++ }
-      if (s.list_price_usd != null)        { totalList += Number(s.list_price_usd);        listRows++ }
-      if (s.sale_price_usd != null)        { totalSale += Number(s.sale_price_usd);        saleRows++ }
+      if (s.market_price_usd != null) { totalMarket += Number(s.market_price_usd); marketRows++ }
+      if (s.list_price_usd != null)   { totalList += Number(s.list_price_usd);     listRows++ }
+      if (s.sale_price_usd != null)   { totalSale += Number(s.sale_price_usd);     saleRows++ }
     }
-    return { totalCost, totalList, totalSale, costRows, listRows, saleRows, byStatus }
+    return { totalMarket, totalList, totalSale, marketRows, listRows, saleRows, byStatus }
   }, [filteredSlabs])
 
   const handleFilterChange = (e) => {
@@ -214,8 +216,8 @@ export default function SlabsInventory() {
           </p>
         </div>
         <div className="card">
-          <p className="text-gray-400 text-sm">Total cost <span className="text-gray-600 text-xs">({metrics.costRows} priced)</span></p>
-          <p className="font-display text-2xl font-bold text-vault-gold">${metrics.totalCost.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+          <p className="text-gray-400 text-sm">Total market <span className="text-gray-600 text-xs">({metrics.marketRows} priced)</span></p>
+          <p className="font-display text-2xl font-bold text-vault-gold">${metrics.totalMarket.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
         </div>
         <div className="card">
           <p className="text-gray-400 text-sm">Total list <span className="text-gray-600 text-xs">({metrics.listRows} priced)</span></p>
@@ -278,7 +280,7 @@ export default function SlabsInventory() {
                 <SortHeader col="grading"  align="left"  sort={sort} onToggle={toggleSort}>Grading</SortHeader>
                 <SortHeader col="item"     align="left"  sort={sort} onToggle={toggleSort}>Item</SortHeader>
                 <SortHeader col="status"   align="left"  sort={sort} onToggle={toggleSort}>Status</SortHeader>
-                <SortHeader col="cost"     align="right" sort={sort} onToggle={toggleSort}>Cost (USD)</SortHeader>
+                <SortHeader col="market"   align="right" sort={sort} onToggle={toggleSort}>Market</SortHeader>
                 <SortHeader col="list"     align="right" sort={sort} onToggle={toggleSort}>List</SortHeader>
                 <SortHeader col="sale"     align="right" sort={sort} onToggle={toggleSort}>Sale</SortHeader>
                 <SortHeader col="acquired" align="left"  sort={sort} onToggle={toggleSort}>Acquired</SortHeader>
@@ -304,8 +306,8 @@ export default function SlabsInventory() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-right text-vault-gold">
-                      {s.acquisition_cost_usd != null
-                        ? `$${Number(s.acquisition_cost_usd).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                      {s.market_price_usd != null
+                        ? `$${Number(s.market_price_usd).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
                         : '—'}
                     </td>
                     <td className="px-4 py-3 text-right text-blue-400">
