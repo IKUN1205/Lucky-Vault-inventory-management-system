@@ -38,11 +38,12 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
   || process.env.VITE_SUPABASE_ANON_KEY
 
 const SHEET_ID = '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI'
-// Location column differs per tab (Pokemon M=12, One Piece P=15); Status
-// is col L (11) on both — same maps as sync-slabs-sheet.js TAB_CONFIG.
+// Both Master tabs now share ONE layout (One Piece Master was restructured
+// to match Pokemon Master; corrected 2026-06-24): Location is col M (12) and
+// Status col L (11) on BOTH — same maps as sync-slabs-sheet.js TAB_CONFIG.
 const TABS = [
   { tab: 'Pokemon Master',   locationColumn: 12, statusColumn: 11 },
-  { tab: 'One Piece Master', locationColumn: 15, statusColumn: 11 },
+  { tab: 'One Piece Master', locationColumn: 12, statusColumn: 11 },
 ]
 
 // App room name → the keyword convention used in the sheet's Location

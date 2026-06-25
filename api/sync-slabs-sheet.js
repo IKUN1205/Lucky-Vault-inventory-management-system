@@ -20,15 +20,13 @@
 //   - a cert with no Item Name imports with a placeholder name so it's
 //     still scannable; staff fills the real name later.
 //
-// The two Master tabs have DIFFERENT column layouts (verified live
-// 2026-06-08 — this also fixes a price-swap bug where the old shared
-// layout read LS into market_price_usd for Pokemon Master):
-//   Pokemon Master:   A Cert  B Grade  C Item  D Pop  E CL  F LS  G MP
-//                     H List  I Trend  J LV  K Note  L Status  M Location
-//                     N Days  O Intake  P Listed  Q LastAlert  R Cost
-//   One Piece Master: A Cert  B Grade  C Item  D Pop  E CL  F MP  G LS
-//                     H List  I LV  J Note  K Days  L Status  M Listed
-//                     N LastAlert  O Cost  P Location  Q Intake
+// BOTH Master tabs now share ONE layout (One Piece Master was restructured
+// to match Pokemon Master; corrected here 2026-06-24 — before this the One
+// Piece map was stale, so every One Piece slab synced with MP/LS swapped,
+// LV/Note shifted, and cost = the Intake-date YEAR, i.e. "$2026"):
+//   A Cert  B Grade  C Item  D Pop  E CL  F LS  G MP  H List  I Trend
+//   J LV  K Note  L Status  M Location  N Days  O Intake  P Listed
+//   Q LastAlert  R Cost
 //
 // Reading goes through the Sheets API grid endpoint (service account via
 // GOOGLE_SERVICE_ACCOUNT_JSON) because formatting (strikethrough) is
@@ -57,7 +55,9 @@ const SHEET_ID = '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI'
 // synced — boss moves slabs into a Master tab when they're ready.
 const TAB_CONFIG = [
   { tab: 'Pokemon Master',   mp: 6, ls: 5, list: 7, lv: 9, note: 10, cost: 17, intake: 14, location: 12, status: 11 },
-  { tab: 'One Piece Master', mp: 5, ls: 6, list: 7, lv: 8, note: 9,  cost: 14, intake: 16, location: 15, status: 11 },
+  // One Piece Master now uses the SAME layout as Pokemon Master (the tab was
+  // restructured; corrected 2026-06-24). Keeping the maps identical.
+  { tab: 'One Piece Master', mp: 6, ls: 5, list: 7, lv: 9, note: 10, cost: 17, intake: 14, location: 12, status: 11 },
 ]
 
 // Location-column routing for NEW inserts. Mirrors the rule used for the
@@ -163,13 +163,12 @@ export default async function handler(req, res) {
         if (cert.length < 6) { skippedJunk++; continue }
         // Ledger source: keep a sold-sheet-shaped copy (cols A..L) of every
         // cert row BEFORE any skip, so the sold-ledger appender below can
-        // copy Pop/CL/Trend etc. faithfully when a cert sells. The two tabs
-        // have different layouts; "sold sheet" mirrors Pokemon Master's.
+        // copy Pop/CL/Trend etc. faithfully when a cert sells. Both Master
+        // tabs now share the layout, so the same A..L slice works for both.
         if (!soldSource.has(cert)) {
           const c = gr.cells
-          soldSource.set(cert, cfg.tab === 'Pokemon Master'
-            ? [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], 'sold'].map(v => v ?? '')
-            : [c[0], c[1], c[2], c[3], c[4], c[6], c[5], c[7], '', c[8], c[9], 'sold'].map(v => v ?? ''))
+          soldSource.set(cert,
+            [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], 'sold'].map(v => v ?? ''))
         }
         // Sold signals (boss convention, confirmed 2026-06-08) — ANY of:
         //   1. strikethrough on the cert cell or item-name cell

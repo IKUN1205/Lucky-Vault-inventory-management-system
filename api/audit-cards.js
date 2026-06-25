@@ -43,12 +43,13 @@ const SHEET_CONFIG = {
   },
   slab: {
     spreadsheetId: '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI',
-    // The two Master tabs have DIFFERENT layouts (verified 2026-06-08):
-    // Location is col M (12) on Pokemon Master, col P (15) on One Piece
-    // Master — hence per-tab objects instead of plain names here.
+    // Both Master tabs now share ONE layout (One Piece Master was
+    // restructured to match Pokemon Master; corrected 2026-06-24). Location
+    // is col M (12) on BOTH tabs — the old col-P (15) for One Piece was
+    // reading the blank Listed-Date column.
     tabs: [
       { name: 'Pokemon Master',   locationColumn: 12 },
-      { name: 'One Piece Master', locationColumn: 15 },
+      { name: 'One Piece Master', locationColumn: 12 },
     ],
     idColumn: 0,         // A = Cert
     nameColumn: 2,       // C = Item Name (for name-integrity check)
