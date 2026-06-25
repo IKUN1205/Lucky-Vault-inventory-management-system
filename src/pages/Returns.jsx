@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
-import { processReturn, fetchRecentReturns, fetchLocations } from '../lib/supabase'
-import { Undo2, ScanLine, Loader2, Package, Diamond, Box, AlertTriangle, BarChart3 } from 'lucide-react'
+import { processReturn, fetchRecentReturns, fetchLocations, searchProductsForStorefront, searchSinglesForStorefront, searchSlabsForStorefront } from '../lib/supabase'
+import { Undo2, ScanLine, Loader2, Package, Diamond, Box, AlertTriangle, BarChart3, Search, ChevronDown, ChevronUp } from 'lucide-react'
 
 // Returns — scan a cancelled/returned item back into Master Inventory and keep
 // a light record (boss 2026-06-25). Policy: the ORIGINAL sale is NOT touched —
@@ -88,29 +88,36 @@ export default function Returns() {
     return [...m.values()].sort((a, b) => b.count - a.count)
   }, [recent])
 
-  const submitScan = async () => {
-    const code = scan.trim()
-    if (!code || processing) return
+  // Shared return runner — from the scan/code box (code) or a manual
+  // name-search pick (found, an already-resolved {kind, item} object).
+  const runReturn = async ({ code, found }) => {
+    if (processing) return
     setProcessing(true)
     try {
       const dest = locations.find(l => l.id === destId)
       const res = await processReturn({
-        code, reason, notes: notes.trim() || null, returnedById: user?.id || null,
+        code, found, reason, notes: notes.trim() || null, returnedById: user?.id || null,
         sourceStreamRoom: sourceRoom || null,
         destinationLocationId: destId || null, destinationName: dest?.name || null,
       })
       if (res.logged === false) setMigrated(false)
       const meta = KIND_META[res.kind]
-      setSession(prev => [{ ...res, code, at: new Date().toLocaleTimeString() }, ...prev])
+      setSession(prev => [{ ...res, code: code || res.name, at: new Date().toLocaleTimeString() }, ...prev])
       addToast(`${meta?.label || res.kind}: ${res.name} — ${res.action}`, 'success')
-      setScan('')
       loadRecent()
     } catch (e) {
       addToast(e.message || 'Return failed', 'error')
     } finally {
       setProcessing(false)
-      inputRef.current?.focus()
     }
+  }
+
+  const submitScan = async () => {
+    const code = scan.trim()
+    if (!code) return
+    await runReturn({ code })
+    setScan('')
+    inputRef.current?.focus()
   }
 
   const onKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); submitScan() } }
@@ -191,6 +198,9 @@ export default function Returns() {
           slab → flipped back there (unique item, so its sale is un-marked).
         </p>
       </div>
+
+      {/* Manual entry — search by name when the code box can't find it */}
+      <ReturnsManualEntry onPick={(found) => runReturn({ found })} disabled={processing} />
 
       {/* This session */}
       {session.length > 0 && (
@@ -299,6 +309,120 @@ export default function Returns() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// Manual name-search fallback — when the scanner / code box can't find it,
+// search sealed / single / slab by name and click Return on the match. The
+// search rows are already {kind, single|slab|product}-shaped, so onPick hands
+// the row straight to processReturn as `found`.
+function ReturnsManualEntry({ onPick, disabled }) {
+  const [expanded, setExpanded] = useState(false)
+  const [tab, setTab] = useState('single')
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => { setQuery(''); setResults([]); setErr(null) }, [tab])
+  useEffect(() => {
+    const q = query.trim()
+    if (q.length < 2) { setResults([]); setSearching(false); setErr(null); return }
+    setSearching(true); setErr(null)
+    let cancelled = false
+    const t = setTimeout(async () => {
+      try {
+        let rows = []
+        if (tab === 'sealed') rows = await searchProductsForStorefront(q)
+        else if (tab === 'single') rows = await searchSinglesForStorefront(q)
+        else if (tab === 'slab') rows = await searchSlabsForStorefront(q)
+        if (!cancelled) setResults(rows || [])
+      } catch (e) { if (!cancelled) { setErr(e.message || 'Search failed'); setResults([]) } }
+      finally { if (!cancelled) setSearching(false) }
+    }, 250)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [query, tab])
+
+  const pick = (row) => { onPick(row); setQuery(''); setResults([]) }
+  const placeholder = tab === 'sealed' ? 'Type a brand or product name…'
+    : tab === 'single' ? 'Type card name, number, or TCG ID…'
+    : 'Type slab name or cert#…'
+
+  return (
+    <div className="card mb-6">
+      <button type="button" onClick={() => setExpanded(v => !v)} className="flex items-center justify-between w-full text-left">
+        <div className="flex items-center gap-2">
+          <Search size={16} className="text-vault-gold" />
+          <span className="text-sm font-semibold text-white">Manual entry (no barcode)</span>
+          <span className="text-xs text-gray-500">— search by name when the scanner / code can't find it</span>
+        </div>
+        {expanded ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+      </button>
+
+      {expanded && (
+        <div className="mt-3 space-y-3">
+          <div className="flex items-center gap-1 border-b border-vault-border/50 pb-2">
+            <RetTab active={tab === 'sealed'} onClick={() => setTab('sealed')} icon={Box} label="Sealed" color="text-amber-300" />
+            <RetTab active={tab === 'single'} onClick={() => setTab('single')} icon={Package} label="Single" color="text-blue-300" />
+            <RetTab active={tab === 'slab'} onClick={() => setTab('slab')} icon={Diamond} label="Slab" color="text-emerald-300" />
+          </div>
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+            <input type="text" value={query} onChange={(e) => setQuery(e.target.value)} disabled={disabled}
+              placeholder={placeholder} autoComplete="off" spellCheck={false}
+              className="w-full pl-9 pr-3 py-2 bg-vault-darker border border-vault-border rounded-md text-white text-sm focus:outline-none focus:border-vault-gold disabled:opacity-50" />
+            {searching && <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 animate-spin" />}
+          </div>
+          {err && <div className="text-xs text-red-400">{err}</div>}
+          {!err && query.trim().length >= 2 && !searching && results.length === 0 && <div className="text-xs text-gray-500">No matches.</div>}
+          {results.length > 0 && (
+            <ul className="max-h-72 overflow-y-auto divide-y divide-vault-border/50 border border-vault-border rounded-md">
+              {results.map((row, i) => <li key={i}><RetResultRow row={row} onPick={pick} disabled={disabled} /></li>)}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RetTab({ active, onClick, icon: Icon, label, color }) {
+  return (
+    <button type="button" onClick={onClick}
+      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${active ? `bg-vault-darker/60 ${color}` : 'text-gray-400 hover:text-white'}`}>
+      <Icon size={14} /> {label}
+    </button>
+  )
+}
+
+function RetResultRow({ row, onPick, disabled }) {
+  let Icon, color, title, sub
+  if (row.kind === 'sealed') {
+    Icon = Box; color = 'text-amber-300'
+    title = `${row.product.brand} | ${row.product.name}`
+    sub = `${row.product.category || row.product.type || 'Sealed'} · ${row.product.language || '—'}`
+  } else if (row.kind === 'single') {
+    Icon = Package; color = 'text-blue-300'
+    const num = row.single.card_number ? ` #${row.single.card_number}` : ''
+    title = `${row.single.card_name}${num}`
+    sub = `${row.single.condition || 'raw'}${row.single.set?.name ? ' · ' + row.single.set.name : ''} · TCG ${row.single.tcg_id}`
+  } else if (row.kind === 'slab') {
+    Icon = Diamond; color = 'text-emerald-300'
+    title = row.slab.item_name
+    sub = `${row.slab.grading_company || '?'} · cert #${row.slab.cert_number}`
+  } else return null
+  return (
+    <div className="flex items-center gap-3 px-3 py-2 bg-vault-darker/30 hover:bg-vault-darker/60 transition-colors">
+      <Icon size={16} className={`${color} flex-shrink-0`} />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-white truncate">{title}</div>
+        <div className="text-xs text-gray-500 truncate">{sub}</div>
+      </div>
+      <button type="button" onClick={() => onPick(row)} disabled={disabled}
+        className="flex-shrink-0 inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-vault-gold/20 border border-vault-gold/40 text-vault-gold rounded-md hover:bg-vault-gold/30 disabled:opacity-50">
+        <Undo2 size={12} /> Return
+      </button>
     </div>
   )
 }

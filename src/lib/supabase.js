@@ -2852,9 +2852,11 @@ const insertReturnLog = async (row) => {
   }
 }
 
-export const processReturn = async ({ code, reason = 'return', notes = null, returnedById = null, sourceStreamRoom = null, destinationLocationId = null, destinationName = null } = {}) => {
-  const found = await lookupScannedCode(code)
-  if (found.kind === 'empty') throw new Error('Nothing scanned')
+export const processReturn = async ({ code, found: providedFound = null, reason = 'return', notes = null, returnedById = null, sourceStreamRoom = null, destinationLocationId = null, destinationName = null } = {}) => {
+  // `found` can be passed directly (from the manual name-search, whose result
+  // rows are already {kind, single|slab|product} shaped) — else resolve a code.
+  const found = providedFound || await lookupScannedCode(code)
+  if (!found || found.kind === 'empty') throw new Error('Nothing scanned')
   if (found.kind === 'unknown') throw new Error(`"${found.code}" isn't a known sealed UPC, slab cert#, or single TCG ID`)
   // Destination defaults to Master Inventory, but can be any physical location
   // (e.g. a stream room) so cancelled stream sales go back where they belong.
