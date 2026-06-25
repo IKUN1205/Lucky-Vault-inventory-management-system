@@ -9,6 +9,7 @@ create table if not exists public.returns (
   item_name                text,
   quantity                 integer not null default 1,
   reason                   text,                       -- 'return' | 'cancel' | 'defective' | 'other'
+  source_stream_room       text,                       -- which room/channel CAUSED the return, for stats (Packheads/Rockets/LuckyVaultUS/SlabbiePatty/Whatnot/Shows/Storefront/Online/Other)
   notes                    text,
   returned_to_location_id  uuid references public.locations(id),
   original_sale_channel    text,
@@ -18,5 +19,10 @@ create table if not exists public.returns (
   created_at               timestamptz not null default now()
 );
 
-create index if not exists returns_created_at_idx on public.returns (created_at desc);
-create index if not exists returns_item_ref_idx   on public.returns (item_ref);
+create index if not exists returns_created_at_idx   on public.returns (created_at desc);
+create index if not exists returns_item_ref_idx     on public.returns (item_ref);
+create index if not exists returns_source_room_idx  on public.returns (source_stream_room);
+
+-- If you already created `returns` WITHOUT source_stream_room, run this instead:
+-- alter table public.returns add column if not exists source_stream_room text;
+-- create index if not exists returns_source_room_idx on public.returns (source_stream_room);

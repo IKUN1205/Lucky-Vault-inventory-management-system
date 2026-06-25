@@ -2852,7 +2852,7 @@ const insertReturnLog = async (row) => {
   }
 }
 
-export const processReturn = async ({ code, reason = 'return', notes = null, returnedById = null, destinationLocationId = null, destinationName = null } = {}) => {
+export const processReturn = async ({ code, reason = 'return', notes = null, returnedById = null, sourceStreamRoom = null, destinationLocationId = null, destinationName = null } = {}) => {
   const found = await lookupScannedCode(code)
   if (found.kind === 'empty') throw new Error('Nothing scanned')
   if (found.kind === 'unknown') throw new Error(`"${found.code}" isn't a known sealed UPC, slab cert#, or single TCG ID`)
@@ -2861,7 +2861,7 @@ export const processReturn = async ({ code, reason = 'return', notes = null, ret
   const destId = destinationLocationId || await getMasterLocationId()
   const destName = destinationName || 'Master Inventory'
   const today = new Date().toLocaleDateString('en-CA')
-  const base = { reason, notes, returned_to_location_id: destId, returned_by_id: returnedById, quantity: 1 }
+  const base = { reason, source_stream_room: sourceStreamRoom || null, notes, returned_to_location_id: destId, returned_by_id: returnedById, quantity: 1 }
 
   // ---- sealed: +1 back to Master inventory, sale untouched ----
   if (found.kind === 'sealed') {

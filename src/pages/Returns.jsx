@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
-import { processReturn, fetchRecentReturns, fetchLocations } from '../lib/supabase'
+import { processReturn, fetchRecentReturns } from '../lib/supabase'
 import { Undo2, ScanLine, Loader2, Package, Diamond, Box, AlertTriangle } from 'lucide-react'
 
 // Returns — scan a cancelled/returned item back into Master Inventory and keep
@@ -15,6 +15,22 @@ const REASONS = [
   { value: 'cancel', label: 'Cancelled order' },
   { value: 'defective', label: 'Defective / damaged' },
   { value: 'other', label: 'Other' },
+]
+
+// Which live room / channel CAUSED the return — tagged for "returns by stream
+// room" stats (boss 2026-06-25). Labels mirror the daily usage report's rooms
+// so reporting lines up.
+const SOURCE_ROOMS = [
+  { value: '', label: '— which room / channel? —' },
+  { value: 'Packheads', label: 'TikTok · PackHeads' },
+  { value: 'Rockets', label: 'TikTok · Rockets' },
+  { value: 'LuckyVaultUS', label: 'eBay · LuckyVaultUS' },
+  { value: 'SlabbiePatty', label: 'eBay · SlabbiePatty' },
+  { value: 'Whatnot', label: 'Whatnot' },
+  { value: 'Shows', label: 'Card Show' },
+  { value: 'Storefront', label: 'Storefront' },
+  { value: 'Online', label: 'Online' },
+  { value: 'Other', label: 'Other' },
 ]
 
 const KIND_META = {
@@ -36,21 +52,10 @@ export default function Returns() {
   const [session, setSession] = useState([])        // returns processed this session (newest first)
   const [recent, setRecent] = useState([])
   const [migrated, setMigrated] = useState(true)    // false once we learn the returns table is missing
-  const [locations, setLocations] = useState([])    // physical locations (Master + stream rooms + …)
-  const [destId, setDestId] = useState('')          // where returns go (default Master Inventory)
+  const [sourceRoom, setSourceRoom] = useState('')  // which room/channel caused the return (for stats)
   const inputRef = useRef(null)
 
-  useEffect(() => {
-    loadRecent()
-    fetchLocations('Physical')
-      .then(locs => {
-        setLocations(locs || [])
-        const master = (locs || []).find(l => l.name === 'Master Inventory')
-        setDestId(master?.id || locs?.[0]?.id || '')
-      })
-      .catch(e => console.warn('[Returns] locations failed:', e.message))
-    inputRef.current?.focus()
-  }, [])
+  useEffect(() => { loadRecent(); inputRef.current?.focus() }, [])
 
   const loadRecent = async () => {
     try { setRecent(await fetchRecentReturns(50)) }
@@ -62,10 +67,9 @@ export default function Returns() {
     if (!code || processing) return
     setProcessing(true)
     try {
-      const dest = locations.find(l => l.id === destId)
       const res = await processReturn({
         code, reason, notes: notes.trim() || null, returnedById: user?.id || null,
-        destinationLocationId: destId || null, destinationName: dest?.name || null,
+        sourceStreamRoom: sourceRoom || null,
       })
       if (res.logged === false) setMigrated(false)
       const meta = KIND_META[res.kind]
@@ -92,9 +96,9 @@ export default function Returns() {
           <Undo2 className="text-vault-gold" /> Returns
         </h1>
         <p className="text-gray-400 mt-1">
-          Scan <span className="text-white">or type</span> a cancelled / returned item to put it back into the
-          <span className="text-white"> chosen location</span> (Master Inventory by default, or a stream room). The
-          original sale is kept — this just returns the goods and logs it.
+          Scan <span className="text-white">or type</span> a cancelled / returned item to put it back into
+          <span className="text-white"> Master Inventory</span> — and tag which stream room caused it, for stats. The
+          original sale is kept; this just returns the goods and logs the return.
         </p>
       </div>
 
@@ -112,9 +116,9 @@ export default function Returns() {
       <div className="card mb-6">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">Return to</label>
-            <select value={destId} onChange={(e) => setDestId(e.target.value)}>
-              {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+            <label className="block text-sm font-medium text-gray-300 mb-2">Stream room (caused it)</label>
+            <select value={sourceRoom} onChange={(e) => setSourceRoom(e.target.value)}>
+              {SOURCE_ROOMS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
           </div>
           <div>
@@ -149,8 +153,8 @@ export default function Returns() {
           </button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          Item type auto-detected: sealed → +1 to the location · single → added there (sale kept) ·
-          slab → flipped back there (unique item, so its sale is un-marked).
+          Item type auto-detected: sealed → +1 to Master · single → added to Master (sale kept) ·
+          slab → flipped back to Master (unique item, so its sale is un-marked).
         </p>
       </div>
 
@@ -202,6 +206,7 @@ export default function Returns() {
                   <th className="px-3 py-2 text-left">When</th>
                   <th className="px-3 py-2 text-left">Item</th>
                   <th className="px-3 py-2 text-left">Reason</th>
+                  <th className="px-3 py-2 text-left">Room</th>
                   <th className="px-3 py-2 text-right">Was sold</th>
                   <th className="px-3 py-2 text-left">By</th>
                 </tr>
@@ -225,6 +230,7 @@ export default function Returns() {
                       <td className="px-3 py-2 text-gray-300">
                         {r.reason}{r.notes ? <span className="text-gray-500"> · {r.notes}</span> : ''}
                       </td>
+                      <td className="px-3 py-2 text-gray-300">{r.source_stream_room || '—'}</td>
                       <td className="px-3 py-2 text-right text-gray-400">
                         {r.original_sale_price_usd != null ? usd(r.original_sale_price_usd) : '—'}
                         {r.original_sale_channel ? <span className="text-[11px] text-gray-600"> · {r.original_sale_channel}</span> : ''}
