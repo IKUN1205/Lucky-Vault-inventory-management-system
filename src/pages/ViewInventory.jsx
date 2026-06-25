@@ -413,6 +413,7 @@ export default function ViewInventory() {
               <option value="">All Brands</option>
               <option value="Pokemon">Pokemon</option>
               <option value="One Piece">One Piece</option>
+              <option value="Yu-Gi-Oh">Yu-Gi-Oh</option>
               <option value="Other">Other</option>
             </select>
           </div>

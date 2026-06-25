@@ -343,6 +343,7 @@ export default function AddProduct() {
               <select name="brand" value={form.brand} onChange={handleChange} required>
                 <option value="Pokemon">Pokemon</option>
                 <option value="One Piece">One Piece</option>
+                <option value="Yu-Gi-Oh">Yu-Gi-Oh</option>
                 <option value="Other">Other</option>
               </select>
             </div>
@@ -517,6 +518,7 @@ export default function AddProduct() {
                     >
                       <option value="Pokemon">Pokemon</option>
                       <option value="One Piece">One Piece</option>
+                      <option value="Yu-Gi-Oh">Yu-Gi-Oh</option>
                       <option value="Other">Other</option>
                     </select>
                     
