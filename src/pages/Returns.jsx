@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
 import { processReturn, fetchRecentReturns } from '../lib/supabase'
-import { Undo2, ScanLine, Loader2, Package, Diamond, Box, AlertTriangle } from 'lucide-react'
+import { Undo2, ScanLine, Loader2, Package, Diamond, Box, AlertTriangle, BarChart3 } from 'lucide-react'
 
 // Returns — scan a cancelled/returned item back into Master Inventory and keep
 // a light record (boss 2026-06-25). Policy: the ORIGINAL sale is NOT touched —
@@ -58,9 +58,23 @@ export default function Returns() {
   useEffect(() => { loadRecent(); inputRef.current?.focus() }, [])
 
   const loadRecent = async () => {
-    try { setRecent(await fetchRecentReturns(50)) }
+    try { setRecent(await fetchRecentReturns(500)) }
     catch (e) { console.warn('[Returns] loadRecent failed:', e.message) }
   }
+
+  // Light in-page stats: returns grouped by the stream room that caused them
+  // (count + total returned value). Computed over the loaded history.
+  const byRoom = useMemo(() => {
+    const m = new Map()
+    for (const r of recent) {
+      const key = r.source_stream_room || 'Untagged'
+      const e = m.get(key) || { room: key, count: 0, value: 0 }
+      e.count += 1
+      e.value += Number(r.original_sale_price_usd) || 0
+      m.set(key, e)
+    }
+    return [...m.values()].sort((a, b) => b.count - a.count)
+  }, [recent])
 
   const submitScan = async () => {
     const code = scan.trim()
@@ -189,6 +203,27 @@ export default function Returns() {
                 </div>
               )
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Light stats: returns by stream room */}
+      {recent.length > 0 && (
+        <div className="card mb-6">
+          <h2 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
+            <BarChart3 size={18} className="text-vault-gold" /> Returns by room
+            <span className="text-xs text-gray-500 font-normal">({recent.length} logged)</span>
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {byRoom.map(r => (
+              <div key={r.room} className="px-3 py-2 bg-vault-darker/60 rounded-lg border border-vault-border">
+                <div className="text-sm text-white">{r.room}</div>
+                <div className="text-xs text-gray-400">
+                  <span className="text-vault-gold font-semibold">{r.count}</span> return{r.count === 1 ? '' : 's'}
+                  {r.value > 0 && <span> · {usd(r.value)}</span>}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
