@@ -1,0 +1,15 @@
+-- Fix (boss 2026-06-25): selling a 2nd SINGLE on the same platform/channel/day
+-- failed with "duplicate key value violates unique constraint
+-- idx_platform_sales_unique_session".
+--
+-- idx_platform_sales_unique_session is a LEGACY partial unique index —
+-- effectively UNIQUE(platform, channel, date) WHERE single_id IS NOT NULL,
+-- from the old "one aggregate row per stream session" model. The current
+-- model writes ONE platform_sales row PER ITEM SOLD (kind single/slab/sealed),
+-- so multiple single-sale rows per session are expected and required. Slabs
+-- and sealed already escaped it (single_id NULL); only singles were blocked.
+--
+-- Nothing in the app upserts on this index, so dropping it is safe. It is a
+-- partial unique INDEX (partial uniqueness can't be a table constraint), so
+-- DROP INDEX is the correct form.
+drop index if exists public.idx_platform_sales_unique_session;
