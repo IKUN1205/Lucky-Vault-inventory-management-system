@@ -2832,6 +2832,28 @@ const latestSoldSingle = async (tcgId) => {
   return data?.[0] || null
 }
 
+// True when a card_name is the synthetic "(unknown — TCG …)" placeholder that
+// physical-count re-adds / returns mint when they can't find a real identity.
+const isPlaceholderName = (n) => !n || /^\(unknown/i.test(n.trim())
+
+// Best REAL identity for a tcg_id across ALL rows — including soft-deleted ones.
+// The original card often lives in a deleted row (it was sold/moved, the row
+// soft-deleted), so resolvers that filter `deleted=false` miss it and fall back
+// to "(unknown — TCG x)". Prefer a row with a real card_name (newest wins); only
+// return null when no row for the tcg_id exists at all.
+export const fetchBestSingleIdentity = async (tcgId) => {
+  if (!tcgId) return null
+  const { data } = await supabase
+    .from('singles')
+    .select('card_name, card_number, set_id, brand, language, variant, form, condition, grading_company, grade, cert_number, current_market_price_usd, date_acquired')
+    .eq('tcg_id', tcgId)
+  if (!data?.length) return null
+  const real = data.filter(r => !isPlaceholderName(r.card_name))
+  const pool = real.length ? real : data
+  pool.sort((a, b) => String(b.date_acquired || '').localeCompare(String(a.date_acquired || '')))
+  return pool[0] || null
+}
+
 // Insert a returns-log row. The log is SECONDARY to putting goods back, so
 // this NEVER throws — the inventory action has already happened by the time
 // we get here, and we must not turn a successful return into a hard error.
@@ -2879,8 +2901,12 @@ export const processReturn = async ({ code, found: providedFound = null, reason 
   if (found.kind === 'single') {
     const s = found.single
     const sold = await latestSoldSingle(s.tcg_id)
-    const tpl = sold || s
-    const name = [s.card_name, s.card_number].filter(Boolean).join(' ')
+    // Identity template: prefer a REAL name found anywhere (incl. soft-deleted
+    // rows) over the scanned/sold row, which may itself be an "(unknown)"
+    // placeholder. Falls back to the sold row, then the scanned row.
+    const best = await fetchBestSingleIdentity(s.tcg_id)
+    const tpl = best || sold || s
+    const name = [tpl.card_name, tpl.card_number].filter(Boolean).join(' ') || `(unknown — TCG ${s.tcg_id})`
     // singles has a PARTIAL unique index on tcg_id (WHERE deleted=false AND
     // status<>'sold') → at most ONE non-sold row per tcg_id across ALL
     // locations. So if a live (in_inventory/listed) row exists ANYWHERE, bump

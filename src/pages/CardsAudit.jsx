@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { fetchLocations, supabase, reportSlabLocationToSheet } from '../lib/supabase'
+import { fetchLocations, supabase, reportSlabLocationToSheet, fetchBestSingleIdentity } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import {
@@ -548,14 +548,11 @@ export default function CardsAudit() {
     if (kind !== 'single') {
       throw new Error(`Slab ${extra.id} exists only as SOLD in the app. If it's physically here, the sale record may be wrong — check its history in Cards Inventory before re-adding.`)
     }
-    // Copy identity from any prior row (sold ones count — same card).
-    const { data: prior } = await supabase
-      .from('singles')
-      .select('card_name, card_number, set_id, brand, language, variant, form, condition')
-      .eq('tcg_id', extra.id)
-      .eq('deleted', false)
-      .limit(1)
-    const tpl = prior?.[0] || null
+    // Copy identity from the best REAL prior row — including soft-deleted ones,
+    // since the original card often lives in a deleted row (sold/moved → row
+    // soft-deleted). Filtering deleted=false here is exactly what minted the
+    // "(unknown — TCG x)" placeholders even though the real name was on file.
+    const tpl = await fetchBestSingleIdentity(extra.id)
     // card_number is NOT NULL in the schema — '' when unknown.
     // set_id falls back to the sheet-sync's "Unknown Set" bucket so a
     // never-seen card can still be created (boss fills details later).
