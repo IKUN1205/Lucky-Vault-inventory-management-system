@@ -2805,6 +2805,155 @@ export const lookupScannedCode = async (code) => {
   return { kind: 'unknown', code: trimmed }
 }
 
+// ====================== Returns ======================
+// Scan a returned/cancelled item back into Master Inventory + log it. Policy
+// (boss 2026-06-25): the ORIGINAL sale record is NOT touched — we just put the
+// goods back and keep a returns-log row. The one unavoidable exception is
+// slabs: a slab is a unique item whose sold row is its only copy, so returning
+// one flips that row back to in_inventory (there's nothing else to restore).
+
+export const getMasterLocationId = async () => {
+  const { data, error } = await supabase
+    .from('locations').select('id').eq('name', MASTER_NAME).maybeSingle()
+  if (error) throw error
+  if (!data?.id) throw new Error(`Location "${MASTER_NAME}" not found`)
+  return data.id
+}
+
+// Most recent SOLD single row for a tcg_id — copies identity + shows the
+// original sale on the return log. Null when none.
+const latestSoldSingle = async (tcgId) => {
+  const { data } = await supabase
+    .from('singles')
+    .select('card_name, card_number, set_id, brand, language, variant, form, condition, grading_company, grade, cert_number, current_market_price_usd, sale_channel, sale_date, sale_price_usd')
+    .eq('tcg_id', tcgId).eq('status', 'sold').eq('deleted', false)
+    .order('sale_date', { ascending: false, nullsFirst: false })
+    .limit(1)
+  return data?.[0] || null
+}
+
+// Insert a returns-log row. The log is SECONDARY to putting goods back, so
+// this NEVER throws — the inventory action has already happened by the time
+// we get here, and we must not turn a successful return into a hard error.
+// Returns { logged:false } (with a hint when the table simply isn't migrated)
+// so the page can surface a banner instead.
+const insertReturnLog = async (row) => {
+  try {
+    const { error } = await supabase.from('returns').insert(row)
+    if (error) {
+      const missing = /returns.*does not exist|could not find the table|schema cache/i.test(error.message || '')
+      return { logged: false, note: missing
+        ? 'returns table not migrated — run scripts/add_returns_table.sql'
+        : `return log failed: ${error.message}` }
+    }
+    return { logged: true }
+  } catch (e) {
+    return { logged: false, note: `return log failed: ${e.message}` }
+  }
+}
+
+export const processReturn = async ({ code, reason = 'return', notes = null, returnedById = null } = {}) => {
+  const found = await lookupScannedCode(code)
+  if (found.kind === 'empty') throw new Error('Nothing scanned')
+  if (found.kind === 'unknown') throw new Error(`"${found.code}" isn't a known sealed UPC, slab cert#, or single TCG ID`)
+  const masterId = await getMasterLocationId()
+  const today = new Date().toLocaleDateString('en-CA')
+  const base = { reason, notes, returned_to_location_id: masterId, returned_by_id: returnedById, quantity: 1 }
+
+  // ---- sealed: +1 back to Master inventory, sale untouched ----
+  if (found.kind === 'sealed') {
+    const p = found.product
+    await updateInventory(p.id, masterId, 1)
+    const name = [p.brand, p.name].filter(Boolean).join(' ')
+    const log = await insertReturnLog({ ...base, kind: 'sealed', item_ref: p.id, item_name: name })
+    return { kind: 'sealed', name, action: '+1 → Master Inventory', logged: log.logged, note: log.note }
+  }
+
+  // ---- single: add back to Master (increment or insert), sale untouched ----
+  if (found.kind === 'single') {
+    const s = found.single
+    const sold = await latestSoldSingle(s.tcg_id)
+    const tpl = sold || s
+    const name = [s.card_name, s.card_number].filter(Boolean).join(' ')
+    // singles has a PARTIAL unique index on tcg_id (WHERE deleted=false AND
+    // status<>'sold') → at most ONE non-sold row per tcg_id across ALL
+    // locations. So if a live (in_inventory/listed) row exists ANYWHERE, bump
+    // it and bring it home to Master; only INSERT when the tcg_id has no live
+    // row at all. (Inserting blindly 409s when a live row exists elsewhere —
+    // e.g. the in-stock half of a partial sale at a stream room.)
+    const { data: liveRows } = await supabase
+      .from('singles').select('id, quantity')
+      .eq('tcg_id', s.tcg_id).eq('deleted', false).neq('status', 'sold').limit(1)
+    const live = liveRows?.[0] || null
+    if (live) {
+      const { error } = await supabase.from('singles')
+        .update({ quantity: (live.quantity || 0) + 1, location_id: masterId, status: 'in_inventory' })
+        .eq('id', live.id)
+      if (error) throw error
+    } else {
+      let setId = tpl.set_id ?? null
+      if (!setId) {
+        const { data: fb } = await supabase.from('card_sets').select('id')
+          .eq('name', 'Unknown Set (sheet import)').maybeSingle()
+        setId = fb?.id ?? null
+      }
+      const { error } = await supabase.from('singles').insert({
+        card_name: tpl.card_name || `(unknown — TCG ${s.tcg_id})`,
+        card_number: tpl.card_number || '',
+        set_id: setId, brand: tpl.brand || 'Pokemon', language: tpl.language || 'EN',
+        variant: tpl.variant ?? null, form: tpl.form || 'raw', condition: tpl.condition || 'NM',
+        grading_company: tpl.grading_company ?? null, grade: tpl.grade ?? null,
+        cert_number: tpl.cert_number ?? null, tcg_id: s.tcg_id,
+        current_market_price_usd: tpl.current_market_price_usd ?? null,
+        quantity: 1, status: 'in_inventory', location_id: masterId, source_type: 'other',
+        date_acquired: today, deleted: false,
+        notes: `Returned to Master via Returns ${today} (original sale kept)`,
+      })
+      if (error) throw error
+    }
+    const log = await insertReturnLog({ ...base, kind: 'single', item_ref: s.tcg_id, item_name: name,
+      original_sale_channel: sold?.sale_channel || null, original_sale_date: sold?.sale_date || null,
+      original_sale_price_usd: sold?.sale_price_usd ?? null })
+    return { kind: 'single', name, action: 'added → Master Inventory', logged: log.logged, note: log.note,
+      original: sold ? { channel: sold.sale_channel, date: sold.sale_date, price: sold.sale_price_usd } : null }
+  }
+
+  // ---- slab: unique item → flip its (sold) row back to in_inventory @ Master ----
+  if (found.kind === 'slab') {
+    const sl = found.slab
+    const wasSold = sl.status === 'sold'
+    const { error } = await supabase.from('slabs').update({
+      status: 'in_inventory', location_id: masterId,
+      sale_price_usd: null, sale_channel: null, sale_date: null, sale_fees_usd: null,
+      sold_at: null, sold_by_id: null, buyer_name: null,
+    }).eq('id', sl.id)
+    if (error) throw error
+    const log = await insertReturnLog({ ...base, kind: 'slab', item_ref: sl.cert_number, item_name: sl.item_name,
+      original_sale_channel: sl.sale_channel || null, original_sale_date: sl.sale_date || null,
+      original_sale_price_usd: sl.sale_price_usd ?? null })
+    return { kind: 'slab', name: sl.item_name, logged: log.logged, note: log.note,
+      action: wasSold ? 'un-sold → Master Inventory (slab is a unique item)' : 'moved → Master Inventory',
+      // Slab sold-status + location are sheet-owned; the DB flip doesn't clear
+      // the sheet's strikethrough, so flag it for a quick manual fix.
+      warn: wasSold ? 'Sheet still shows this slab SOLD — un-strike its row + clear Status + set its Location, or the hourly audit will flag it.' : null,
+      original: wasSold ? { channel: sl.sale_channel, date: sl.sale_date, price: sl.sale_price_usd } : null }
+  }
+}
+
+// Recent returns for the Returns page log.
+export const fetchRecentReturns = async (limit = 50) => {
+  const { data, error } = await supabase
+    .from('returns')
+    .select('*, returned_by:users(name), location:locations(name)')
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) {
+    if (/returns.*does not exist|could not find the table|schema cache/i.test(error.message || '')) return []
+    throw error
+  }
+  return data || []
+}
+
 // ----- Move singles/slabs between locations -----
 //
 // Sealed-product moves stay in the existing createMovement + updateInventory

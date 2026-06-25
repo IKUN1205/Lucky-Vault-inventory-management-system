@@ -45,6 +45,7 @@ const PAGE_SECTIONS = [
     { path: '/platform-sales', label: 'Platform Sales' },
     { path: '/online-orders', label: 'Online Orders' },
     { path: '/storefront-sale', label: 'Storefront Sales' },
+    { path: '/returns', label: 'Returns' },
   ]},
   { title: 'Reports', items: [
     { path: '/reports', label: 'Reports' },

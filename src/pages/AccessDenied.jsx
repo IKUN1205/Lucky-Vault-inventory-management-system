@@ -21,6 +21,7 @@ const PATH_LABELS = {
   '/platform-sales': 'Platform Sales',
   '/online-orders': 'Online Orders',
   '/storefront-sale': 'Storefront Sales',
+  '/returns': 'Returns',
   '/reports': 'Reports',
   '/turnover': 'Turnover',
   '/executive-report': 'Executive Report',
