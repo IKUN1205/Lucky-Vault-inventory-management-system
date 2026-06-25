@@ -258,6 +258,10 @@ export default function StorefrontSale() {
   // that's the net cash; for sale, the full gross.
   const amountDueFromCustomer = transactionType === 'trade' ? Math.max(0, netCash) : cartGross
 
+  // Selected payment method's display name — so the net line says how the
+  // money moves (e.g. "Net · Zelle") instead of always saying "cash".
+  const selectedPaymentName = paymentMethods.find(p => p.id === paymentMethodId)?.name || null
+
   const amount2Num = Number(splitAmount2) || 0
   const amount1Num = Math.max(0, +(amountDueFromCustomer - amount2Num).toFixed(2))
   const splitSum = amount1Num + amount2Num
@@ -1214,13 +1218,17 @@ export default function StorefrontSale() {
                     </div>
                   </div>
                   <div className="flex justify-between items-center pt-2 border-t border-vault-border/50">
-                    <span className="text-sm text-gray-300">Net cash</span>
+                    <span className="text-sm text-gray-300">
+                      Net {selectedPaymentName
+                        ? <span className="text-gray-400">· {selectedPaymentName}</span>
+                        : 'cash'}
+                    </span>
                     <span className={`text-xl font-bold ${
                       netCash > 0 ? 'text-emerald-300' : netCash < 0 ? 'text-red-300' : 'text-gray-300'
                     }`}>
                       {fmtUsd(netCash)}
-                      {netCash > 0 && <span className="text-xs text-gray-400 ml-2">(customer pays us)</span>}
-                      {netCash < 0 && <span className="text-xs text-gray-400 ml-2">(we pay customer)</span>}
+                      {netCash > 0 && <span className="text-xs text-gray-400 ml-2">(customer pays us{selectedPaymentName ? ` via ${selectedPaymentName}` : ''})</span>}
+                      {netCash < 0 && <span className="text-xs text-gray-400 ml-2">(we pay customer{selectedPaymentName ? ` via ${selectedPaymentName}` : ''})</span>}
                       {netCash === 0 && <span className="text-xs text-gray-400 ml-2">(even trade)</span>}
                     </span>
                   </div>
