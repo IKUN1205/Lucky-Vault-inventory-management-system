@@ -4508,7 +4508,14 @@ const _sellSealedLinePlatform = async ({
     .single()
   if (error) throw error
 
-  await updateInventory(product.id, streamRoomId, -quantity)
+  try {
+    await updateInventory(product.id, streamRoomId, -quantity)
+  } catch (invErr) {
+    // Deduction failed after the sale row was written — remove the orphan
+    // platform_sales row so we don't record a sale that never left stock.
+    try { await supabase.from('platform_sales').delete().eq('id', inserted.id) } catch (rb) { console.error('[sell-sealed-platform] rollback failed:', rb) }
+    throw invErr
+  }
   return { sale: inserted }
 }
 
@@ -4557,7 +4564,19 @@ const _sellSlabLinePlatform = async ({
     our_price_usd: ourPrice ?? null,
     transaction_id: transactionId,
   })
-  if (error) throw error
+  if (error) {
+    // Roll back the sold-flip so a failed platform_sales insert can't leave
+    // the slab marked sold with no sale record (orphan).
+    try {
+      await supabase.from('slabs').update({
+        status: fresh.status,
+        sale_price_usd: null, sale_channel: null, sale_date: null, sale_fees_usd: null,
+        sold_at: null, sold_by_id: null, buyer_name: null,
+        transaction_id: null, transaction_type: null,
+      }).eq('id', slab.id)
+    } catch (rb) { console.error('[sell-slab-platform] rollback failed:', rb) }
+    throw error
+  }
   return { slab: updatedSlab }
 }
 
@@ -4601,9 +4620,15 @@ const _sellSingleLinePlatform = async ({
     transaction_type: 'sale',
   }
 
-  let soldRow
+  let soldRow, rollback
   if (!isFungibleRaw || sellQty === sourceQty) {
     soldRow = await markSingleAsSold(single.id, saleData)
+    rollback = () => supabase.from('singles').update({
+      status: 'in_inventory',
+      sale_price_usd: null, sale_price_native: null, sale_fees_usd: null,
+      sale_channel: null, sale_date: null, sold_by_id: null, buyer_name: null,
+      sale_notes: null, payment_method_id: null, transaction_id: null, transaction_type: null,
+    }).eq('id', single.id)
   } else {
     // Fungible split — decrement source qty + insert a sold clone.
     const remainingQty = sourceQty - sellQty
@@ -4633,6 +4658,10 @@ const _sellSingleLinePlatform = async ({
       .from('singles').insert(clone).select().single()
     if (insErr) throw insErr
     soldRow = inserted
+    rollback = async () => {
+      await supabase.from('singles').delete().eq('id', soldRow.id)             // remove the just-created clone
+      await supabase.from('singles').update({ quantity: sourceQty }).eq('id', single.id)  // restore source qty
+    }
   }
 
   const { error } = await supabase.from('platform_sales').insert({
@@ -4651,6 +4680,11 @@ const _sellSingleLinePlatform = async ({
     our_price_usd: ourPrice ?? null,
     transaction_id: transactionId,
   })
-  if (error) throw error
+  if (error) {
+    // Undo the inventory mutation so a failed platform_sales insert can't
+    // leave the single marked sold with no sale record (orphan).
+    try { await rollback() } catch (rb) { console.error('[sell-single-platform] rollback failed:', rb) }
+    throw error
+  }
   return { single: soldRow }
 }
