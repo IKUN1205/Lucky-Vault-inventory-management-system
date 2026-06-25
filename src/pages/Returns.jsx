@@ -182,12 +182,6 @@ export default function Returns() {
         </label>
         <div className="flex gap-2">
           <input
-            type="number" min="1" value={qty}
-            onChange={(e) => setQty(e.target.value)}
-            title="Quantity returned (sealed / single; slab is always 1)"
-            className="w-20 text-center font-mono"
-          />
-          <input
             ref={inputRef}
             type="text"
             value={scan}
@@ -197,6 +191,15 @@ export default function Returns() {
             className="flex-1 font-mono"
             autoFocus
           />
+          <div className="flex items-center gap-1.5 px-2 bg-vault-darker border border-vault-border rounded-md">
+            <span className="text-xs text-gray-500">Qty</span>
+            <input
+              type="number" min="1" value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              title="Quantity returned (sealed / single; slab is always 1)"
+              className="w-14 text-center font-mono bg-transparent border-0 focus:ring-0 px-0"
+            />
+          </div>
           <button type="button" onClick={submitScan} disabled={processing || !scan.trim()}
             className="btn btn-primary px-5">
             {processing ? <Loader2 size={18} className="animate-spin" /> : `Return${Number(qty) > 1 ? ` ×${qty}` : ''}`}
@@ -209,7 +212,7 @@ export default function Returns() {
       </div>
 
       {/* Manual entry — search by name when the code box can't find it */}
-      <ReturnsManualEntry onPick={(found) => runReturn({ found })} disabled={processing} />
+      <ReturnsManualEntry onPick={(found) => runReturn({ found })} disabled={processing} qty={qty} setQty={setQty} />
 
       {/* This session */}
       {session.length > 0 && (
@@ -326,7 +329,7 @@ export default function Returns() {
 // search sealed / single / slab by name and click Return on the match. The
 // search rows are already {kind, single|slab|product}-shaped, so onPick hands
 // the row straight to processReturn as `found`.
-function ReturnsManualEntry({ onPick, disabled }) {
+function ReturnsManualEntry({ onPick, disabled, qty, setQty }) {
   const [expanded, setExpanded] = useState(false)
   const [tab, setTab] = useState('single')
   const [query, setQuery] = useState('')
@@ -376,18 +379,27 @@ function ReturnsManualEntry({ onPick, disabled }) {
             <RetTab active={tab === 'single'} onClick={() => setTab('single')} icon={Package} label="Single" color="text-blue-300" />
             <RetTab active={tab === 'slab'} onClick={() => setTab('slab')} icon={Diamond} label="Slab" color="text-emerald-300" />
           </div>
-          <div className="relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
-            <input type="text" value={query} onChange={(e) => setQuery(e.target.value)} disabled={disabled}
-              placeholder={placeholder} autoComplete="off" spellCheck={false}
-              className="w-full pl-9 pr-3 py-2 bg-vault-darker border border-vault-border rounded-md text-white text-sm focus:outline-none focus:border-vault-gold disabled:opacity-50" />
-            {searching && <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 animate-spin" />}
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+              <input type="text" value={query} onChange={(e) => setQuery(e.target.value)} disabled={disabled}
+                placeholder={placeholder} autoComplete="off" spellCheck={false}
+                className="w-full pl-9 pr-3 py-2 bg-vault-darker border border-vault-border rounded-md text-white text-sm focus:outline-none focus:border-vault-gold disabled:opacity-50" />
+              {searching && <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 animate-spin" />}
+            </div>
+            <div className={`flex items-center gap-1.5 px-2 bg-vault-darker border border-vault-border rounded-md ${tab === 'slab' ? 'opacity-40' : ''}`}>
+              <span className="text-xs text-gray-500">Qty</span>
+              <input type="number" min="1" value={tab === 'slab' ? 1 : qty}
+                onChange={(e) => setQty(e.target.value)} disabled={disabled || tab === 'slab'}
+                title="Quantity (sealed / single; slab is always 1)"
+                className="w-14 text-center font-mono bg-transparent border-0 focus:ring-0 px-0 text-white text-sm disabled:opacity-60" />
+            </div>
           </div>
           {err && <div className="text-xs text-red-400">{err}</div>}
           {!err && query.trim().length >= 2 && !searching && results.length === 0 && <div className="text-xs text-gray-500">No matches.</div>}
           {results.length > 0 && (
             <ul className="max-h-72 overflow-y-auto divide-y divide-vault-border/50 border border-vault-border rounded-md">
-              {results.map((row, i) => <li key={i}><RetResultRow row={row} onPick={pick} disabled={disabled} /></li>)}
+              {results.map((row, i) => <li key={i}><RetResultRow row={row} onPick={pick} disabled={disabled} qty={qty} /></li>)}
             </ul>
           )}
         </div>
@@ -405,8 +417,9 @@ function RetTab({ active, onClick, icon: Icon, label, color }) {
   )
 }
 
-function RetResultRow({ row, onPick, disabled }) {
+function RetResultRow({ row, onPick, disabled, qty }) {
   let Icon, color, title, sub
+  const showQty = row.kind !== 'slab' && Number(qty) > 1   // slab is always 1
   if (row.kind === 'sealed') {
     Icon = Box; color = 'text-amber-300'
     title = `${row.product.brand} | ${row.product.name}`
@@ -430,7 +443,7 @@ function RetResultRow({ row, onPick, disabled }) {
       </div>
       <button type="button" onClick={() => onPick(row)} disabled={disabled}
         className="flex-shrink-0 inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-vault-gold/20 border border-vault-gold/40 text-vault-gold rounded-md hover:bg-vault-gold/30 disabled:opacity-50">
-        <Undo2 size={12} /> Return
+        <Undo2 size={12} /> Return{showQty ? ` ×${qty}` : ''}
       </button>
     </div>
   )
