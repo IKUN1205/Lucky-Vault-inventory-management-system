@@ -53,6 +53,7 @@ export default function Returns() {
   const [recent, setRecent] = useState([])
   const [migrated, setMigrated] = useState(true)    // false once we learn the returns table is missing
   const [sourceRoom, setSourceRoom] = useState('')  // which room/channel caused the return (for stats)
+  const [qty, setQty] = useState(1)                 // how many came back (sealed/single; slab is always 1)
   const [locations, setLocations] = useState([])    // physical locations (destination options)
   const [destId, setDestId] = useState('')          // where the goods go back (default Master Inventory)
   const inputRef = useRef(null)
@@ -97,13 +98,14 @@ export default function Returns() {
       const dest = locations.find(l => l.id === destId)
       const res = await processReturn({
         code, found, reason, notes: notes.trim() || null, returnedById: user?.id || null,
-        sourceStreamRoom: sourceRoom || null,
+        sourceStreamRoom: sourceRoom || null, quantity: Number(qty) || 1,
         destinationLocationId: destId || null, destinationName: dest?.name || null,
       })
       if (res.logged === false) setMigrated(false)
       const meta = KIND_META[res.kind]
       setSession(prev => [{ ...res, code: code || res.name, at: new Date().toLocaleTimeString() }, ...prev])
       addToast(`${meta?.label || res.kind}: ${res.name} — ${res.action}`, 'success')
+      setQty(1)   // reset to 1 so the next return doesn't inherit a big qty
       loadRecent()
     } catch (e) {
       addToast(e.message || 'Return failed', 'error')
@@ -176,8 +178,15 @@ export default function Returns() {
         </div>
         <label className="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
           <ScanLine size={16} className="text-vault-gold" /> Scan or type returned item (sealed UPC · slab cert# · single TCG ID)
+          <span className="text-xs text-gray-500 font-normal">— set Qty for multiples (sealed / single)</span>
         </label>
         <div className="flex gap-2">
+          <input
+            type="number" min="1" value={qty}
+            onChange={(e) => setQty(e.target.value)}
+            title="Quantity returned (sealed / single; slab is always 1)"
+            className="w-20 text-center font-mono"
+          />
           <input
             ref={inputRef}
             type="text"
@@ -190,7 +199,7 @@ export default function Returns() {
           />
           <button type="button" onClick={submitScan} disabled={processing || !scan.trim()}
             className="btn btn-primary px-5">
-            {processing ? <Loader2 size={18} className="animate-spin" /> : 'Return'}
+            {processing ? <Loader2 size={18} className="animate-spin" /> : `Return${Number(qty) > 1 ? ` ×${qty}` : ''}`}
           </button>
         </div>
         <p className="text-xs text-gray-500 mt-2">

@@ -2852,7 +2852,7 @@ const insertReturnLog = async (row) => {
   }
 }
 
-export const processReturn = async ({ code, found: providedFound = null, reason = 'return', notes = null, returnedById = null, sourceStreamRoom = null, destinationLocationId = null, destinationName = null } = {}) => {
+export const processReturn = async ({ code, found: providedFound = null, reason = 'return', notes = null, returnedById = null, sourceStreamRoom = null, destinationLocationId = null, destinationName = null, quantity = 1 } = {}) => {
   // `found` can be passed directly (from the manual name-search, whose result
   // rows are already {kind, single|slab|product} shaped) — else resolve a code.
   const found = providedFound || await lookupScannedCode(code)
@@ -2863,15 +2863,16 @@ export const processReturn = async ({ code, found: providedFound = null, reason 
   const destId = destinationLocationId || await getMasterLocationId()
   const destName = destinationName || 'Master Inventory'
   const today = new Date().toLocaleDateString('en-CA')
-  const base = { reason, source_stream_room: sourceStreamRoom || null, notes, returned_to_location_id: destId, returned_by_id: returnedById, quantity: 1 }
+  const qty = Math.max(1, Math.floor(Number(quantity) || 1))   // sealed/single can return >1; slab is always 1
+  const base = { reason, source_stream_room: sourceStreamRoom || null, notes, returned_to_location_id: destId, returned_by_id: returnedById, quantity: qty }
 
   // ---- sealed: +1 back to Master inventory, sale untouched ----
   if (found.kind === 'sealed') {
     const p = found.product
-    await updateInventory(p.id, destId, 1)
+    await updateInventory(p.id, destId, qty)
     const name = [p.brand, p.name].filter(Boolean).join(' ')
     const log = await insertReturnLog({ ...base, kind: 'sealed', item_ref: p.id, item_name: name })
-    return { kind: 'sealed', name, action: `+1 → ${destName}`, logged: log.logged, note: log.note }
+    return { kind: 'sealed', name, action: `+${qty} → ${destName}`, logged: log.logged, note: log.note }
   }
 
   // ---- single: add back to Master (increment or insert), sale untouched ----
@@ -2892,7 +2893,7 @@ export const processReturn = async ({ code, found: providedFound = null, reason 
     const live = liveRows?.[0] || null
     if (live) {
       const { error } = await supabase.from('singles')
-        .update({ quantity: (live.quantity || 0) + 1, location_id: destId, status: 'in_inventory' })
+        .update({ quantity: (live.quantity || 0) + qty, location_id: destId, status: 'in_inventory' })
         .eq('id', live.id)
       if (error) throw error
     } else {
@@ -2910,7 +2911,7 @@ export const processReturn = async ({ code, found: providedFound = null, reason 
         grading_company: tpl.grading_company ?? null, grade: tpl.grade ?? null,
         cert_number: tpl.cert_number ?? null, tcg_id: s.tcg_id,
         current_market_price_usd: tpl.current_market_price_usd ?? null,
-        quantity: 1, status: 'in_inventory', location_id: destId, source_type: 'other',
+        quantity: qty, status: 'in_inventory', location_id: destId, source_type: 'other',
         date_acquired: today, deleted: false,
         notes: `Returned via Returns ${today} → ${destName} (original sale kept)`,
       })
@@ -2919,7 +2920,7 @@ export const processReturn = async ({ code, found: providedFound = null, reason 
     const log = await insertReturnLog({ ...base, kind: 'single', item_ref: s.tcg_id, item_name: name,
       original_sale_channel: sold?.sale_channel || null, original_sale_date: sold?.sale_date || null,
       original_sale_price_usd: sold?.sale_price_usd ?? null })
-    return { kind: 'single', name, action: `added → ${destName}`, logged: log.logged, note: log.note,
+    return { kind: 'single', name, action: `added ${qty > 1 ? qty + ' ' : ''}→ ${destName}`, logged: log.logged, note: log.note,
       original: sold ? { channel: sold.sale_channel, date: sold.sale_date, price: sold.sale_price_usd } : null }
   }
 
@@ -2933,7 +2934,7 @@ export const processReturn = async ({ code, found: providedFound = null, reason 
       sold_at: null, sold_by_id: null, buyer_name: null,
     }).eq('id', sl.id)
     if (error) throw error
-    const log = await insertReturnLog({ ...base, kind: 'slab', item_ref: sl.cert_number, item_name: sl.item_name,
+    const log = await insertReturnLog({ ...base, quantity: 1, kind: 'slab', item_ref: sl.cert_number, item_name: sl.item_name,
       original_sale_channel: sl.sale_channel || null, original_sale_date: sl.sale_date || null,
       original_sale_price_usd: sl.sale_price_usd ?? null })
     return { kind: 'slab', name: sl.item_name, logged: log.logged, note: log.note,
