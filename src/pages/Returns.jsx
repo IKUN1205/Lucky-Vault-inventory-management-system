@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
-import { processReturn, fetchRecentReturns } from '../lib/supabase'
+import { processReturn, fetchRecentReturns, fetchLocations } from '../lib/supabase'
 import { Undo2, ScanLine, Loader2, Package, Diamond, Box, AlertTriangle, BarChart3 } from 'lucide-react'
 
 // Returns — scan a cancelled/returned item back into Master Inventory and keep
@@ -53,9 +53,21 @@ export default function Returns() {
   const [recent, setRecent] = useState([])
   const [migrated, setMigrated] = useState(true)    // false once we learn the returns table is missing
   const [sourceRoom, setSourceRoom] = useState('')  // which room/channel caused the return (for stats)
+  const [locations, setLocations] = useState([])    // physical locations (destination options)
+  const [destId, setDestId] = useState('')          // where the goods go back (default Master Inventory)
   const inputRef = useRef(null)
 
-  useEffect(() => { loadRecent(); inputRef.current?.focus() }, [])
+  useEffect(() => {
+    loadRecent()
+    fetchLocations('Physical')
+      .then(locs => {
+        setLocations(locs || [])
+        const master = (locs || []).find(l => l.name === 'Master Inventory')
+        setDestId(master?.id || locs?.[0]?.id || '')
+      })
+      .catch(e => console.warn('[Returns] locations failed:', e.message))
+    inputRef.current?.focus()
+  }, [])
 
   const loadRecent = async () => {
     try { setRecent(await fetchRecentReturns(500)) }
@@ -81,9 +93,11 @@ export default function Returns() {
     if (!code || processing) return
     setProcessing(true)
     try {
+      const dest = locations.find(l => l.id === destId)
       const res = await processReturn({
         code, reason, notes: notes.trim() || null, returnedById: user?.id || null,
         sourceStreamRoom: sourceRoom || null,
+        destinationLocationId: destId || null, destinationName: dest?.name || null,
       })
       if (res.logged === false) setMigrated(false)
       const meta = KIND_META[res.kind]
@@ -111,8 +125,8 @@ export default function Returns() {
         </h1>
         <p className="text-gray-400 mt-1">
           Scan <span className="text-white">or type</span> a cancelled / returned item to put it back into
-          <span className="text-white"> Master Inventory</span> — and tag which stream room caused it, for stats. The
-          original sale is kept; this just returns the goods and logs the return.
+          the <span className="text-white">chosen location</span> (Master by default) — and tag which stream room caused
+          it, for stats. The original sale is kept; this just returns the goods and logs the return.
         </p>
       </div>
 
@@ -128,7 +142,13 @@ export default function Returns() {
 
       {/* Controls + scan */}
       <div className="card mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Return to</label>
+            <select value={destId} onChange={(e) => setDestId(e.target.value)}>
+              {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+            </select>
+          </div>
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Stream room (caused it)</label>
             <select value={sourceRoom} onChange={(e) => setSourceRoom(e.target.value)}>
@@ -141,11 +161,11 @@ export default function Returns() {
               {REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
           </div>
-          <div className="md:col-span-2">
-            <label className="block text-sm font-medium text-gray-300 mb-2">Note (optional)</label>
-            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)}
-              placeholder="e.g. buyer changed mind / arrived damaged" />
-          </div>
+        </div>
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-300 mb-2">Note (optional)</label>
+          <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)}
+            placeholder="e.g. buyer changed mind / arrived damaged" className="w-full" />
         </div>
         <label className="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
           <ScanLine size={16} className="text-vault-gold" /> Scan or type returned item (sealed UPC · slab cert# · single TCG ID)
@@ -167,8 +187,8 @@ export default function Returns() {
           </button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          Item type auto-detected: sealed → +1 to Master · single → added to Master (sale kept) ·
-          slab → flipped back to Master (unique item, so its sale is un-marked).
+          Item type auto-detected: sealed → +1 to the location · single → added there (sale kept) ·
+          slab → flipped back there (unique item, so its sale is un-marked).
         </p>
       </div>
 
