@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement,
   fetchUsers, lookupScannedCode,
-  moveSingleToLocation, moveSlabToLocation, markSlabAsSold,
+  moveSingleToLocation, moveSlabToLocation, markSlabAsSold, markSingleAsSold,
+  createStorefrontSale,
   fetchSinglesAtLocation, fetchSlabsAtLocation,
   searchProductsForStorefront, searchSinglesForStorefront, searchSlabsForStorefront,
 } from '../lib/supabase'
@@ -200,6 +201,11 @@ export default function MovedInventory() {
         product: invRow.product,
         inventory_row: invRow,
         quantity: qty,
+        // Mystery Game: sealed has no reference price → priceless by default
+        // (hits the bucket split). The cashier can type a line price instead.
+        // Pin the source location so a later FROM-picker change can't deduct
+        // from the wrong place at submit.
+        ...(mysteryGame ? { sale_price: '', source_location_id: fromLocationId } : {}),
       }]
     })
     addToast(`Added: ${invRow.product?.name} × ${qty}`, 'success')
@@ -207,6 +213,24 @@ export default function MovedInventory() {
 
   const addSingleToCart = (single, quantity = 1) => {
     if (!single) return
+    // Mystery Game: a single is sold IN PLACE (whole matched row, location-
+    // agnostic) — skip the FROM-location stock check and pre-fill a reference
+    // price (market × row qty) so it's a "priced" line; blank ones hit the bucket.
+    if (mysteryGame) {
+      if (cart.some(c => c.kind === 'single' && c.single_id === single.id)) {
+        addToast('Single already in cart', 'info'); return
+      }
+      const rowQty = single.quantity || 1
+      const ref = single.current_market_price_usd != null
+        ? Number(single.current_market_price_usd) * rowQty : ''
+      setCart(prev => [...prev, {
+        kind: 'single', key: `single-${single.id}`, single_id: single.id,
+        single, available_qty: rowQty, quantity: rowQty,
+        sale_price: ref === '' ? '' : String(ref),
+      }])
+      addToast(`Added: ${single.card_name}`, 'success')
+      return
+    }
     const stockRow = singlesAtFrom.find(s => s.id === single.id)
     if (!stockRow) {
       addToast(`${single.card_name} is not at the source location`, 'error')
@@ -296,32 +320,35 @@ export default function MovedInventory() {
     try {
       const result = await lookupScannedCode(code)
       if (mysteryGame) {
-        if (result.kind === 'unknown') {
-          // Cert# doesn't exist in our slabs table at all — the cashier
-          // needs to intake this slab via Cards Scan before it can be sold.
-          addToast(`Slab cert #${code} not in inventory — add it via Cards Scan first, then scan again`, 'error')
-          return
+        // Mystery Game now sells all three kinds. Slabs + singles are marked
+        // sold in place (location-agnostic); sealed deducts from the chosen
+        // FROM location, so a sealed scan requires it.
+        if (result.kind === 'slab') {
+          const status = result.slab.status
+          if (status === 'sold') {
+            addToast(`Slab cert #${result.slab.cert_number} is already sold — can't resell`, 'error')
+            return
+          }
+          if (status !== 'in_inventory' && status !== 'listed') {
+            addToast(`Slab cert #${result.slab.cert_number} status is "${status}" — not available to sell`, 'error')
+            return
+          }
+          addSlabToCart(result.slab)
+        } else if (result.kind === 'single') {
+          addSingleToCart(result.single, 1)
+        } else if (result.kind === 'sealed') {
+          if (!fromLocationId) {
+            addToast('Pick a FROM location first — sealed packs deduct from a specific location', 'error')
+            return
+          }
+          addSealedToCart(result.product.id, 1)
+        } else {
+          // unknown — not in any table; intake it first.
+          addToast(`Code #${code} not in inventory — intake it first, then scan again`, 'error')
         }
-        if (result.kind !== 'slab') {
-          addToast('Mystery Game mode: slabs only. Sealed/single scans ignored.', 'info')
-          return
-        }
-        // Reject non-sellable statuses with a specific reason so the cashier
-        // knows exactly what to fix.
-        const status = result.slab.status
-        if (status === 'sold') {
-          addToast(`Slab cert #${result.slab.cert_number} is already sold — can't resell`, 'error')
-          return
-        }
-        if (status !== 'in_inventory' && status !== 'listed') {
-          addToast(`Slab cert #${result.slab.cert_number} status is "${status}" — not available to sell`, 'error')
-          return
-        }
-        // No-reference-price slabs are still allowed in Mystery Game — the
-        // cashier enters one total at the bottom of the cart that we
-        // equal-split across all priceless ones at submit time.
-        addSlabToCart(result.slab)
-      } else if (result.kind === 'sealed') {
+        return
+      }
+      if (result.kind === 'sealed') {
         addSealedToCart(result.product.id, 1)
       } else if (result.kind === 'single') {
         addSingleToCart(result.single, 1)
@@ -370,94 +397,122 @@ export default function MovedInventory() {
     setCart([])
   }
 
-  // ---------- mystery game submit (mark each slab as sold) ----------
+  // ---------- mystery game submit (mark each item as sold) ----------
+  // Sells all three kinds at the storefront, lightweight (no POS/payment):
+  //   slab   → markSlabAsSold   (status flip, in place)
+  //   single → markSingleAsSold (status flip, whole matched row, in place)
+  //   sealed → storefront_sales row + inventory decrement at the FROM location
+  // All share one transaction_id and the 'Mystery Game' tag. Priceless lines
+  // (no entered/reference price) equal-split the bucket total.
   const handleMysteryGameSubmit = async () => {
-    const slabsOnly = cart.filter(c => c.kind === 'slab')
-    if (slabsOnly.length === 0) {
-      addToast('No slabs in cart to sell', 'error')
+    if (cart.length === 0) { addToast('Cart is empty', 'error'); return }
+    if (!movedById) { addToast('Pick who is running the game', 'error'); return }
+    const hasSealed = cart.some(c => c.kind === 'sealed')
+    if (hasSealed && !fromLocationId) {
+      addToast('Pick a FROM location — sealed packs deduct from a specific location', 'error')
       return
     }
-    // Split the priceless bucket equally across the slabs that didn't have
-    // a reference price. Slabs with stored prices keep their own value.
-    const priceless = slabsOnly.filter(c => c.sale_price === '' || c.sale_price == null)
+    // Split the priceless bucket equally across every line (any kind) without a
+    // price. Lines with a price (entered or reference) keep their own value.
+    const priceless = cart.filter(c => c.sale_price === '' || c.sale_price == null)
     const pricelessTotal = Number(mysteryPricelessTotal) || 0
     if (priceless.length > 0 && pricelessTotal <= 0) {
-      addToast(`Enter the total for ${priceless.length} priceless slab${priceless.length === 1 ? '' : 's'}`, 'error')
+      addToast(`Enter the total for ${priceless.length} priceless item${priceless.length === 1 ? '' : 's'}`, 'error')
       return
     }
     const perPriceless = priceless.length > 0 ? pricelessTotal / priceless.length : 0
-    // Build a key → effective price map for downstream use.
+    // Effective LINE price for a cart line (slabs are qty 1; single/sealed line
+    // totals were entered/derived as line totals).
     const effectivePrice = (item) => {
       const p = Number(item.sale_price)
       if (!isNaN(p) && p >= 0 && item.sale_price !== '' && item.sale_price != null) return p
       return perPriceless
     }
     setSubmitting(true)
-    // Shared transaction id so all slabs sold in one mystery game share a
-    // grouping key downstream.
+    // Shared transaction id so everything sold in one mystery game groups together.
     const transactionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
       ? crypto.randomUUID()
       : `mg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     const sold = []
     const failed = []
     try {
-      for (const item of slabsOnly) {
+      for (const item of cart) {
         try {
-          const price = effectivePrice(item)
-          await markSlabAsSold(item.slab_id, {
-            sale_price_usd: price,
-            sale_channel: 'in_person',
-            sale_date: date,
-            sale_fees_usd: null,
-            buyer_name: null,
-            sale_notes: 'Mystery Game',
-            sold_by_id: movedById || null,
-            transaction_id: transactionId,
-            transaction_type: 'sale',
-          })
+          const price = effectivePrice(item)   // LINE total
+          if (item.kind === 'slab') {
+            await markSlabAsSold(item.slab_id, {
+              sale_price_usd: price, sale_channel: 'in_person', sale_date: date,
+              sale_fees_usd: null, buyer_name: null, sale_notes: 'Mystery Game',
+              sold_by_id: movedById || null, transaction_id: transactionId, transaction_type: 'sale',
+            })
+          } else if (item.kind === 'single') {
+            await markSingleAsSold(item.single_id, {
+              sale_price_usd: price, sale_channel: 'in_person', sale_date: date,
+              sale_fees_usd: null, buyer_name: null, sale_notes: 'Mystery Game',
+              sold_by_id: movedById || null, transaction_id: transactionId, transaction_type: 'sale',
+            })
+          } else if (item.kind === 'sealed') {
+            const qty = item.quantity
+            const loc = item.source_location_id || fromLocationId   // pinned at add time
+            const unitCost = Number(item.inventory_row?.avg_cost_basis) || 0
+            const costBasis = unitCost * qty
+            // Record the sale FIRST, then deduct stock — mirrors the storefront
+            // sealed writer so a failed insert doesn't silently lose inventory.
+            await createStorefrontSale({
+              date, sale_type: 'Itemized',
+              // brand/product_type left to the products FK (matches _sellSealedLine).
+              product_id: item.product_id, location_id: loc,
+              quantity: qty, sale_price: price, cost_basis: costBasis, profit: price - costBasis,
+              payment_method_id: null, cashier_id: movedById || null,
+              transaction_id: transactionId, transaction_type: 'sale', notes: 'Mystery Game',
+            })
+            await updateInventory(item.product_id, loc, -qty)
+          }
           sold.push({ ...item, price })
         } catch (err) {
-          console.error('[MysteryGame] slab sell failed:', item, err)
+          console.error('[MysteryGame] sell failed:', item, err)
           failed.push({ item, error: err.message || String(err) })
         }
       }
-      // Drop the successfully-sold ones from the cart; keep failures so
-      // the cashier can retry without losing context.
-      const failedIds = new Set(failed.map(f => f.item.slab_id))
-      setCart(prev => prev.filter(c => c.kind !== 'slab' || failedIds.has(c.slab_id)))
-      // If nothing left in cart, clear the priceless total too.
+      // Drop the successfully-sold lines; keep failures so the cashier can retry.
+      const failedKeys = new Set(failed.map(f => f.item.key))
+      setCart(prev => prev.filter(c => failedKeys.has(c.key)))
       if (failed.length === 0) setMysteryPricelessTotal('')
 
       const totalPaid = sold.reduce((s, it) => s + it.price, 0)
       if (sold.length > 0) {
         addToast(
-          `🎲 Mystery Game: sold ${sold.length} slab${sold.length === 1 ? '' : 's'} for $${totalPaid.toFixed(2)}${failed.length > 0 ? ` (${failed.length} failed)` : ''}`,
+          `🎲 Mystery Game: sold ${sold.length} item${sold.length === 1 ? '' : 's'} for $${totalPaid.toFixed(2)}${failed.length > 0 ? ` (${failed.length} failed)` : ''}`,
           failed.length > 0 ? 'info' : 'success',
         )
-        // Lark — use the 'move' event type with a distinct prefix so the
-        // inventory in/out group sees "mystery game" right at the top.
+        // Lark — 'move' event with a 🎲 prefix so the in/out group sees it.
         try {
-          const itemsForLark = sold.map(it => ({
-            name: `${it.slab?.item_name || 'Slab'} cert#${it.slab?.cert_number}`,
-            quantity: 1,
-            kind: 'slab',
-            price: it.price,
-          }))
+          const itemsForLark = sold.map(it => {
+            if (it.kind === 'slab') return { name: `${it.slab?.item_name || 'Slab'} cert#${it.slab?.cert_number}`, quantity: 1, kind: 'slab', price: it.price }
+            if (it.kind === 'single') { const num = it.single?.card_number ? ` #${it.single.card_number}` : ''; return { name: `${it.single?.card_name || 'Single'}${num}`, quantity: it.quantity, kind: 'single', price: it.price } }
+            return { name: it.product?.name || 'Sealed', quantity: it.quantity, kind: 'sealed', price: it.price }
+          })
+          const totalUnits = sold.reduce((s, it) => s + (it.kind === 'slab' ? 1 : it.quantity), 0)
           fetch('/api/lark-notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               type: 'move',
               fromLocation: '🎲 Mystery Game',
-              toLocation: `Sold (${sold.length} slabs · $${totalPaid.toFixed(2)})`,
+              toLocation: `Sold (${sold.length} item${sold.length === 1 ? '' : 's'} · $${totalPaid.toFixed(2)})`,
               items: itemsForLark,
-              totalUnits: sold.length,
+              totalUnits,
               user: users.find(u => u.id === movedById)?.name || 'Unknown',
             }),
           }).catch(() => {})
         } catch (_) {}
       }
-      for (const f of failed) addToast(`Failed: cert#${f.item.slab?.cert_number} — ${f.error}`, 'error')
+      for (const f of failed) {
+        const label = f.item.kind === 'slab' ? `cert#${f.item.slab?.cert_number}`
+          : f.item.kind === 'single' ? (f.item.single?.card_name || 'single')
+          : (f.item.product?.name || 'sealed')
+        addToast(`Failed: ${label} — ${f.error}`, 'error')
+      }
     } finally {
       setSubmitting(false)
     }
@@ -646,14 +701,15 @@ export default function MovedInventory() {
   }
   const totalCartUnits = cart.reduce((s, c) => s + (c.kind === 'slab' ? 1 : c.quantity), 0)
   // Mystery Game cart breakdown — used by the bottom summary + submit gate.
-  const mgSlabs = mysteryGame ? cart.filter(c => c.kind === 'slab') : []
-  const mgPriced = mgSlabs.filter(c => c.sale_price !== '' && c.sale_price != null)
-  const mgPriceless = mgSlabs.filter(c => c.sale_price === '' || c.sale_price == null)
+  const mgItems = mysteryGame ? cart : []
+  const mgPriced = mgItems.filter(c => c.sale_price !== '' && c.sale_price != null)
+  const mgPriceless = mgItems.filter(c => c.sale_price === '' || c.sale_price == null)
   const mgPricedSubtotal = mgPriced.reduce((s, c) => s + (Number(c.sale_price) || 0), 0)
   const mgPricelessTotalNum = Number(mysteryPricelessTotal) || 0
   const mgGrandTotal = mgPricedSubtotal + mgPricelessTotalNum
   const mgPricelessRequired = mgPriceless.length > 0
   const mgPricelessFilled = !mgPricelessRequired || mgPricelessTotalNum > 0
+  const mgHasSealed = mysteryGame && cart.some(c => c.kind === 'sealed')
 
   return (
     <div className="fade-in">
@@ -702,7 +758,7 @@ export default function MovedInventory() {
             <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40">
               <button
                 type="button"
-                onClick={() => { setMysteryGame(false) }}
+                onClick={() => { if (mysteryGame) { setCart([]); setMysteryPricelessTotal('') } setMysteryGame(false) }}
                 className={`px-3 py-1.5 text-sm rounded-md transition flex items-center gap-2 ${
                   !mysteryGame
                     ? 'bg-vault-gold text-vault-dark font-semibold'
@@ -713,7 +769,7 @@ export default function MovedInventory() {
               </button>
               <button
                 type="button"
-                onClick={() => { setMysteryGame(true); setToLocationId(''); setFromLocationId('') }}
+                onClick={() => { if (!mysteryGame) { setCart([]); setMysteryPricelessTotal('') } setMysteryGame(true); setToLocationId(''); setFromLocationId('') }}
                 className={`px-3 py-1.5 text-sm rounded-md transition flex items-center gap-2 ${
                   mysteryGame
                     ? 'bg-purple-500/80 text-white font-semibold'
@@ -761,8 +817,22 @@ export default function MovedInventory() {
               </div>
             </div>
           ) : (
-            <div className="text-xs text-purple-200 bg-purple-500/10 border border-purple-500/30 rounded p-3">
-              Mystery Game mode: just scan the slab cert# and the system will mark it sold at the price you enter. No FROM/TO needed.
+            <div className="space-y-3">
+              <div className="text-xs text-purple-200 bg-purple-500/10 border border-purple-500/30 rounded p-3">
+                🎲 Mystery Game: scan a slab cert#, single TCG ID, or sealed UPC — each is marked sold at the price you enter (blank ones split the bucket total below). Slabs &amp; singles sell in place; sealed deducts from the FROM location.
+              </div>
+              <div className="md:w-1/2">
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  FROM location{' '}
+                  {mgHasSealed
+                    ? <span className="text-red-400">* (sealed in cart)</span>
+                    : <span className="text-gray-500 normal-case font-normal">— only needed for sealed</span>}
+                </label>
+                <select value={fromLocationId} onChange={(e) => setFromLocationId(e.target.value)}>
+                  <option value="">Select source (for sealed)…</option>
+                  {physicalLocations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+                </select>
+              </div>
             </div>
           )}
         </div>
@@ -871,7 +941,7 @@ export default function MovedInventory() {
           <div className="card border-purple-500/30 space-y-3">
             {mgPriced.length > 0 && (
               <div className="flex justify-between items-center text-sm text-gray-300">
-                <span>Priced slabs ({mgPriced.length}) — from inventory</span>
+                <span>Priced items ({mgPriced.length})</span>
                 <span className="font-mono text-vault-gold">${mgPricedSubtotal.toFixed(2)}</span>
               </div>
             )}
@@ -879,7 +949,7 @@ export default function MovedInventory() {
               <div className="flex justify-between items-center gap-3">
                 <label className="flex flex-col text-sm text-gray-300">
                   <span>
-                    Total for {mgPriceless.length} priceless slab{mgPriceless.length === 1 ? '' : 's'}
+                    Total for {mgPriceless.length} priceless item{mgPriceless.length === 1 ? '' : 's'}
                     {' '}<span className="text-red-400">*</span>
                   </span>
                   <span className="text-[11px] text-gray-500 mt-0.5">
@@ -924,14 +994,14 @@ export default function MovedInventory() {
               submitting || cart.length === 0
               || !movedById
               || (mysteryGame
-                ? !mgPricelessFilled
+                ? (!mgPricelessFilled || (mgHasSealed && !fromLocationId))
                 : (!fromLocationId || !toLocationId))
             }
           >
             {submitting
               ? <div className="spinner w-5 h-5 border-2"></div>
               : mysteryGame
-                ? <><Save size={20} /> 🎲 Mark {cart.filter(c => c.kind === 'slab').length} slab{cart.filter(c => c.kind === 'slab').length === 1 ? '' : 's'} as sold</>
+                ? <><Save size={20} /> 🎲 Mark {cart.length} item{cart.length === 1 ? '' : 's'} as sold</>
                 : <><Save size={20} /> Move {cart.length || ''} {cart.length === 1 ? 'Item' : 'Items'}</>
             }
           </button>
@@ -980,17 +1050,34 @@ function CartRow({ item, onQtyChange, onRemove, onSalePriceChange, mysteryGame, 
         </div>
       </div>
       <div className="col-span-3 md:col-span-3">
-        {mysteryGame && item.kind === 'slab' ? (
-          <>
-            <label className="block text-[10px] uppercase tracking-wider text-gray-500">
-              Sold @ (from inventory)
-            </label>
-            <div className="text-right font-mono text-vault-gold pt-1">
-              {item.sale_price != null && item.sale_price !== ''
-                ? `$${Number(item.sale_price).toFixed(2)}`
-                : '—'}
+        {mysteryGame ? (
+          <div className="space-y-1">
+            {item.kind === 'sealed' && (
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-gray-500">
+                  Qty {max > 1 && <span className="text-gray-600 normal-case">/ {max}</span>}
+                </label>
+                <input
+                  type="number" min="1" max={max} value={item.quantity}
+                  onChange={(e) => onQtyChange(e.target.value)} disabled={disabled}
+                  className="w-full"
+                />
+              </div>
+            )}
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-gray-500">
+                {item.kind === 'sealed' ? 'Line $ (blank → bucket)' : 'Sold @ (blank → bucket)'}
+              </label>
+              <div className="relative">
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">$</span>
+                <input
+                  type="number" min="0" step="0.01" value={item.sale_price ?? ''}
+                  onChange={(e) => onSalePriceChange(e.target.value)} disabled={disabled}
+                  placeholder="—" className="w-full text-right pl-5 font-mono"
+                />
+              </div>
             </div>
-          </>
+          </div>
         ) : (
           <>
             <label className="block text-[10px] uppercase tracking-wider text-gray-500">
