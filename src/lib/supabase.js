@@ -3187,9 +3187,29 @@ export const moveSlabToLocation = async ({
 // Inventory to populate the manual-search "what's in this room" view.
 // Mirrors the constraints used by the storefront search (sellable rows
 // only: in_inventory / listed, qty > 0 for singles).
+// PostgREST caps a single response at ~1000 rows (Supabase default). A
+// location like Front Store can hold more singles than that (1100+), so a
+// single SELECT silently truncates — and since we order by card_name, the
+// tail of the alphabet (e.g. "Venusaur") just vanishes. That made Move
+// Inventory wrongly report "X is not at the source location" for any card
+// past row 1000. Page through with .range() until a short page comes back
+// so we always get the FULL stock at a location.
+const PAGE = 1000
+async function _fetchAllPages(buildQuery) {
+  const out = []
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await buildQuery().range(from, from + PAGE - 1)
+    if (error) throw error
+    const batch = data || []
+    out.push(...batch)
+    if (batch.length < PAGE) break
+  }
+  return out
+}
+
 export const fetchSinglesAtLocation = async (locationId) => {
   if (!locationId) return []
-  const { data, error } = await supabase
+  return _fetchAllPages(() => supabase
     .from('singles')
     .select(`
       id, card_name, card_number, condition, quantity, tcg_id, status, form,
@@ -3199,21 +3219,17 @@ export const fetchSinglesAtLocation = async (locationId) => {
     .eq('deleted', false)
     .in('status', ['in_inventory', 'listed'])
     .gt('quantity', 0)
-    .order('card_name')
-  if (error) throw error
-  return data || []
+    .order('card_name'))
 }
 export const fetchSlabsAtLocation = async (locationId) => {
   if (!locationId) return []
-  const { data, error } = await supabase
+  return _fetchAllPages(() => supabase
     .from('slabs')
     .select('id, item_name, cert_number, grading_company, status, location_id')
     .eq('location_id', locationId)
     .eq('deleted', false)
     .in('status', ['in_inventory', 'listed'])
-    .order('item_name')
-  if (error) throw error
-  return data || []
+    .order('item_name'))
 }
 
 // ----- Manual search for Storefront POS (no-barcode fallback) -----
