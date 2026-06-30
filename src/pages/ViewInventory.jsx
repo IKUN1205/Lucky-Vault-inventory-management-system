@@ -19,10 +19,15 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
+// recommended sell = TCG market * 1.05, rounded UP to the next $0.50
+const recSell = (m) => (m && m > 0) ? Math.ceil((parseFloat(m) * 1.05) / 0.5) * 0.5 : null
+const fmtUsd = (n) => (n == null ? '—' : `$${Number(n).toFixed(2)}`)
+
 export default function ViewInventory() {
   const { toasts, addToast, removeToast } = useToast()
   
   const [inventory, setInventory] = useState([])
+  const [pricesByProduct, setPricesByProduct] = useState({})
   const [locations, setLocations] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedLocation, setSelectedLocation] = useState('')
@@ -84,12 +89,23 @@ export default function ViewInventory() {
       setLocations(locData)
       loadInventory()
       loadCardsByLocation()
+      loadPrices()
     } catch (error) {
       console.error('Error loading data:', error)
       addToast('Failed to load data', 'error')
     } finally {
       setLoading(false)
     }
+  }
+
+  // Recommended sell prices for sealed products live in a NEW product_prices
+  // table. It may not be migrated yet — degrade gracefully so the column
+  // simply renders "—" instead of crashing the page.
+  const loadPrices = async () => {
+    try {
+      const { data, error } = await supabase.from('product_prices').select('product_id, recommended_sell_usd, tcg_market_usd')
+      if (!error && data) setPricesByProduct(Object.fromEntries(data.map(r => [r.product_id, r])))
+    } catch (e) { /* table not migrated yet — leave empty, column shows — */ }
   }
 
   // Pull every sellable single + slab once, grouped by location name so each
@@ -524,10 +540,10 @@ export default function ViewInventory() {
                     <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('launchName')}>
                       LAUNCH NAME<SortArrow field="launchName" />
                     </th>
-                    <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('brand')}>
+                    <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors max-w-[96px]" onClick={() => handleSort('brand')}>
                       BRAND<SortArrow field="brand" />
                     </th>
-                    <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('productType')}>
+                    <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors max-w-[96px]" onClick={() => handleSort('productType')}>
                       PRODUCT TYPE<SortArrow field="productType" />
                     </th>
                     <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('sealed')}>
@@ -542,6 +558,7 @@ export default function ViewInventory() {
                     <th className="pb-3 font-medium text-right cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('avgCost')}>
                       AVG COST<SortArrow field="avgCost" />
                     </th>
+                    <th className="pb-3 font-medium text-right">REC. SELL</th>
                     <th className="pb-3 font-medium text-right cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('totalValue')}>
                       TOTAL VALUE<SortArrow field="totalValue" />
                     </th>
@@ -556,16 +573,16 @@ export default function ViewInventory() {
                     return (
                       <tr key={inv.id} className="hover:bg-vault-dark/50">
                         <td className="py-3 font-medium text-white">{launchName}</td>
-                        <td className="py-3">
+                        <td className="py-3 max-w-[96px]">
                           <span className={`badge ${
-                            inv.product?.brand === 'Pokemon' ? 'badge-warning' : 
-                            inv.product?.brand === 'One Piece' ? 'badge-info' : 
+                            inv.product?.brand === 'Pokemon' ? 'badge-warning' :
+                            inv.product?.brand === 'One Piece' ? 'badge-info' :
                             'badge-secondary'
                           }`}>
                             {inv.product?.brand}
                           </span>
                         </td>
-                        <td className="py-3 text-gray-300">{inv.product?.category || '-'}</td>
+                        <td className="py-3 text-gray-300 max-w-[96px] truncate" title={inv.product?.category || '-'}>{inv.product?.category || '-'}</td>
                         <td className="py-3 text-gray-400">{inv.product?.type}</td>
                         <td className="py-3 text-gray-400">{inv.product?.language}</td>
                         <td className="py-3 text-right">
@@ -608,6 +625,7 @@ export default function ViewInventory() {
                             <span className="text-gray-400">${inv.avg_cost_basis?.toFixed(2) || '0.00'}</span>
                           )}
                         </td>
+                        <td className="py-3 text-right text-vault-gold">{fmtUsd(pricesByProduct[inv.product_id ?? inv.product?.id]?.recommended_sell_usd)}</td>
                         <td className="py-3 text-right text-vault-gold font-medium">
                           ${(inv.quantity * (inv.avg_cost_basis || 0)).toFixed(2)}
                         </td>
@@ -725,6 +743,7 @@ function LocationCardsSubSections({
                     <th className="py-2 font-medium">CONDITION</th>
                     <th className="py-2 font-medium text-right">QTY</th>
                     <th className="py-2 font-medium text-right">MARKET</th>
+                    <th className="py-2 font-medium text-right">REC. SELL</th>
                     <th className="py-2 font-medium">TCG ID</th>
                   </tr>
                 </thead>
@@ -743,6 +762,7 @@ function LocationCardsSubSections({
                         <td className="py-1.5 text-right text-gray-300">
                           {s.current_market_price_usd != null ? `$${Number(s.current_market_price_usd).toFixed(2)}` : '—'}
                         </td>
+                        <td className="py-1.5 text-right text-vault-gold">{fmtUsd(recSell(s.current_market_price_usd))}</td>
                         <td className="py-1.5 text-gray-500 text-xs">{s.tcg_id || '—'}</td>
                       </tr>
                     ))}
@@ -775,6 +795,7 @@ function LocationCardsSubSections({
                     <th className="py-2 font-medium">GRADE</th>
                     <th className="py-2 font-medium">CERT #</th>
                     <th className="py-2 font-medium text-right">MARKET</th>
+                    <th className="py-2 font-medium text-right">REC. SELL</th>
                     <th className="py-2 font-medium text-right">LV</th>
                     <th className="py-2 font-medium">STATUS</th>
                   </tr>
@@ -801,6 +822,7 @@ function LocationCardsSubSections({
                         <td className="py-1.5 text-right text-gray-300">
                           {s.market_price_usd != null ? `$${Number(s.market_price_usd).toFixed(2)}` : '—'}
                         </td>
+                        <td className="py-1.5 text-right text-vault-gold">{fmtUsd(recSell(s.market_price_usd))}</td>
                         <td className="py-1.5 text-right text-gray-300">
                           {s.lv_price_usd != null ? `$${Number(s.lv_price_usd).toFixed(2)}` : '—'}
                         </td>
