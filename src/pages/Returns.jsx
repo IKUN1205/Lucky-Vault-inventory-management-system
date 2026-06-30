@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
-import { processReturn, fetchRecentReturns, fetchLocations, searchProductsForStorefront, searchSinglesForStorefront, searchSlabsForStorefront } from '../lib/supabase'
-import { Undo2, ScanLine, Loader2, Package, Diamond, Box, AlertTriangle, BarChart3, Search, ChevronDown, ChevronUp } from 'lucide-react'
+import { processReturn, fetchRecentReturns, fetchLocations, lookupScannedCode, searchProductsForStorefront, searchSinglesForStorefront, searchSlabsForStorefront } from '../lib/supabase'
+import { Undo2, ScanLine, Loader2, Package, Diamond, Box, AlertTriangle, BarChart3, Search, ChevronDown, ChevronUp, ListPlus, X, Trash2 } from 'lucide-react'
 
 // Returns — scan a cancelled/returned item back into Master Inventory and keep
 // a light record (boss 2026-06-25). Policy: the ORIGINAL sale is NOT touched —
@@ -56,6 +56,8 @@ export default function Returns() {
   const [qty, setQty] = useState(1)                 // how many came back (sealed/single; slab is always 1)
   const [locations, setLocations] = useState([])    // physical locations (destination options)
   const [destId, setDestId] = useState('')          // where the goods go back (default Master Inventory)
+  const [bulkMode, setBulkMode] = useState(false)   // Friday batch: build a list, process all at once
+  const [pending, setPending] = useState([])        // staged returns awaiting "Process all"
   const inputRef = useRef(null)
 
   useEffect(() => {
@@ -122,7 +124,99 @@ export default function Returns() {
     inputRef.current?.focus()
   }
 
-  const onKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); submitScan() } }
+  // ---------- bulk session (Friday batch) ----------
+  const foundLabel = (found) => {
+    if (found.kind === 'sealed') return [found.product?.brand, found.product?.name].filter(Boolean).join(' ') || 'Sealed'
+    if (found.kind === 'single') return [found.single?.card_name, found.single?.card_number].filter(Boolean).join(' ') || 'Single'
+    if (found.kind === 'slab') return found.slab?.item_name || `Slab cert#${found.slab?.cert_number}`
+    return 'Item'
+  }
+  const refOf = (found) => found.kind === 'sealed' ? `p:${found.product?.id}`
+    : found.kind === 'single' ? `t:${found.single?.tcg_id || found.single?.id}`
+    : `c:${found.slab?.cert_number || found.slab?.id}`
+
+  // Stage a resolved item onto the pending list, capturing the current control
+  // values as its defaults. Slabs/singles dedupe (unique); sealed bumps qty.
+  const addPending = (found) => {
+    if (!found || found.kind === 'empty') { addToast('Nothing scanned', 'error'); return }
+    if (found.kind === 'unknown') {
+      addToast(`"${found.code}" isn't a known sealed UPC, slab cert#, or single TCG ID`, 'error'); return
+    }
+    const ref = refOf(found)
+    const existing = pending.find(p => p.ref === ref)
+    if (existing) {
+      if (found.kind === 'sealed') {
+        setPending(prev => prev.map(p => p.ref === ref ? { ...p, qty: (Number(p.qty) || 1) + (Number(qty) || 1) } : p))
+        addToast(`+${Number(qty) || 1} ${foundLabel(found)} (now ${(Number(existing.qty) || 1) + (Number(qty) || 1)})`, 'success')
+      } else {
+        addToast(`${foundLabel(found)} is already in the list`, 'info')
+      }
+      setQty(1); return
+    }
+    const line = {
+      key: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `${ref}-${pending.length}`,
+      ref, found, kind: found.kind, label: foundLabel(found),
+      qty: found.kind === 'slab' ? 1 : (Number(qty) || 1),
+      destId, sourceRoom, reason, notes: notes.trim() || null,
+    }
+    setPending(prev => [line, ...prev])
+    addToast(`Added: ${line.label}${line.qty > 1 ? ` ×${line.qty}` : ''}`, 'success')
+    setQty(1)
+  }
+
+  const submitScanBulk = async () => {
+    const code = scan.trim()
+    if (!code || processing) return
+    setProcessing(true)
+    try {
+      addPending(await lookupScannedCode(code))
+    } catch (e) {
+      addToast(e.message || 'Lookup failed', 'error')
+    } finally {
+      setProcessing(false); setScan(''); inputRef.current?.focus()
+    }
+  }
+
+  const updatePending = (key, patch) => setPending(prev => prev.map(p => p.key === key ? { ...p, ...patch } : p))
+  const removePending = (key) => setPending(prev => prev.filter(p => p.key !== key))
+  const clearPending = () => { if (pending.length && confirm('Clear the pending list?')) setPending([]) }
+
+  // Process every staged return in one pass. Succeeded lines drop off the list
+  // and land in "This session"; failures stay so they can be retried.
+  const processAll = async () => {
+    if (pending.length === 0 || processing) return
+    setProcessing(true)
+    const done = []
+    const failed = []
+    // Oldest first so the session log reads in scan order.
+    for (const line of [...pending].reverse()) {
+      try {
+        const dest = locations.find(l => l.id === line.destId)
+        const res = await processReturn({
+          found: line.found, reason: line.reason, notes: line.notes,
+          returnedById: user?.id || null, sourceStreamRoom: line.sourceRoom || null,
+          quantity: Number(line.qty) || 1,
+          destinationLocationId: line.destId || null, destinationName: dest?.name || null,
+        })
+        if (res.logged === false) setMigrated(false)
+        done.push({ ...res, code: res.name, at: new Date().toLocaleTimeString(), key: line.key })
+      } catch (e) {
+        failed.push({ line, error: e.message || String(e) })
+      }
+    }
+    const failedKeys = new Set(failed.map(f => f.line.key))
+    setPending(prev => prev.filter(p => failedKeys.has(p.key)))
+    if (done.length) setSession(prev => [...done.reverse(), ...prev])
+    addToast(
+      `Processed ${done.length} return${done.length === 1 ? '' : 's'}${failed.length ? `, ${failed.length} failed (kept in list)` : ''}`,
+      failed.length ? 'info' : 'success',
+    )
+    for (const f of failed) addToast(`Failed: ${f.line.label} — ${f.error}`, 'error')
+    loadRecent()
+    setProcessing(false)
+  }
+
+  const onKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); bulkMode ? submitScanBulk() : submitScan() } }
 
   return (
     <div className="fade-in">
@@ -151,6 +245,23 @@ export default function Returns() {
 
       {/* Controls + scan */}
       <div className="card mb-6">
+        {/* Mode: process each scan immediately, or batch a list (Friday). */}
+        <div className="flex items-center gap-2 mb-4">
+          <span className="text-xs text-gray-500 uppercase tracking-wider">Mode:</span>
+          <div className="inline-flex rounded-lg border border-vault-border p-0.5 bg-vault-darker/40">
+            <button type="button"
+              onClick={() => { if (bulkMode && pending.length && !confirm('Switch to one-at-a-time? The pending list will be kept but not processed.')) return; setBulkMode(false) }}
+              className={`px-3 py-1.5 text-sm rounded-md transition flex items-center gap-2 ${!bulkMode ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}>
+              <Undo2 size={14} /> One at a time
+            </button>
+            <button type="button"
+              onClick={() => setBulkMode(true)}
+              className={`px-3 py-1.5 text-sm rounded-md transition flex items-center gap-2 ${bulkMode ? 'bg-vault-gold text-vault-dark font-semibold' : 'text-gray-400 hover:text-white'}`}>
+              <ListPlus size={14} /> Bulk session
+            </button>
+          </div>
+          {bulkMode && <span className="text-xs text-gray-500">— scan / search to build the list, then process all at once</span>}
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">Return to</label>
@@ -178,7 +289,9 @@ export default function Returns() {
         </div>
         <label className="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
           <ScanLine size={16} className="text-vault-gold" /> Scan or type returned item (sealed UPC · slab cert# · single TCG ID)
-          <span className="text-xs text-gray-500 font-normal">— set Qty for multiples (sealed / single)</span>
+          <span className="text-xs text-gray-500 font-normal">
+            {bulkMode ? '— adds to the list using the settings above (editable per row)' : '— set Qty for multiples (sealed / single)'}
+          </span>
         </label>
         <div className="flex gap-2">
           <input
@@ -200,9 +313,11 @@ export default function Returns() {
               className="w-14 text-center font-mono bg-transparent border-0 focus:ring-0 px-0"
             />
           </div>
-          <button type="button" onClick={submitScan} disabled={processing || !scan.trim()}
+          <button type="button" onClick={bulkMode ? submitScanBulk : submitScan} disabled={processing || !scan.trim()}
             className="btn btn-primary px-5">
-            {processing ? <Loader2 size={18} className="animate-spin" /> : `Return${Number(qty) > 1 ? ` ×${qty}` : ''}`}
+            {processing ? <Loader2 size={18} className="animate-spin" />
+              : bulkMode ? <><ListPlus size={16} /> Add{Number(qty) > 1 ? ` ×${qty}` : ''}</>
+              : `Return${Number(qty) > 1 ? ` ×${qty}` : ''}`}
           </button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
@@ -212,7 +327,82 @@ export default function Returns() {
       </div>
 
       {/* Manual entry — search by name when the code box can't find it */}
-      <ReturnsManualEntry onPick={(found) => runReturn({ found })} disabled={processing} qty={qty} setQty={setQty} />
+      <ReturnsManualEntry onPick={(found) => bulkMode ? addPending(found) : runReturn({ found })} disabled={processing} qty={qty} setQty={setQty} bulkMode={bulkMode} />
+
+      {/* Bulk session — pending list */}
+      {bulkMode && (
+        <div className="card mb-6 border-vault-gold/30">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-display text-lg font-semibold text-white flex items-center gap-2">
+              <ListPlus size={18} className="text-vault-gold" /> Pending returns ({pending.length})
+            </h2>
+            {pending.length > 0 && (
+              <button type="button" onClick={clearPending} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1">
+                <Trash2 size={14} /> Clear all
+              </button>
+            )}
+          </div>
+          {pending.length === 0 ? (
+            <p className="text-sm text-gray-500">Scan or search items above to stage them here — then process all at once.</p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                {pending.map(line => {
+                  const meta = KIND_META[line.kind] || {}
+                  const Icon = meta.icon || Package
+                  return (
+                    <div key={line.key} className="grid grid-cols-12 gap-2 items-center p-2.5 bg-vault-darker/40 border border-vault-border rounded-lg">
+                      <div className={`col-span-12 md:col-span-4 flex items-center gap-2 min-w-0 ${meta.color}`}>
+                        <Icon size={18} className="flex-shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-white text-sm font-medium truncate">{line.label}</div>
+                          <div className="text-[11px] text-gray-500">{meta.label}</div>
+                        </div>
+                      </div>
+                      <div className="col-span-4 md:col-span-2">
+                        <label className="block text-[10px] uppercase tracking-wider text-gray-500">Qty</label>
+                        {line.kind === 'slab'
+                          ? <div className="text-white text-sm pt-1">1</div>
+                          : <input type="number" min="1" value={line.qty}
+                              onChange={(e) => updatePending(line.key, { qty: Math.max(1, Number(e.target.value) || 1) })}
+                              disabled={processing} className="w-full" />}
+                      </div>
+                      <div className="col-span-8 md:col-span-2">
+                        <label className="block text-[10px] uppercase tracking-wider text-gray-500">Return to</label>
+                        <select value={line.destId} onChange={(e) => updatePending(line.key, { destId: e.target.value })} disabled={processing} className="text-sm">
+                          {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                        </select>
+                      </div>
+                      <div className="col-span-6 md:col-span-2">
+                        <label className="block text-[10px] uppercase tracking-wider text-gray-500">Room</label>
+                        <select value={line.sourceRoom} onChange={(e) => updatePending(line.key, { sourceRoom: e.target.value })} disabled={processing} className="text-sm">
+                          {SOURCE_ROOMS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                        </select>
+                      </div>
+                      <div className="col-span-5 md:col-span-1">
+                        <label className="block text-[10px] uppercase tracking-wider text-gray-500">Reason</label>
+                        <select value={line.reason} onChange={(e) => updatePending(line.key, { reason: e.target.value })} disabled={processing} className="text-sm">
+                          {REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                        </select>
+                      </div>
+                      <div className="col-span-1 flex justify-end">
+                        <button type="button" onClick={() => removePending(line.key)} disabled={processing} className="text-gray-400 hover:text-red-400 p-1" aria-label="Remove">
+                          <X size={18} />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              <button type="button" onClick={processAll} disabled={processing || pending.length === 0}
+                className="btn btn-primary w-full mt-4">
+                {processing ? <><Loader2 size={18} className="animate-spin" /> Processing…</>
+                  : <><Undo2 size={18} /> Process {pending.length} return{pending.length === 1 ? '' : 's'}</>}
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* This session */}
       {session.length > 0 && (
@@ -329,7 +519,7 @@ export default function Returns() {
 // search sealed / single / slab by name and click Return on the match. The
 // search rows are already {kind, single|slab|product}-shaped, so onPick hands
 // the row straight to processReturn as `found`.
-function ReturnsManualEntry({ onPick, disabled, qty, setQty }) {
+function ReturnsManualEntry({ onPick, disabled, qty, setQty, bulkMode }) {
   const [expanded, setExpanded] = useState(false)
   const [tab, setTab] = useState('single')
   const [query, setQuery] = useState('')
@@ -399,7 +589,7 @@ function ReturnsManualEntry({ onPick, disabled, qty, setQty }) {
           {!err && query.trim().length >= 2 && !searching && results.length === 0 && <div className="text-xs text-gray-500">No matches.</div>}
           {results.length > 0 && (
             <ul className="max-h-72 overflow-y-auto divide-y divide-vault-border/50 border border-vault-border rounded-md">
-              {results.map((row, i) => <li key={i}><RetResultRow row={row} onPick={pick} disabled={disabled} qty={qty} /></li>)}
+              {results.map((row, i) => <li key={i}><RetResultRow row={row} onPick={pick} disabled={disabled} qty={qty} bulkMode={bulkMode} /></li>)}
             </ul>
           )}
         </div>
@@ -417,7 +607,7 @@ function RetTab({ active, onClick, icon: Icon, label, color }) {
   )
 }
 
-function RetResultRow({ row, onPick, disabled, qty }) {
+function RetResultRow({ row, onPick, disabled, qty, bulkMode }) {
   let Icon, color, title, sub
   const showQty = row.kind !== 'slab' && Number(qty) > 1   // slab is always 1
   if (row.kind === 'sealed') {
@@ -443,7 +633,7 @@ function RetResultRow({ row, onPick, disabled, qty }) {
       </div>
       <button type="button" onClick={() => onPick(row)} disabled={disabled}
         className="flex-shrink-0 inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-vault-gold/20 border border-vault-gold/40 text-vault-gold rounded-md hover:bg-vault-gold/30 disabled:opacity-50">
-        <Undo2 size={12} /> Return{showQty ? ` ×${qty}` : ''}
+        <Undo2 size={12} /> {bulkMode ? 'Add' : 'Return'}{showQty ? ` ×${qty}` : ''}
       </button>
     </div>
   )
