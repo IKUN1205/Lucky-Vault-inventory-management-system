@@ -266,16 +266,26 @@ export default function StreamCounts() {
       const items = []
       
       inventory.forEach(inv => {
-        const expected = inv.quantity
-        const actual = counts[inv.product_id] ?? inv.quantity
+        const expected = Math.floor(Number(inv.quantity)) || 0
+        // A blank count box is stored as '' (empty string), NOT null — so the old
+        // `counts[pid] ?? expected` did NOT catch it: '' slipped through and got
+        // written to the integer actual_qty column, which Postgres rejects
+        // ("invalid input syntax for integer"), failing the WHOLE batch and
+        // leaving an orphan header. Treat blank / non-numeric as "not counted" =
+        // expected (no change), and always coerce to a non-negative integer.
+        const raw = counts[inv.product_id]
+        const n = Number(raw)
+        const actual = (raw === '' || raw === null || raw === undefined || !Number.isFinite(n))
+          ? expected
+          : Math.max(0, Math.floor(n))
         const diff = actual - expected
-        
+
         if (diff < 0) {
           totalSold += Math.abs(diff)
         } else if (diff > 0) {
           totalDiscrepancies += diff
         }
-        
+
         items.push({
           product_id: inv.product_id,
           expected_qty: expected,
@@ -295,12 +305,22 @@ export default function StreamCounts() {
         total_discrepancies: totalDiscrepancies
       })
       
-      // Add stream_count_id to items and insert
+      // Add stream_count_id to items and insert. If the items insert fails, roll
+      // back the header we just created so we don't leave an ORPHAN stream_count
+      // (a header with 0 items + no inventory change that still inflates report
+      // totals). 2026-06-30: 6 such orphans were created by a blank-count retry.
       const itemsWithId = items.map(item => ({
         ...item,
         stream_count_id: streamCount.id
       }))
-      await createStreamCountItems(itemsWithId)
+      try {
+        await createStreamCountItems(itemsWithId)
+      } catch (itemsErr) {
+        try { await softDeleteStreamCount(streamCount.id) } catch (cleanupErr) {
+          console.error('[stream-count] orphan cleanup failed:', cleanupErr)
+        }
+        throw itemsErr
+      }
       
       // Update inventory for each changed item
       const appliedDeltas = []  // for undo
