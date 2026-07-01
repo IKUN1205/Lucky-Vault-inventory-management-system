@@ -32,6 +32,36 @@ const b64url = (buf) =>
   Buffer.from(buf).toString('base64')
     .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
 
+// fetch() with exponential-backoff retry on TRANSIENT failures only. Google's
+// Sheets backend returns 429 (rate) / 500 / 502 / 503 / 504 on momentary
+// overload — e.g. the 503 UNAVAILABLE that failed the 2026-07-01 04:48 audit.
+// Google's own guidance is to retry these with backoff. 4xx (bad range, auth)
+// are NOT retried (they won't self-heal) — we hand the response back so the
+// caller throws with the real status + body as before. Network errors retry too.
+// Bounded (default 4 tries, ~0.4+0.8+1.6s ≈ 2.8s worst case) so it stays well
+// within the Vercel cron function budget.
+const _RETRYABLE = new Set([429, 500, 502, 503, 504])
+async function fetchRetry(url, options = {}, { tries = 4, label = 'sheets' } = {}) {
+  let lastResp = null
+  let lastErr = null
+  for (let attempt = 0; attempt < tries; attempt++) {
+    if (attempt > 0) {
+      const backoff = Math.min(4000, 400 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 200)
+      await new Promise((r) => setTimeout(r, backoff))
+    }
+    try {
+      const resp = await fetch(url, options)
+      if (resp.ok || !_RETRYABLE.has(resp.status)) return resp // success or non-transient → caller handles
+      if (lastResp) { try { await lastResp.body?.cancel() } catch { /* ignore */ } } // free the prior held body
+      lastResp = resp // transient status → remember the last one and retry
+    } catch (e) {
+      lastErr = e // network/DNS blip → retry
+    }
+  }
+  if (lastResp) return lastResp // exhausted retries → let the caller throw with the real status + body
+  throw lastErr || new Error(`${label} failed after ${tries} attempts`)
+}
+
 // In-memory cached access token. Google tokens last 3600s; we refresh at
 // 3000s to leave a comfortable margin and avoid clock-skew failures.
 let _tokenCache = null
@@ -53,14 +83,14 @@ async function getAccessToken() {
   const signature = b64url(signer.sign(creds.private_key))
   const jwt = `${header}.${claim}.${signature}`
 
-  const resp = await fetch(creds.token_uri || 'https://oauth2.googleapis.com/token', {
+  const resp = await fetchRetry(creds.token_uri || 'https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
       assertion: jwt,
     }).toString(),
-  })
+  }, { label: 'token' })
   if (!resp.ok) {
     const text = await resp.text()
     throw new Error(`Google token exchange failed: ${resp.status} ${text}`)
@@ -84,7 +114,7 @@ export async function readRange(spreadsheetId, range) {
   const url =
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`
     + `?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE`
-  const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  const resp = await fetchRetry(url, { headers: { Authorization: `Bearer ${token}` } }, { label: 'readRange' })
   if (!resp.ok) {
     const text = await resp.text()
     throw new Error(`readRange failed (${resp.status}): ${text}`)
@@ -109,7 +139,7 @@ export async function readGridWithFormat(spreadsheetId, rangeA1) {
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`
     + `?ranges=${encodeURIComponent(rangeA1)}&includeGridData=true`
     + `&fields=${encodeURIComponent(fields)}`
-  const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  const resp = await fetchRetry(url, { headers: { Authorization: `Bearer ${token}` } }, { label: 'readGridWithFormat' })
   if (!resp.ok) {
     const text = await resp.text()
     throw new Error(`readGridWithFormat failed (${resp.status}): ${text}`)
@@ -134,7 +164,7 @@ export async function batchUpdateValues(spreadsheetId, updates) {
   const token = await getAccessToken()
   const url =
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`
-  const resp = await fetch(url, {
+  const resp = await fetchRetry(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -144,7 +174,7 @@ export async function batchUpdateValues(spreadsheetId, updates) {
       valueInputOption: 'USER_ENTERED',
       data: updates,
     }),
-  })
+  }, { label: 'batchUpdateValues' })
   if (!resp.ok) {
     const text = await resp.text()
     throw new Error(`batchUpdateValues failed (${resp.status}): ${text}`)
@@ -312,9 +342,10 @@ export async function backsyncSoldStatus({
  */
 export async function getSheetIds(spreadsheetId) {
   const token = await getAccessToken()
-  const resp = await fetch(
+  const resp = await fetchRetry(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId)`,
-    { headers: { Authorization: `Bearer ${token}` } }
+    { headers: { Authorization: `Bearer ${token}` } },
+    { label: 'getSheetIds' }
   )
   if (!resp.ok) {
     const text = await resp.text()
@@ -345,13 +376,14 @@ export async function applyRowStrikethrough(spreadsheetId, rows) {
       fields: 'userEnteredFormat.textFormat.strikethrough',
     },
   }))
-  const resp = await fetch(
+  const resp = await fetchRetry(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ requests }),
-    }
+    },
+    { label: 'applyRowStrikethrough' }
   )
   if (!resp.ok) {
     const text = await resp.text()
@@ -369,6 +401,11 @@ export async function applyRowStrikethrough(spreadsheetId, rows) {
 export async function insertRows(spreadsheetId, sheetId, startIndex, count) {
   if (!count || count <= 0) return
   const token = await getAccessToken()
+  // NOT routed through fetchRetry (Codex 2026-07-01): insertDimension is a RELATIVE mutation —
+  // inserting `count` rows. If Google applied it but returned/lost a transient response, a retry
+  // would insert DUPLICATE rows and shift the sheet again. A rare transient here just fails this
+  // append; the caller / next hourly run handles it. (Reads + deterministic-value writes retry;
+  // this relative row-insert must not.)
   const resp = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
     {
