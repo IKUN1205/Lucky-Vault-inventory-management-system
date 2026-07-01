@@ -78,6 +78,16 @@ export default function Returns() {
     catch (e) { console.warn('[Returns] loadRecent failed:', e.message) }
   }
 
+  // Post returned goods to the Inventory In&Out Lark group (fire-and-forget).
+  // Single mode sends one item; the bulk session sends the whole batch.
+  const notifyReturnsLark = (items, bulk) => {
+    if (!items.length) return
+    fetch('/api/lark-notify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'return', bulk, user: user?.name || null, items }),
+    }).catch(() => {})
+  }
+
   // Light in-page stats: returns grouped by the stream room that caused them
   // (count + total returned value). Computed over the loaded history.
   const byRoom = useMemo(() => {
@@ -138,6 +148,11 @@ export default function Returns() {
       const meta = KIND_META[res.kind]
       setSession(prev => [{ ...res, code: code || res.name, at: new Date().toLocaleTimeString() }, ...prev])
       addToast(`${meta?.label || res.kind}: ${res.name} — ${res.action}`, 'success')
+      notifyReturnsLark([{
+        kind: res.kind, name: res.name,
+        quantity: res.kind === 'slab' ? 1 : (Number(qty) || 1),
+        reason, room: sourceRoom || null, to: dest?.name || null,
+      }], false)
       setQty(1)   // reset to 1 so the next return doesn't inherit a big qty
       loadRecent()
     } catch (e) {
@@ -219,6 +234,7 @@ export default function Returns() {
     setProcessing(true)
     const done = []
     const failed = []
+    const larkItems = []
     // Oldest first so the session log reads in scan order.
     for (const line of [...pending].reverse()) {
       try {
@@ -231,6 +247,11 @@ export default function Returns() {
         })
         if (res.logged === false) setMigrated(false)
         done.push({ ...res, code: res.name, at: new Date().toLocaleTimeString(), key: line.key })
+        larkItems.push({
+          kind: res.kind, name: res.name,
+          quantity: line.kind === 'slab' ? 1 : (Number(line.qty) || 1),
+          reason: line.reason, room: line.sourceRoom || null, to: dest?.name || null,
+        })
       } catch (e) {
         failed.push({ line, error: e.message || String(e) })
       }
@@ -238,6 +259,7 @@ export default function Returns() {
     const failedKeys = new Set(failed.map(f => f.line.key))
     setPending(prev => prev.filter(p => failedKeys.has(p.key)))
     if (done.length) setSession(prev => [...done.reverse(), ...prev])
+    notifyReturnsLark(larkItems, true)   // one batch message for the whole session
     addToast(
       `Processed ${done.length} return${done.length === 1 ? '' : 's'}${failed.length ? `, ${failed.length} failed (kept in list)` : ''}`,
       failed.length ? 'info' : 'success',

@@ -141,6 +141,30 @@ export default async function handler(req, res) {
   if (type === 'bulk_sold')       return handleSinglesEvent(body, res, buildBulkSold)
   if (type === 'single_deleted')  return handleSinglesEvent(body, res, buildSingleDeleted)
 
+  // ----- Returns --------------------------------------------------------
+  // Cancelled / returned goods scanned back into inventory. Same "inventory
+  // in/out" group as moves + singles events. Single mode fires one per return;
+  // the bulk session fires one batch message.
+  if (type === 'return') {
+    const url = process.env.LARK_WEBHOOK_INVENTORY_IO || process.env.LARK_WEBHOOK_URL
+    if (!url) return res.status(500).json({ error: 'No inventory-io webhook configured' })
+    let text
+    try { text = buildMessage(body) }
+    catch (err) { return res.status(400).json({ error: err.message || 'Invalid payload' }) }
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text } }),
+      })
+      const txt = await r.text()
+      if (!r.ok) return res.status(502).json({ error: 'Lark webhook failed', status: r.status, details: txt })
+      return res.status(200).json({ ok: true })
+    } catch (err) {
+      return res.status(500).json({ error: 'Failed to call Lark webhook', message: String(err?.message || err) })
+    }
+  }
+
   // ----- Storefront transactions ---------------------------------------
   // Sale / Trade / Buy notifications go to the Storefront Chats group via
   // LARK_WEBHOOK_STOREFRONT. Falls back to LARK_WEBHOOK_URL if the storefront
@@ -640,6 +664,30 @@ function buildMessage(body) {
     lines.push('')
     const skuLabel = items.length === 1 ? 'item' : 'items'
     lines.push(`Total: ${items.length} ${skuLabel} / ${totalUnits ?? 0} units`)
+    lines.push(`Time: ${nowUtcStamp()}`)
+    return lines.join('\n')
+  }
+
+  if (type === 'return') {
+    const { items, user, bulk } = body
+    if (!Array.isArray(items) || items.length === 0) throw new Error('return: missing items')
+    const KIND_ICON = { sealed: '📦', single: '🎴', slab: '💎' }
+    const dests = [...new Set(items.map(i => i.to).filter(Boolean))]
+    const lines = []
+    lines.push(bulk ? `↩️ Returns (bulk) — ${items.length} item${items.length === 1 ? '' : 's'}` : '↩️ Return')
+    lines.push(`By: ${user || 'Unknown'}`)
+    if (dests.length === 1) lines.push(`Back to: ${dests[0]}`)
+    lines.push('')
+    for (const it of items) {
+      const icon = KIND_ICON[it.kind] || '📦'
+      const q = (Number(it.quantity) || 1) > 1 ? ` ×${it.quantity}` : ''
+      const tags = [it.reason, it.room].filter(Boolean).join(' · ')
+      const dest = dests.length > 1 && it.to ? ` → ${it.to}` : ''
+      lines.push(`${icon} ${it.name || 'Item'}${q}${tags ? ` — ${tags}` : ''}${dest}`)
+    }
+    lines.push('')
+    const units = items.reduce((a, i) => a + (Number(i.quantity) || 1), 0)
+    lines.push(`Total: ${items.length} item${items.length === 1 ? '' : 's'} / ${units} units back in stock`)
     lines.push(`Time: ${nowUtcStamp()}`)
     return lines.join('\n')
   }
