@@ -58,6 +58,7 @@ export default function Returns() {
   const [destId, setDestId] = useState('')          // where the goods go back (default Master Inventory)
   const [bulkMode, setBulkMode] = useState(false)   // Friday batch: build a list, process all at once
   const [pending, setPending] = useState([])        // staged returns awaiting "Process all"
+  const [openSessions, setOpenSessions] = useState(() => new Set())  // expanded return-log sessions
   const inputRef = useRef(null)
 
   useEffect(() => {
@@ -90,6 +91,36 @@ export default function Returns() {
     }
     return [...m.values()].sort((a, b) => b.count - a.count)
   }, [recent])
+
+  // Group the return log into time "sessions" so a batch (bulk or a single
+  // sitting) collapses into one row instead of N. `recent` is newest-first;
+  // adjacent returns within GAP of each other belong to the same session.
+  // Pre-bulk one-off returns naturally cluster by when they were done.
+  const sessions = useMemo(() => {
+    const GAP = 30 * 60 * 1000   // 30 min between adjacent returns starts a new session
+    const groups = []
+    let cur = null
+    for (const r of recent) {
+      const t = new Date(r.created_at).getTime()
+      if (cur && (cur.oldestT - t) <= GAP) { cur.items.push(r); cur.oldestT = t }
+      else { cur = { items: [r], newestT: t, oldestT: t }; groups.push(cur) }
+    }
+    const fmt = (ms, opts) => new Date(ms).toLocaleString('en-CA', opts)
+    return groups.map(g => {
+      const rooms = [...new Set(g.items.map(x => x.source_stream_room).filter(Boolean))]
+      const users = [...new Set(g.items.map(x => x.returned_by?.name).filter(Boolean))]
+      const units = g.items.reduce((a, x) => a + (Number(x.quantity) || 1), 0)
+      const value = g.items.reduce((a, x) => a + (Number(x.original_sale_price_usd) || 0), 0)
+      const day = fmt(g.newestT, { dateStyle: 'medium' })
+      const t1 = fmt(g.oldestT, { timeStyle: 'short' }), t2 = fmt(g.newestT, { timeStyle: 'short' })
+      const label = t1 === t2 ? `${day}, ${t2}` : `${day}, ${t1}–${t2}`
+      return { key: g.items[0].id, items: g.items, label, rooms, users, count: g.items.length, units, value }
+    })
+  }, [recent])
+
+  const toggleSession = (key) => setOpenSessions(prev => {
+    const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n
+  })
 
   // Shared return runner — from the scan/code box (code) or a manual
   // name-search pick (found, an already-resolved {kind, item} object).
@@ -462,52 +493,83 @@ export default function Returns() {
 
       {/* Recent returns log */}
       <div className="card">
-        <h2 className="font-display text-lg font-semibold text-white mb-3">Recent returns</h2>
+        <div className="flex items-baseline justify-between mb-3">
+          <h2 className="font-display text-lg font-semibold text-white">Recent returns</h2>
+          {sessions.length > 0 && (
+            <span className="text-xs text-gray-500">{sessions.length} session{sessions.length === 1 ? '' : 's'} · click to expand</span>
+          )}
+        </div>
         {recent.length === 0 ? (
           <p className="text-gray-500 text-sm py-2">No returns logged yet.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="border-b border-vault-border text-gray-400 text-xs uppercase">
-                <tr>
-                  <th className="px-3 py-2 text-left">When</th>
-                  <th className="px-3 py-2 text-left">Item</th>
-                  <th className="px-3 py-2 text-left">Reason</th>
-                  <th className="px-3 py-2 text-left">Room</th>
-                  <th className="px-3 py-2 text-right">Was sold</th>
-                  <th className="px-3 py-2 text-left">By</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recent.map(r => {
-                  const meta = KIND_META[r.kind] || {}
-                  const Icon = meta.icon || Package
-                  return (
-                    <tr key={r.id} className="border-b border-vault-border last:border-0">
-                      <td className="px-3 py-2 text-gray-400 text-xs whitespace-nowrap">
-                        {new Date(r.created_at).toLocaleString('en-CA', { dateStyle: 'short', timeStyle: 'short' })}
-                      </td>
-                      <td className="px-3 py-2 text-white">
-                        <span className="flex items-center gap-2">
-                          <Icon size={14} className={meta.color || 'text-gray-400'} />
-                          <span className="truncate max-w-[280px]" title={r.item_name}>{r.item_name || r.item_ref}</span>
-                          <span className="text-[11px] text-gray-500 font-mono">{r.item_ref}</span>
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-gray-300">
-                        {r.reason}{r.notes ? <span className="text-gray-500"> · {r.notes}</span> : ''}
-                      </td>
-                      <td className="px-3 py-2 text-gray-300">{r.source_stream_room || '—'}</td>
-                      <td className="px-3 py-2 text-right text-gray-400">
-                        {r.original_sale_price_usd != null ? usd(r.original_sale_price_usd) : '—'}
-                        {r.original_sale_channel ? <span className="text-[11px] text-gray-600"> · {r.original_sale_channel}</span> : ''}
-                      </td>
-                      <td className="px-3 py-2 text-gray-400">{r.returned_by?.name || '—'}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+          <div className="space-y-2">
+            {sessions.map(s => {
+              const open = openSessions.has(s.key)
+              return (
+                <div key={s.key} className="border border-vault-border rounded-lg overflow-hidden">
+                  <button type="button" onClick={() => toggleSession(s.key)}
+                    className="w-full flex items-center justify-between gap-3 px-3 py-2.5 bg-vault-darker/40 hover:bg-vault-darker/60 text-left">
+                    <div className="flex items-center gap-3 min-w-0">
+                      {open ? <ChevronUp size={16} className="text-gray-400 shrink-0" /> : <ChevronDown size={16} className="text-gray-400 shrink-0" />}
+                      <div className="min-w-0">
+                        <div className="text-white text-sm font-medium">{s.label}</div>
+                        <div className="text-[11px] text-gray-500 truncate">
+                          {s.count} return{s.count === 1 ? '' : 's'}{s.units !== s.count ? ` · ${s.units} units` : ''}
+                          {' · '}{s.rooms.length ? s.rooms.join(', ') : 'untagged'}
+                          {s.users.length ? ` · ${s.users.join(', ')}` : ''}
+                        </div>
+                      </div>
+                    </div>
+                    {s.value > 0 && <div className="text-xs text-gray-400 font-mono shrink-0">{usd(s.value)}</div>}
+                  </button>
+                  {open && (
+                    <div className="overflow-x-auto border-t border-vault-border">
+                      <table className="w-full text-sm">
+                        <thead className="border-b border-vault-border text-gray-400 text-xs uppercase">
+                          <tr>
+                            <th className="px-3 py-2 text-left">When</th>
+                            <th className="px-3 py-2 text-left">Item</th>
+                            <th className="px-3 py-2 text-left">Reason</th>
+                            <th className="px-3 py-2 text-left">Room</th>
+                            <th className="px-3 py-2 text-right">Was sold</th>
+                            <th className="px-3 py-2 text-left">By</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {s.items.map(r => {
+                            const meta = KIND_META[r.kind] || {}
+                            const Icon = meta.icon || Package
+                            return (
+                              <tr key={r.id} className="border-b border-vault-border last:border-0">
+                                <td className="px-3 py-2 text-gray-400 text-xs whitespace-nowrap">
+                                  {new Date(r.created_at).toLocaleString('en-CA', { timeStyle: 'short' })}
+                                </td>
+                                <td className="px-3 py-2 text-white">
+                                  <span className="flex items-center gap-2">
+                                    <Icon size={14} className={meta.color || 'text-gray-400'} />
+                                    <span className="truncate max-w-[280px]" title={r.item_name}>{r.item_name || r.item_ref}</span>
+                                    {r.quantity > 1 && <span className="text-[11px] text-vault-gold">×{r.quantity}</span>}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-gray-300">
+                                  {r.reason}{r.notes ? <span className="text-gray-500"> · {r.notes}</span> : ''}
+                                </td>
+                                <td className="px-3 py-2 text-gray-300">{r.source_stream_room || '—'}</td>
+                                <td className="px-3 py-2 text-right text-gray-400">
+                                  {r.original_sale_price_usd != null ? usd(r.original_sale_price_usd) : '—'}
+                                  {r.original_sale_channel ? <span className="text-[11px] text-gray-600"> · {r.original_sale_channel}</span> : ''}
+                                </td>
+                                <td className="px-3 py-2 text-gray-400">{r.returned_by?.name || '—'}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>
