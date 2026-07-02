@@ -35,6 +35,20 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
+// Blind-count "is this box actually counted?" — the ONE predicate shared by the
+// M/N progress, the submit button, and the hard gate in handleSubmitCount, so
+// they can never disagree. Counts are stored as RAW input strings (see
+// handleCountChange): a value counts only if it trims to a non-empty, finite,
+// NON-NEGATIVE number. Whitespace ('  ' → Number 0) and negatives are rejected —
+// a silent 0 from garbage input would fake a "sold out" row on a blind count.
+const isCounted = (v) => {
+  if (v === null || v === undefined) return false
+  const s = String(v).trim()
+  if (s === '') return false
+  const n = Number(s)
+  return Number.isFinite(n) && n >= 0
+}
+
 // Stream room locations (filter for only these)
 const STREAM_ROOM_NAMES = [
   'Stream Room - eBay LuckyVaultUS',
@@ -121,10 +135,12 @@ export default function StreamCounts() {
       const invData = await fetchInventoryForRoom(locationId)
       setInventory(invData)
       
-      // Pre-fill counts with expected quantities
+      // Blind count: initialize every product's count to blank ('') so the
+      // streamer never sees the system's expected quantity — they must type
+      // what they physically count. Do NOT pre-fill with inv.quantity.
       const initialCounts = {}
       invData.forEach(inv => {
-        initialCounts[inv.product_id] = inv.quantity
+        initialCounts[inv.product_id] = ''
       })
       setCounts(initialCounts)
     } catch (error) {
@@ -152,9 +168,13 @@ export default function StreamCounts() {
   }
 
   const handleCountChange = (productId, value) => {
+    // Store the RAW input string — no parseInt here. The old `parseInt(value)
+    // || 0` silently turned any unparsable input into a 0 count, which on a
+    // blind count records a fake "sold out". Validation lives in isCounted()
+    // (gate + progress); the submit path coerces with Number() at write time.
     setCounts(c => ({
       ...c,
-      [productId]: value === '' ? '' : parseInt(value) || 0
+      [productId]: value
     }))
   }
 
@@ -216,6 +236,18 @@ export default function StreamCounts() {
   }
 
   const handleSubmitCount = async () => {
+    // ---- Hard gate: blind count requires EVERY product counted ----
+    // The Step 2 UI disables Submit until every count box holds a finite
+    // number, but re-check here so a blank / non-finite box can never slip
+    // through some other path. Coercing a blank to "expected" would hide a
+    // loss (the whole point of the blind count), so refuse the entire submit
+    // and tell the streamer to enter 0 for anything that's gone.
+    const anyUncounted = inventory.some(inv => !isCounted(counts[inv.product_id]))
+    if (anyUncounted) {
+      addToast('Every product must be counted — enter 0 if none left', 'error')
+      return
+    }
+
     // ---- Stale-room guard (L3) ----
     // If this room hasn't been counted in a long time, ANOTHER streamer
     // may have gone live in the gap and skipped counting. This count
@@ -273,6 +305,11 @@ export default function StreamCounts() {
         // ("invalid input syntax for integer"), failing the WHOLE batch and
         // leaving an orphan header. Treat blank / non-numeric as "not counted" =
         // expected (no change), and always coerce to a non-negative integer.
+        // NOTE: with the blind-count UI, Submit is gated on every box holding a
+        // finite number and handleSubmitCount hard-returns above if any is blank,
+        // so the blank→expected branch below is now UNREACHABLE. Keep it as a
+        // last-resort crash guard so a stray edge case can never write '' into the
+        // integer actual_qty column.
         const raw = counts[inv.product_id]
         const n = Number(raw)
         const actual = (raw === '' || raw === null || raw === undefined || !Number.isFinite(n))
@@ -579,6 +616,17 @@ export default function StreamCounts() {
     )
   }
 
+  // Blind-count progress / submit gate.
+  //   N (totalProducts)   = products in the selected room
+  //   M (countedProducts) = products whose count box passes isCounted()
+  //                         (trimmed, finite, >= 0 — an explicit 0 counts)
+  // Submit stays disabled until M === N so no product is left blank and then
+  // silently coerced to its expected quantity (which would hide a loss).
+  const totalProducts = inventory.length
+  const countedProducts = inventory.reduce(
+    (n, inv) => n + (isCounted(counts[inv.product_id]) ? 1 : 0), 0)
+  const allCounted = totalProducts > 0 && countedProducts === totalProducts
+
   return (
     <div className="fade-in">
       <ToastContainer toasts={toasts} removeToast={removeToast} />
@@ -602,15 +650,15 @@ export default function StreamCounts() {
             <li>Select <span className="text-vault-gold">Streamer</span> — <em className="text-gray-400 not-italic">the person who ran the PREVIOUS session (whose sales we're recording)</em></li>
             <li>Select <span className="text-vault-gold">Counted By</span> (you — the one doing the count right now)</li>
             <li>Click <span className="text-vault-gold">Start Count</span></li>
-            <li>Enter the <span className="text-vault-gold">actual quantity</span> sitting in the room for each product</li>
-            <li>Click <span className="text-vault-gold">Submit Count</span></li>
+            <li>Physically count <span className="text-vault-gold">every product</span> in the room and type the quantity you see — <span className="text-vault-gold">enter 0</span> if none is left</li>
+            <li>Click <span className="text-vault-gold">Submit Count</span> (it unlocks once every product has a number)</li>
           </ol>
           <div className="mt-4 p-3 bg-vault-surface rounded border border-vault-border">
-            <p className="font-medium text-white mb-2">What the numbers mean:</p>
+            <p className="font-medium text-white mb-2">This is a blind count:</p>
             <ul className="space-y-1">
-              <li><span className="text-green-400">Expected 10, Actual 7</span> → previous streamer sold 3 ✓</li>
-              <li><span className="text-gray-400">Expected 10, Actual 10</span> → 0 sold (no streaming, or unsold)</li>
-              <li><span className="text-amber-400">Expected 10, Actual 12</span> → +2 discrepancy (report to manager)</li>
+              <li>You will <span className="text-white">not</span> see the system's expected numbers while counting — just enter what you physically count.</li>
+              <li>Every count box starts empty; fill in all of them (use <span className="text-vault-gold">0</span> for products with nothing left).</li>
+              <li>After you submit, the <span className="text-vault-gold">report</span> shows what sold and flags any discrepancies for the manager to review.</li>
             </ul>
           </div>
           <p className="text-amber-400 text-xs mt-3">⚠️ Count BEFORE your stream starts — do it as soon as you arrive at the room.</p>
@@ -866,20 +914,18 @@ export default function StreamCounts() {
                       <th>Brand</th>
                       <th>Product Type</th>
                       <th>Lang</th>
-                      <th className="text-right">Expected</th>
                       <th className="text-right w-32">Actual Count</th>
-                      <th className="text-right">Diff</th>
                     </tr>
                   </thead>
                   <tbody>
                     {inventory.map(inv => {
-                      const expected = inv.quantity
-                      const actual = counts[inv.product_id] ?? expected
-                      const diff = (actual === '' ? 0 : actual) - expected
+                      // Blind count: no expected / diff is computed or rendered
+                      // here so the streamer cannot see or derive the system's
+                      // quantity. The only editable value is their own count.
                       const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
-                      
+
                       return (
-                        <tr key={inv.id} className={diff !== 0 ? 'bg-vault-gold/5' : ''}>
+                        <tr key={inv.id}>
                           <td className="font-medium text-white">{launchName}</td>
                           <td>
                             <span className={`badge ${inv.product?.brand === 'Pokemon' ? 'badge-warning' : 'badge-info'}`}>
@@ -888,23 +934,15 @@ export default function StreamCounts() {
                           </td>
                           <td className="text-gray-400">{inv.product?.category}</td>
                           <td className="text-gray-400">{inv.product?.language}</td>
-                          <td className="text-right text-gray-400">{expected}</td>
                           <td className="text-right">
                             <input
                               type="number"
                               min="0"
                               value={counts[inv.product_id] ?? ''}
                               onChange={(e) => handleCountChange(inv.product_id, e.target.value)}
-                              placeholder={expected.toString()}
+                              placeholder="0"
                               className="w-24 text-right"
                             />
-                          </td>
-                          <td className="text-right">
-                            {diff !== 0 && (
-                              <span className={`font-medium ${diff < 0 ? 'text-green-400' : 'text-amber-400'}`}>
-                                {diff > 0 ? '+' : ''}{diff}
-                              </span>
-                            )}
                           </td>
                         </tr>
                       )
@@ -913,41 +951,29 @@ export default function StreamCounts() {
                 </table>
               </div>
               
-              {/* Summary */}
+              {/* Summary — blind count shows ONLY progress, never sold /
+                  discrepancy totals (those are computed against expected and
+                  would leak the system numbers we're hiding). */}
               <div className="mt-6 pt-6 border-t border-vault-border">
                 <div className="flex justify-between items-center">
-                  <div className="flex gap-6">
-                    <div>
-                      <p className="text-sm text-gray-400">Items Sold</p>
-                      <p className="font-display text-xl font-bold text-green-400">
-                        {inventory.reduce((sum, inv) => {
-                          const diff = (counts[inv.product_id] ?? inv.quantity) - inv.quantity
-                          return sum + (diff < 0 ? Math.abs(diff) : 0)
-                        }, 0)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-400">Discrepancies</p>
-                      <p className="font-display text-xl font-bold text-amber-400">
-                        {inventory.reduce((sum, inv) => {
-                          const diff = (counts[inv.product_id] ?? inv.quantity) - inv.quantity
-                          return sum + (diff > 0 ? diff : 0)
-                        }, 0)}
-                      </p>
-                    </div>
+                  <div>
+                    <p className="text-sm text-gray-400">Progress</p>
+                    <p className="font-display text-xl font-bold text-white">
+                      Counted: {countedProducts} / {totalProducts} products
+                    </p>
                   </div>
-                  
-                  <button 
+
+                  <button
                     onClick={handleSubmitCount}
                     className="btn btn-primary"
-                    disabled={submitting}
+                    disabled={submitting || !allCounted}
                   >
                     {submitting ? (
                       <div className="spinner w-5 h-5 border-2"></div>
                     ) : (
                       <>
                         <Save size={20} />
-                        Submit Count
+                        {allCounted ? 'Submit Count' : `Count all products (${countedProducts}/${totalProducts})`}
                       </>
                     )}
                   </button>
