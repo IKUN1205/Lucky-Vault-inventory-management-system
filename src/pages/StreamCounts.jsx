@@ -978,11 +978,11 @@ export default function StreamCounts() {
                 </label>
                 <textarea
                   id="count-notes"
-                  rows={3}
+                  rows={4}
                   maxLength={1000}
                   value={countNotes}
                   onChange={(e) => setCountNotes(e.target.value)}
-                  placeholder={"Anything not on this list? One item per line.\ne.g. 1 box Gem Vol.5 in the room but not on this list / 有一箱Gem Vol.5不在清单上 / damaged box of ..."}
+                  placeholder={"XXX product in the room but NOT on this list / XXX产品在房间里 但不在这个清单上\nOne item per line · 一行写一条\ne.g. 1 box Gem Vol.5 not on list / 有一箱Gem Vol.5不在清单上 · damaged box 外盒破损"}
                 />
               </div>
 
