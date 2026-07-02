@@ -91,7 +91,13 @@ export default function StreamCounts() {
   
   // Count data - maps product_id to actual count
   const [counts, setCounts] = useState({})
-  
+
+  // Optional free-text notes from the counter — anomalies / extra items
+  // physically in the room but NOT on the count list. Persisted on the
+  // stream_count row for later LLM processing. Purely optional: never gates
+  // the blind count (isCounted / allCounted / hard gate stay untouched).
+  const [countNotes, setCountNotes] = useState('')
+
   // For "Other" user option
   const [showNewStreamer, setShowNewStreamer] = useState(false)
   const [showNewCounter, setShowNewCounter] = useState(false)
@@ -143,6 +149,7 @@ export default function StreamCounts() {
         initialCounts[inv.product_id] = ''
       })
       setCounts(initialCounts)
+      setCountNotes('') // fresh notes for each new count session
     } catch (error) {
       console.error('Error loading inventory:', error)
       addToast('Failed to load inventory', 'error')
@@ -339,7 +346,13 @@ export default function StreamCounts() {
         count_time: countTimeString,
         status: totalDiscrepancies > 0 ? 'has_discrepancies' : 'complete',
         total_sold: totalSold,
-        total_discrepancies: totalDiscrepancies
+        total_discrepancies: totalDiscrepancies,
+        // Optional free-text anomaly notes (extra items in the room, damage,
+        // etc.) for later LLM processing. The `notes` column already exists on
+        // stream_counts; createStreamCount inserts the object as-is. Capped at
+        // 1000 chars (matches the textarea maxLength) so a stray giant paste
+        // can't bloat rows or the Lark webhook (Codex 2026-07-01).
+        notes: countNotes.trim().slice(0, 1000) || null
       })
       
       // Add stream_count_id to items and insert. If the items insert fails, roll
@@ -410,6 +423,7 @@ export default function StreamCounts() {
         total_discrepancies: totalDiscrepancies,
         sold_items: soldItems,
         discrepancy_items: discrepancyItems,
+        note: countNotes.trim() || null,
         status: totalDiscrepancies > 0 ? 'has_discrepancies' : 'complete'
       })
       
@@ -512,7 +526,8 @@ export default function StreamCounts() {
             totalSold,
             totalDiscrepancies,
             soldItems: soldForLark,
-            discrepancyItems: discrepancyForLark
+            discrepancyItems: discrepancyForLark,
+            note: countNotes.trim().slice(0, 1000) || undefined
           })
         }).catch(err => console.error('[lark-notify] stream_count request failed:', err))
       } catch (err) {
@@ -586,6 +601,7 @@ export default function StreamCounts() {
       count_date: new Date().toLocaleDateString('en-CA') // local YYYY-MM-DD
     })
     setCounts({})
+    setCountNotes('')
     setReport(null)
     setShowNewStreamer(false)
     setShowNewCounter(false)
@@ -950,7 +966,26 @@ export default function StreamCounts() {
                   </tbody>
                 </table>
               </div>
-              
+
+              {/* Extra items / Notes (optional) — free text for anomalies,
+                  especially products physically in the room that are NOT on
+                  this count list. One item per line; stored for later LLM
+                  processing. Purely optional: does NOT affect the blind-count
+                  gate (isCounted / allCounted / hard gate are untouched). */}
+              <div className="mt-6">
+                <label htmlFor="count-notes" className="block text-sm font-medium text-gray-300 mb-2">
+                  Extra items / Notes (optional)
+                </label>
+                <textarea
+                  id="count-notes"
+                  rows={3}
+                  maxLength={1000}
+                  value={countNotes}
+                  onChange={(e) => setCountNotes(e.target.value)}
+                  placeholder={"Anything not on this list? One item per line.\ne.g. 1 box Gem Vol.5 in the room but not on this list / 有一箱Gem Vol.5不在清单上 / damaged box of ..."}
+                />
+              </div>
+
               {/* Summary — blind count shows ONLY progress, never sold /
                   discrepancy totals (those are computed against expected and
                   would leak the system numbers we're hiding). */}
@@ -1022,7 +1057,17 @@ export default function StreamCounts() {
                 </div>
               </div>
             </div>
-            
+
+            {/* Notes from the counter — anomalies / extra items reported at
+                count time. whitespace-pre-wrap keeps one-per-line entries on
+                their own lines. */}
+            {report.note && (
+              <div className="bg-vault-dark rounded-lg p-4 mb-6">
+                <p className="text-gray-400 text-sm mb-1">Notes</p>
+                <p className="text-white whitespace-pre-wrap">{report.note}</p>
+              </div>
+            )}
+
             {/* Items Sold */}
             {report.sold_items.length > 0 && (
               <div className="mb-6">

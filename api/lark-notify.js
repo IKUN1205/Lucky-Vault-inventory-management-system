@@ -285,10 +285,14 @@ export default async function handler(req, res) {
 async function handleStreamCount(body, res) {
   const totalSold = Number(body.totalSold) || 0
   const totalDiscrepancies = Number(body.totalDiscrepancies) || 0
+  const note = typeof body.note === 'string' ? body.note.trim() : ''
 
   // Skip silently if there's nothing worth reporting (per user spec —
-  // counts of zero with no discrepancies just clutter the channels).
-  if (totalSold === 0 && totalDiscrepancies === 0) {
+  // counts of zero with no discrepancies just clutter the channels). A
+  // free-text note is itself worth reporting (its whole point is to flag
+  // something the numbers can't show — e.g. "extra box in the room not on
+  // the list"), so a note-only submission still goes out.
+  if (totalSold === 0 && totalDiscrepancies === 0 && !note) {
     return res.status(200).json({ ok: true, skipped: 'no sales or discrepancies' })
   }
 
@@ -593,6 +597,24 @@ function getRoomWebhook(roomName) {
   return null
 }
 
+// Shared trailing "note from counter" block, appended to BOTH the brief
+// (main group) and detailed (room group) stream_count messages so the two
+// variants can never drift. Rendered only when the counter left a note —
+// free text for anomalies / extra items not on the count list.
+// Free text is UNTRUSTED (Codex 2026-07-01): cap it so a giant paste can't
+// flood/fail webhook delivery, and neutralize Lark mention markup (`<at ...>`)
+// so a note can't fake an @-mention in the group. Other text passes verbatim.
+const NOTE_LARK_MAX = 500
+function appendCounterNote(lines, body) {
+  let note = typeof body.note === 'string' ? body.note.trim() : ''
+  if (!note) return
+  note = note.replace(/<at\b/gi, '‹at')          // defuse Lark mention tags
+  if (note.length > NOTE_LARK_MAX) note = note.slice(0, NOTE_LARK_MAX) + ' …(truncated)'
+  lines.push('')
+  lines.push('📝 Note from counter:')
+  lines.push(note)
+}
+
 function buildStreamCountBrief(body) {
   const { roomName, streamerName, countedByName, totalSold, totalDiscrepancies } = body
   // Strip the "Stream Room - " prefix in the brief — main group already knows
@@ -608,6 +630,7 @@ function buildStreamCountBrief(body) {
   let summary = `Sold last session: ${sold}`
   if (disc > 0) summary += ` · ⚠️ +${disc} discrepancies`
   lines.push(summary)
+  appendCounterNote(lines, body)
   return lines.join('\n')
 }
 
@@ -636,6 +659,7 @@ function buildStreamCountDetailed(body) {
     }
   }
 
+  appendCounterNote(lines, body)
   return lines.join('\n')
 }
 
