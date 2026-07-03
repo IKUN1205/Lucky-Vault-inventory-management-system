@@ -36,11 +36,12 @@ const extractLaunchName = (fullName, category) => {
 }
 
 // Blind-count "is this box actually counted?" — the ONE predicate shared by the
-// M/N progress, the submit button, and the hard gate in handleSubmitCount, so
-// they can never disagree. Counts are stored as RAW input strings (see
+// M/N progress display and the blank-row list in handleSubmitCount's confirm,
+// so they can never disagree. Counts are stored as RAW input strings (see
 // handleCountChange): a value counts only if it trims to a non-empty, finite,
-// NON-NEGATIVE number. Whitespace ('  ' → Number 0) and negatives are rejected —
-// a silent 0 from garbage input would fake a "sold out" row on a blind count.
+// NON-NEGATIVE number. Blank/garbage boxes are ALLOWED (they record as 0 after
+// the bilingual confirm — Gary 2026-07-03 incident decision); this predicate
+// just decides what shows as "counted" vs "blank".
 const isCounted = (v) => {
   if (v === null || v === undefined) return false
   const s = String(v).trim()
@@ -94,8 +95,8 @@ export default function StreamCounts() {
 
   // Optional free-text notes from the counter — anomalies / extra items
   // physically in the room but NOT on the count list. Persisted on the
-  // stream_count row for later LLM processing. Purely optional: never gates
-  // the blind count (isCounted / allCounted / hard gate stay untouched).
+  // stream_count row for later LLM processing. Purely optional — never
+  // affects whether a count can be submitted.
   const [countNotes, setCountNotes] = useState('')
 
   // For "Other" user option
@@ -243,16 +244,27 @@ export default function StreamCounts() {
   }
 
   const handleSubmitCount = async () => {
-    // ---- Hard gate: blind count requires EVERY product counted ----
-    // The Step 2 UI disables Submit until every count box holds a finite
-    // number, but re-check here so a blank / non-finite box can never slip
-    // through some other path. Coercing a blank to "expected" would hide a
-    // loss (the whole point of the blind count), so refuse the entire submit
-    // and tell the streamer to enter 0 for anything that's gone.
-    const anyUncounted = inventory.some(inv => !isCounted(counts[inv.product_id]))
-    if (anyUncounted) {
-      addToast('Every product must be counted — enter 0 if none left', 'error')
-      return
+    // ---- Blank = 0 (Gary 2026-07-03, incident decision) ----
+    // The original hard gate (every box mandatory) locked streamers out —
+    // 25-box rooms + old muscle memory of the prefilled flow meant nobody
+    // could submit ("tried 3 times and it doesn't record"). New rule per
+    // Gary: a blank box means 0 (sold out). Still blind — no expected values
+    // are revealed — but before writing, list the blank rows in a bilingual
+    // confirm so an OVERLOOKED row (still on the shelf, just missed) doesn't
+    // silently zero its inventory and inflate the streamer's sales.
+    const blanks = inventory.filter(inv => !isCounted(counts[inv.product_id]))
+    if (blanks.length > 0) {
+      const names = blanks.slice(0, 8)
+        .map(inv => extractLaunchName(inv.product?.name, inv.product?.category) || 'Unknown')
+        .join('\n  · ')
+      const more = blanks.length > 8 ? `\n  · …+${blanks.length - 8} more` : ''
+      const proceed = confirm(
+        `${blanks.length} 个产品没填数，提交后按 0（全部卖完）记录：\n  · ${names}${more}\n\n` +
+        `${blanks.length} product(s) left blank — they will be recorded as 0 (sold out).\n\n` +
+        `没货 → 按 OK 提交；架上还有 → 按 Cancel 返回补数。\n` +
+        `Gone? press OK. Still on the shelf? press Cancel and count them.`
+      )
+      if (!proceed) return
     }
 
     // ---- Stale-room guard (L3) ----
@@ -306,22 +318,22 @@ export default function StreamCounts() {
       
       inventory.forEach(inv => {
         const expected = Math.floor(Number(inv.quantity)) || 0
-        // A blank count box is stored as '' (empty string), NOT null — so the old
-        // `counts[pid] ?? expected` did NOT catch it: '' slipped through and got
-        // written to the integer actual_qty column, which Postgres rejects
-        // ("invalid input syntax for integer"), failing the WHOLE batch and
-        // leaving an orphan header. Treat blank / non-numeric as "not counted" =
-        // expected (no change), and always coerce to a non-negative integer.
-        // NOTE: with the blind-count UI, Submit is gated on every box holding a
-        // finite number and handleSubmitCount hard-returns above if any is blank,
-        // so the blank→expected branch below is now UNREACHABLE. Keep it as a
-        // last-resort crash guard so a stray edge case can never write '' into the
-        // integer actual_qty column.
+        // Blank = 0 (Gary 2026-07-03): an empty / non-numeric box records 0 —
+        // sold out. The bilingual confirm above already listed every blank row
+        // and the streamer OK'd it, so this is deliberate, not an accident.
+        // (History: blank used to coerce to `expected` as a crash guard against
+        // writing '' into the integer actual_qty column — that would silently
+        // count a missed row as "unchanged", the lazy path the blind count
+        // exists to kill. 0 keeps the column integer-safe AND honest.)
         const raw = counts[inv.product_id]
-        const n = Number(raw)
+        const n = Number(String(raw ?? '').trim())
+        // Clamp to a sane physical ceiling (Codex: Number('1e20') is finite and
+        // would overflow the Postgres integer actual_qty). A fat-fingered huge
+        // value becomes 100000 -> shows up as a giant +discrepancy the manager
+        // reviews, instead of a DB error or a silent zero.
         const actual = (raw === '' || raw === null || raw === undefined || !Number.isFinite(n))
-          ? expected
-          : Math.max(0, Math.floor(n))
+          ? 0
+          : Math.min(Math.max(0, Math.floor(n)), 100000)
         const diff = actual - expected
 
         if (diff < 0) {
@@ -641,7 +653,8 @@ export default function StreamCounts() {
   const totalProducts = inventory.length
   const countedProducts = inventory.reduce(
     (n, inv) => n + (isCounted(counts[inv.product_id]) ? 1 : 0), 0)
-  const allCounted = totalProducts > 0 && countedProducts === totalProducts
+  // (blank boxes are allowed — they record as 0 after a bilingual confirm; see
+  // handleSubmitCount. Submit is no longer gated on countedProducts.)
 
   return (
     <div className="fade-in">
@@ -666,15 +679,16 @@ export default function StreamCounts() {
             <li>Select <span className="text-vault-gold">Streamer</span> — <em className="text-gray-400 not-italic">the person who ran the PREVIOUS session (whose sales we're recording)</em></li>
             <li>Select <span className="text-vault-gold">Counted By</span> (you — the one doing the count right now)</li>
             <li>Click <span className="text-vault-gold">Start Count</span></li>
-            <li>Physically count <span className="text-vault-gold">every product</span> in the room and type the quantity you see — <span className="text-vault-gold">enter 0</span> if none is left</li>
-            <li>Click <span className="text-vault-gold">Submit Count</span> (it unlocks once every product has a number)</li>
+            <li>Physically count <span className="text-vault-gold">every product</span> in the room and type the quantity you see（数一下房间里每个产品，填看到的数量）</li>
+            <li>Sold out = enter <span className="text-vault-gold">0</span> or leave it blank（卖完的填 0 或留空 — 空格按 0 记）</li>
+            <li>Click <span className="text-vault-gold">Submit Count</span> — it will list any blank boxes and ask you to confirm（提交时会列出空格让你确认）</li>
           </ol>
           <div className="mt-4 p-3 bg-vault-surface rounded border border-vault-border">
-            <p className="font-medium text-white mb-2">This is a blind count:</p>
+            <p className="font-medium text-white mb-2">This is a blind count / 盲数：</p>
             <ul className="space-y-1">
-              <li>You will <span className="text-white">not</span> see the system's expected numbers while counting — just enter what you physically count.</li>
-              <li>Every count box starts empty; fill in all of them (use <span className="text-vault-gold">0</span> for products with nothing left).</li>
-              <li>After you submit, the <span className="text-vault-gold">report</span> shows what sold and flags any discrepancies for the manager to review.</li>
+              <li>You will <span className="text-white">not</span> see the system's expected numbers while counting — just enter what you physically count.（看不到系统数字，数到多少填多少）</li>
+              <li>A <span className="text-vault-gold">blank</span> box is recorded as <span className="text-vault-gold">0 — sold out</span>. If the product is still on the shelf, you must count it.（空格=卖完；架上还有的必须填数）</li>
+              <li>After you submit, the <span className="text-vault-gold">report</span> shows what sold and flags any discrepancies for the manager to review.（提交后报告显示卖了什么）</li>
             </ul>
           </div>
           <p className="text-amber-400 text-xs mt-3">⚠️ Count BEFORE your stream starts — do it as soon as you arrive at the room.</p>
@@ -970,8 +984,7 @@ export default function StreamCounts() {
               {/* Extra items / Notes (optional) — free text for anomalies,
                   especially products physically in the room that are NOT on
                   this count list. One item per line; stored for later LLM
-                  processing. Purely optional: does NOT affect the blind-count
-                  gate (isCounted / allCounted / hard gate are untouched). */}
+                  processing. Purely optional — never blocks a submit. */}
               <div className="mt-6">
                 <label htmlFor="count-notes" className="block text-sm font-medium text-gray-300 mb-2">
                   Extra items / Notes (optional)
@@ -996,19 +1009,24 @@ export default function StreamCounts() {
                     <p className="font-display text-xl font-bold text-white">
                       Counted: {countedProducts} / {totalProducts} products
                     </p>
+                    {countedProducts < totalProducts && (
+                      <p className="text-xs text-amber-400 mt-1">
+                        空格提交时按 0（卖完）记 · blank boxes will be recorded as 0 (sold out)
+                      </p>
+                    )}
                   </div>
 
                   <button
                     onClick={handleSubmitCount}
                     className="btn btn-primary"
-                    disabled={submitting || !allCounted}
+                    disabled={submitting}
                   >
                     {submitting ? (
                       <div className="spinner w-5 h-5 border-2"></div>
                     ) : (
                       <>
                         <Save size={20} />
-                        {allCounted ? 'Submit Count' : `Count all products (${countedProducts}/${totalProducts})`}
+                        Submit Count
                       </>
                     )}
                   </button>
