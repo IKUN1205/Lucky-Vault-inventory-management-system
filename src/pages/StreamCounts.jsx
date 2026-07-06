@@ -50,9 +50,12 @@ const BrandChip = ({ brand }) => {
   const key = (brand || '').toLowerCase()
   const logo = BRAND_LOGO[key]
   if (logo) {
+    // white pill behind the mark — several official logos are dark-on-transparent and
+    // would vanish on the app's dark background
     return (
-      <img src={logo} alt={brand} title={brand}
-        className="h-5 w-auto max-w-[76px] shrink-0 object-contain" loading="lazy" />
+      <span title={brand} className="inline-flex items-center justify-center bg-white/90 rounded px-1 py-0.5 shrink-0">
+        <img src={logo} alt={brand} className="h-4 w-auto max-w-[70px] object-contain" loading="lazy" />
+      </span>
     )
   }
   return (
