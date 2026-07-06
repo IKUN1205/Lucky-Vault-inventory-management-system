@@ -140,7 +140,23 @@ export default function StreamCounts() {
   const loadInventoryForLocation = async (locationId) => {
     try {
       const invData = await fetchInventoryForRoom(locationId)
-      setInventory(invData)
+      // Count-sheet ordering (Gary 2026-07-05, streamer feedback): rooms like TikTok carry a
+      // long tail of inventory that hasn't moved in weeks, and re-counting it top-of-list every
+      // session is painful. Put RECENTLY ACTIVE rows first (last_updated within 7 days = fresh
+      // restocks + items that sold recently), then everything by inventory VALUE descending
+      // (qty x market/cost) so the money sits at the top of each group. This exposes no system
+      // quantities — the count stays blind; it only changes ROW ORDER.
+      const FRESH_MS = 7 * 24 * 3600 * 1000
+      const decorated = invData.map(inv => ({
+        ...inv,
+        _fresh: Boolean(inv.last_updated && (Date.now() - new Date(inv.last_updated).getTime()) < FRESH_MS),
+        _value: (Number(inv.quantity) || 0) *
+                (Number(inv.current_market_price) || Number(inv.avg_cost_basis) || 0),
+      })).sort((a, b) =>
+        (Number(b._fresh) - Number(a._fresh)) ||
+        (b._value - a._value) ||
+        (a.product?.name || '').localeCompare(b.product?.name || ''))
+      setInventory(decorated)
       
       // Blind count: initialize every product's count to blank ('') so the
       // streamer never sees the system's expected quantity — they must type
@@ -936,6 +952,23 @@ export default function StreamCounts() {
             </div>
           </div>
           
+          {/* Count-process note pinned above the sheet (Gary 2026-07-05: streamers panic when
+              they see 0s / items they don't have — say loudly that blank/0 is normal). */}
+          <div className="mb-4 p-3 rounded border border-amber-500/40 bg-amber-500/10 text-sm text-amber-200">
+            <p className="font-semibold text-amber-300 mb-1">
+              Seeing items you don't have? That's normal — don't panic. / 单子上有、房间里没有？正常现象，不用慌。
+            </p>
+            <p>
+              Count what you physically see. If a listed item is <span className="font-semibold">not in your room</span> (sold
+              out / moved), just <span className="font-semibold">leave it blank or type 0</span> — the system expects that.
+              / 数到多少填多少；房间里没有的产品<span className="font-semibold">留空或填 0</span> 即可（卖完或移走了），系统就是这么设计的。
+            </p>
+            <p className="mt-1 text-amber-200/80">
+              List order: recently restocked / recently sold items first, then by inventory value.
+              / 排序：最近补货或有动销的在最上面，其余按库存价值从高到低。
+            </p>
+          </div>
+
           {inventory.length === 0 ? (
             <div className="text-center py-12">
               <Package className="mx-auto text-gray-600 mb-4" size={48} />
@@ -958,33 +991,52 @@ export default function StreamCounts() {
                     </tr>
                   </thead>
                   <tbody>
-                    {inventory.map(inv => {
+                    {inventory.map((inv, idx) => {
                       // Blind count: no expected / diff is computed or rendered
                       // here so the streamer cannot see or derive the system's
                       // quantity. The only editable value is their own count.
+                      // (_fresh/_value drive ROW ORDER + the NEW badge only.)
                       const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
+                      const prev = inventory[idx - 1]
+                      const groupBreak = idx === 0 || Boolean(prev?._fresh) !== Boolean(inv._fresh)
 
                       return (
-                        <tr key={inv.id}>
-                          <td className="font-medium text-white">{launchName}</td>
-                          <td>
-                            <span className={`badge ${inv.product?.brand === 'Pokemon' ? 'badge-warning' : 'badge-info'}`}>
-                              {inv.product?.brand}
-                            </span>
-                          </td>
-                          <td className="text-gray-400">{inv.product?.category}</td>
-                          <td className="text-gray-400">{inv.product?.language}</td>
-                          <td className="text-right">
-                            <input
-                              type="number"
-                              min="0"
-                              value={counts[inv.product_id] ?? ''}
-                              onChange={(e) => handleCountChange(inv.product_id, e.target.value)}
-                              placeholder="0"
-                              className="w-24 text-right"
-                            />
-                          </td>
-                        </tr>
+                        <React.Fragment key={inv.id}>
+                          {groupBreak && (
+                            <tr className="bg-vault-surface/60">
+                              <td colSpan={5} className="py-1.5 text-xs font-semibold tracking-wide uppercase text-gray-400">
+                                {inv._fresh
+                                  ? '🆕 Recently restocked / sold — count these first · 最近补货/有动销 — 先数这些'
+                                  : 'Older stock (by value) · 其余库存（按价值排序）'}
+                              </td>
+                            </tr>
+                          )}
+                          <tr>
+                            <td className="font-medium text-white">
+                              {launchName}
+                              {inv._fresh && (
+                                <span className="ml-2 badge badge-success align-middle">NEW</span>
+                              )}
+                            </td>
+                            <td>
+                              <span className={`badge ${inv.product?.brand === 'Pokemon' ? 'badge-warning' : 'badge-info'}`}>
+                                {inv.product?.brand}
+                              </span>
+                            </td>
+                            <td className="text-gray-400">{inv.product?.category}</td>
+                            <td className="text-gray-400">{inv.product?.language}</td>
+                            <td className="text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                value={counts[inv.product_id] ?? ''}
+                                onChange={(e) => handleCountChange(inv.product_id, e.target.value)}
+                                placeholder="0"
+                                className="w-24 text-right"
+                              />
+                            </td>
+                          </tr>
+                        </React.Fragment>
                       )
                     })}
                   </tbody>
