@@ -35,6 +35,40 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
+// Compact brand "logo" chip + language chip (Gary 2026-07-06: replace the Brand text badge
+// with a logo to save space, and surface language right next to the name). Pure RENDER-time
+// decoration from the existing product.brand / product.language fields — no input/data changes.
+const BRAND_CHIP = {
+  'pokemon': { label: 'P', bg: '#ef4444', title: 'Pokemon' },          // pokeball red
+  'one piece': { label: 'OP', bg: '#1d4ed8', title: 'One Piece' },
+  'yu-gi-oh': { label: 'Y', bg: '#7c3aed', title: 'Yu-Gi-Oh' },
+  'dragon ball': { label: 'DB', bg: '#f97316', title: 'Dragon Ball' },
+  'weiss schwarz': { label: 'WS', bg: '#0f766e', title: 'Weiss Schwarz' },
+}
+const BrandChip = ({ brand }) => {
+  const b = BRAND_CHIP[(brand || '').toLowerCase()] ||
+            { label: (brand || '?').slice(0, 2).toUpperCase(), bg: '#4b5563', title: brand || 'Unknown' }
+  return (
+    <span title={b.title}
+      className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white shrink-0"
+      style={{ backgroundColor: b.bg }}>
+      {b.label}
+    </span>
+  )
+}
+const LANG_CHIP = {
+  EN: 'bg-sky-600/80', JP: 'bg-amber-500/90 text-black', CN: 'bg-rose-600/80',
+}
+const LangChip = ({ lang }) => {
+  const l = (lang || '').toUpperCase().slice(0, 2)
+  if (!l) return null
+  return (
+    <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold text-white align-middle ${LANG_CHIP[l] || 'bg-gray-600'}`}>
+      {l}
+    </span>
+  )
+}
+
 // Blind-count "is this box actually counted?" — the ONE predicate shared by the
 // M/N progress display and the blank-row list in handleSubmitCount's confirm,
 // so they can never disagree. Counts are stored as RAW input strings (see
@@ -983,10 +1017,8 @@ export default function StreamCounts() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Launch Name</th>
-                      <th>Brand</th>
+                      <th>Product</th>
                       <th>Product Type</th>
-                      <th>Lang</th>
                       <th className="text-right w-32">Actual Count</th>
                     </tr>
                   </thead>
@@ -1004,7 +1036,7 @@ export default function StreamCounts() {
                         <React.Fragment key={inv.id}>
                           {groupBreak && (
                             <tr className="bg-vault-surface/60">
-                              <td colSpan={5} className="py-1.5 text-xs font-semibold tracking-wide uppercase text-gray-400">
+                              <td colSpan={3} className="py-1.5 text-xs font-semibold tracking-wide uppercase text-gray-400">
                                 {inv._fresh
                                   ? '🆕 Recently restocked / sold — count these first · 最近补货/有动销 — 先数这些'
                                   : 'Older stock (by value) · 其余库存（按价值排序）'}
@@ -1012,14 +1044,13 @@ export default function StreamCounts() {
                             </tr>
                           )}
                           <tr>
-                            <td className="font-medium text-white">{launchName}</td>
-                            <td>
-                              <span className={`badge ${inv.product?.brand === 'Pokemon' ? 'badge-warning' : 'badge-info'}`}>
-                                {inv.product?.brand}
+                            <td className="font-medium text-white">
+                              <span className="inline-flex items-center gap-2">
+                                <BrandChip brand={inv.product?.brand} />
+                                <span>{launchName}<LangChip lang={inv.product?.language} /></span>
                               </span>
                             </td>
                             <td className="text-gray-400">{inv.product?.category}</td>
-                            <td className="text-gray-400">{inv.product?.language}</td>
                             <td className="text-right">
                               <input
                                 type="number"
