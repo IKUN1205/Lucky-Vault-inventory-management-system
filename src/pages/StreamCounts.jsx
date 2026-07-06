@@ -1012,12 +1012,7 @@ export default function StreamCounts() {
                             </tr>
                           )}
                           <tr>
-                            <td className="font-medium text-white">
-                              {launchName}
-                              {inv._fresh && (
-                                <span className="ml-2 badge badge-success align-middle">NEW</span>
-                              )}
-                            </td>
+                            <td className="font-medium text-white">{launchName}</td>
                             <td>
                               <span className={`badge ${inv.product?.brand === 'Pokemon' ? 'badge-warning' : 'badge-info'}`}>
                                 {inv.product?.brand}
