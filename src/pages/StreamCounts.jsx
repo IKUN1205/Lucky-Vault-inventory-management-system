@@ -253,6 +253,16 @@ export default function StreamCounts() {
     // confirm so an OVERLOOKED row (still on the shelf, just missed) doesn't
     // silently zero its inventory and inflate the streamer's sales.
     const blanks = inventory.filter(inv => !isCounted(counts[inv.product_id]))
+    // ---- All-blank hard stop (2026-07-06 incident) ----
+    // A sheet with EVERY box blank is never a real count — it's a failed
+    // input session (William's browser dropped all keystrokes; the blank=0
+    // confirm then recorded the whole room as sold out and zeroed its
+    // inventory, which had to be retracted). blank=0 stays for partial
+    // sheets; a 100%-blank submit is refused outright.
+    if (inventory.length > 0 && blanks.length === inventory.length) {
+      addToast('一格都没填 — 无法提交。如果输入框打不进字,刷新页面或重启浏览器再试。 / Every box is blank — nothing to submit. If typing does nothing, refresh the page or restart the browser and try again.', 'error')
+      return
+    }
     if (blanks.length > 0) {
       const names = blanks.slice(0, 8)
         .map(inv => extractLaunchName(inv.product?.name, inv.product?.category) || 'Unknown')
