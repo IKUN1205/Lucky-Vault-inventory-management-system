@@ -38,21 +38,27 @@ const extractLaunchName = (fullName, category) => {
 // Compact brand "logo" chip + language chip (Gary 2026-07-06: replace the Brand text badge
 // with a logo to save space, and surface language right next to the name). Pure RENDER-time
 // decoration from the existing product.brand / product.language fields — no input/data changes.
-const BRAND_CHIP = {
-  'pokemon': { label: 'P', bg: '#ef4444', title: 'Pokemon' },          // pokeball red
-  'one piece': { label: 'OP', bg: '#1d4ed8', title: 'One Piece' },
-  'yu-gi-oh': { label: 'Y', bg: '#7c3aed', title: 'Yu-Gi-Oh' },
-  'dragon ball': { label: 'DB', bg: '#f97316', title: 'Dragon Ball' },
-  'weiss schwarz': { label: 'WS', bg: '#0f766e', title: 'Weiss Schwarz' },
+// Official logos live in public/brands/ (fetched from the official card-game sites 2026-07-06).
+// Unknown brands fall back to a compact colored initial chip.
+const BRAND_LOGO = {
+  'pokemon': '/brands/pokemon.svg',
+  'one piece': '/brands/onepiece.png',
+  'yu-gi-oh': '/brands/yugioh.png',
+  'dragon ball': '/brands/dragonball.png',
 }
 const BrandChip = ({ brand }) => {
-  const b = BRAND_CHIP[(brand || '').toLowerCase()] ||
-            { label: (brand || '?').slice(0, 2).toUpperCase(), bg: '#4b5563', title: brand || 'Unknown' }
+  const key = (brand || '').toLowerCase()
+  const logo = BRAND_LOGO[key]
+  if (logo) {
+    return (
+      <img src={logo} alt={brand} title={brand}
+        className="h-5 w-auto max-w-[76px] shrink-0 object-contain" loading="lazy" />
+    )
+  }
   return (
-    <span title={b.title}
-      className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white shrink-0"
-      style={{ backgroundColor: b.bg }}>
-      {b.label}
+    <span title={brand || 'Unknown'}
+      className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white shrink-0 bg-gray-600">
+      {(brand || '?').slice(0, 2).toUpperCase()}
     </span>
   )
 }
