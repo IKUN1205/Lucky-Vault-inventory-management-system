@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
+import { FEATURE_FLAGS } from '../lib/featureFlags'
 import {
   Home,
   Package,
@@ -139,6 +140,15 @@ const navSections = [
       { path: '/jp/add-product',   label: '日本新增 SKU',   icon: Plus },
     ]
   },
+  // China finance branch — flag-gated (VITE_ENABLE_CN_JP_FINANCE).
+  // See sql/cn_jp_finance.sql. Empty (hidden) when the flag is off.
+  ...(FEATURE_FLAGS.cnJpFinance ? [{
+    title: 'China 🇨🇳',
+    items: [
+      { path: '/cn/acquisitions',  label: '中国进货',       icon: ShoppingCart },
+      { path: '/cn/fx-transfers',  label: '外汇划转',       icon: ArrowRightLeft },
+    ]
+  }] : []),
   {
     title: 'Admin',
     items: [

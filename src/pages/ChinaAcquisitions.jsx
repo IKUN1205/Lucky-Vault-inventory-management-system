@@ -1,39 +1,38 @@
 import React, { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
 import {
   fetchProducts,
   fetchUsers,
-  fetchJapanVendors,
+  fetchChinaVendors,
   fetchPaymentMethods,
-  fetchJapanAcquisitions,
-  createJapanAcquisition,
-  updateJapanAcquisition,
-  undoJapanAcquisition,
+  fetchChinaAcquisitions,
+  createChinaAcquisition,
+  updateChinaAcquisition,
+  undoChinaAcquisition,
   createVendor,
   createPaymentMethod,
   convertToUSD,
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
+import SlabQuickIntake from '../components/SlabQuickIntake'
 import { useAuth } from '../lib/AuthContext'
 import { ShoppingCart, Save, Plus, Trash2, X, Pencil, RotateCcw, Loader2 } from 'lucide-react'
 import { variantLabel, variantChipClasses } from '../lib/japanVariants'
-import SlabQuickIntake from '../components/SlabQuickIntake'
-import { FEATURE_FLAGS } from '../lib/featureFlags'
 
 // ============================================================================
-// 日本进货 — Japan offline acquisitions
+// 中国进货 — China offline acquisitions
 // ============================================================================
-// Records cash-in-hand offline purchases (conventions, individual sellers).
-// Items go straight into Japan Warehouse — no separate Intake step since
-// "buy" and "receive" happen at the same moment for offline purchases.
+// Records cash-in-hand offline purchases (markets, individual sellers). Items
+// go straight into China Warehouse — no separate Intake step since "buy" and
+// "receive" happen at the same moment for offline purchases. Direct mirror of
+// the Japan Acquisitions page.
 //
 // Differences vs the US PurchasedItems page:
-//   - currency is fixed to JPY (auto USD conversion shown)
-//   - source_country fixed to JP, origin = jp_vendor
+//   - currency is fixed to RMB (auto USD conversion shown)
+//   - source_country fixed to China, origin = cn_vendor
 //   - status = 'Received' immediately, inventory bumps on submit
 //   - no tracking number field (no shipment to track)
-//   - vendor dropdown limited to JP vendors (or no-country legacy)
+//   - vendor dropdown limited to CN vendors (or no-country legacy)
 // ============================================================================
 
 const extractLaunchName = (fullName, category) => {
@@ -43,8 +42,14 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
+// 中文映射:aliases 里第一个含中文的别名 = 本页显示名(其他页面/库里的英文名不动)
+const zhName = (p) =>
+  (Array.isArray(p.aliases) && p.aliases.find(a => /[一-鿿]/.test(a))) || null
+
 const productOptionLabel = (p) => {
   const shortCode = p.short_code ? `${p.short_code} · ` : ''
+  const zh = zhName(p)
+  if (zh) return `${shortCode}${zh}`
   return `${shortCode}${p.brand || '?'} | ${extractLaunchName(p.name, p.category)} | ${p.category || p.type || '?'} | ${p.language || '?'}`
 }
 
@@ -54,6 +59,7 @@ const productOptionLabel = (p) => {
 const productSearchText = (p) => {
   const parts = []
   if (p.short_code) parts.push(p.short_code)
+  if (p.barcode) parts.push(p.barcode)          // 扫码枪直接命中 (Gary 2026-07-06)
   if (Array.isArray(p.aliases)) parts.push(...p.aliases)
   return parts.join(' ')
 }
@@ -74,7 +80,7 @@ const renderProductOption = (p) => {
   )
 }
 
-export default function JapanAcquisitions() {
+export default function ChinaAcquisitions() {
   const { toasts, addToast, removeToast } = useToast()
   const { user } = useAuth()
 
@@ -101,7 +107,7 @@ export default function JapanAcquisitions() {
   })
 
   const [lineItems, setLineItems] = useState([
-    { id: 1, product_id: '', quantity: 1, unit_cost_jpy: '' },
+    { id: 1, product_id: '', quantity: 1, unit_cost_rmb: '' },
   ])
 
   // Inline add-new-vendor / -payment toggles (same UX as US PurchasedItems)
@@ -118,11 +124,13 @@ export default function JapanAcquisitions() {
       const [prods, usersData, vs, pms, recent] = await Promise.all([
         fetchProducts(),
         fetchUsers(),
-        fetchJapanVendors(),
+        fetchChinaVendors(),
         fetchPaymentMethods(),
-        fetchJapanAcquisitions(20),
+        fetchChinaAcquisitions(20),
       ])
-      setProducts(prods.filter(p => p.type === 'Sealed' || p.type === 'Pack'))
+      // China team only handles CN-language product (Gary 2026-07-06) — a ~34-item
+      // dropdown is browsable without typing; name search stays for the rest.
+      setProducts(prods.filter(p => (p.type === 'Sealed' || p.type === 'Pack') && (p.language || '').toUpperCase() === 'CN'))
       setUsers(usersData)
       setVendors(vs)
       setPaymentMethods(pms)
@@ -142,7 +150,7 @@ export default function JapanAcquisitions() {
 
   const addLineItem = () => {
     const newId = Math.max(...lineItems.map(i => i.id), 0) + 1
-    setLineItems([...lineItems, { id: newId, product_id: '', quantity: 1, unit_cost_jpy: '' }])
+    setLineItems([...lineItems, { id: newId, product_id: '', quantity: 1, unit_cost_rmb: '' }])
   }
 
   const removeLineItem = (id) => {
@@ -155,20 +163,21 @@ export default function JapanAcquisitions() {
   }
 
   // Totals (live preview)
-  const totalJpy = lineItems.reduce((s, i) => {
+  const totalRmb = lineItems.reduce((s, i) => {
     const q = parseInt(i.quantity) || 0
-    const c = parseFloat(i.unit_cost_jpy) || 0
+    const c = parseFloat(i.unit_cost_rmb) || 0
     return s + q * c
   }, 0)
-  const totalUsd = convertToUSD(totalJpy, 'JPY')
+  const totalUsd = convertToUSD(totalRmb, 'RMB')
 
   const handleAddNewVendor = async () => {
     const name = newVendorName.trim()
     if (!name) return
     try {
-      // vendors.country is an enum (`region`) — canonical Japan value is
-      // 'Japan', not 'JP' / 'JPN' (those throw 22P02).
-      const newVendor = await createVendor({ name, country: 'Japan', active: true })
+      // vendors.country is an enum (`region`) — canonical China value is
+      // 'China', not 'CN' / 'CHN' (those throw 22P02). Requires the enum value
+      // added by sql/cn_jp_finance.sql.
+      const newVendor = await createVendor({ name, country: 'China', active: true })
       setVendors(v => [...v, newVendor].sort((a, b) => a.name.localeCompare(b.name)))
       setHeader(h => ({ ...h, vendor_id: newVendor.id }))
       setNewVendorName('')
@@ -209,15 +218,15 @@ export default function JapanAcquisitions() {
     setSubmitting(true)
     let ok = 0, fail = 0
     const larkItems = []
-    let totalJpy = 0
+    let totalRmbSubmit = 0
     let totalUnits = 0
     try {
       for (const item of valid) {
         try {
-          await createJapanAcquisition({
+          await createChinaAcquisition({
             product_id: item.product_id,
             quantity: parseInt(item.quantity),
-            unit_cost_jpy: parseFloat(item.unit_cost_jpy) || 0,
+            unit_cost_rmb: parseFloat(item.unit_cost_rmb) || 0,
             vendor_id: header.vendor_id || null,
             payment_method_id: header.payment_method_id || null,
             acquirer_id: header.acquirer_id,
@@ -230,26 +239,27 @@ export default function JapanAcquisitions() {
           const p = products.find(pp => pp.id === item.product_id)
           const launch = p ? extractLaunchName(p.name, p.category) : 'Unknown'
           const qty = parseInt(item.quantity)
-          const unitJpy = parseFloat(item.unit_cost_jpy) || 0
-          const lineJpy = qty * unitJpy
+          const unitRmb = parseFloat(item.unit_cost_rmb) || 0
+          const lineRmb = qty * unitRmb
           larkItems.push({
             name: p ? `${p.brand} | ${launch} | ${p.category || p.type} | ${p.language}` : 'Unknown',
             quantity: qty,
-            cost: lineJpy,
+            cost: lineRmb,
           })
-          totalJpy += lineJpy
+          totalRmbSubmit += lineRmb
           totalUnits += qty
         } catch (err) {
-          console.error('[JapanAcq] line failed:', err)
+          console.error('[ChinaAcq] line failed:', err)
           fail++
         }
       }
       if (ok > 0) {
-        addToast(`✓ ${ok} item${ok === 1 ? '' : 's'} added to Japan Warehouse${fail ? ` (${fail} failed)` : ''}`, ok === valid.length ? 'success' : 'info')
+        addToast(`✓ ${ok} item${ok === 1 ? '' : 's'} added to China Warehouse${fail ? ` (${fail} failed)` : ''}`, ok === valid.length ? 'success' : 'info')
 
         // Fire-and-forget Lark — reuses the 'purchased' type with
-        // sourceCountry='Japan' so dispatch routes to both the Acquisitions
-        // Squad (global visibility) and the Japan group (if configured).
+        // sourceCountry='China' so dispatch routes to the Acquisitions Squad
+        // (global spend visibility). A China-specific webhook can be wired
+        // server-side later without touching this call.
         try {
           const vendor = vendors.find(v => v.id === header.vendor_id)
           const acquirer = users.find(u => u.id === header.acquirer_id)
@@ -260,24 +270,24 @@ export default function JapanAcquisitions() {
               type: 'purchased',
               acquirer: acquirer?.name || 'Unknown',
               vendor: vendor?.name || null,
-              sourceCountry: 'Japan',
-              currency: 'JPY',
-              totalCost: totalJpy,
-              totalCostUSD: convertToUSD(totalJpy, 'JPY'),
+              sourceCountry: 'China',
+              currency: 'RMB',
+              totalCost: totalRmbSubmit,
+              totalCostUSD: convertToUSD(totalRmbSubmit, 'RMB'),
               items: larkItems,
               totalUnits,
               // No carrier/tracking for offline buys
             }),
-          }).catch(err => console.error('[lark-notify] jp_acquisition failed:', err))
+          }).catch(err => console.error('[lark-notify] cn_acquisition failed:', err))
         } catch (err) {
-          console.error('[lark-notify] jp_acquisition payload build failed:', err)
+          console.error('[lark-notify] cn_acquisition payload build failed:', err)
         }
 
         // Reset only line items, keep header so multiple batches from same
         // vendor go fast.
-        setLineItems([{ id: 1, product_id: '', quantity: 1, unit_cost_jpy: '' }])
+        setLineItems([{ id: 1, product_id: '', quantity: 1, unit_cost_rmb: '' }])
         // Refresh recent list
-        const recent = await fetchJapanAcquisitions(20)
+        const recent = await fetchChinaAcquisitions(20)
         setRecentAcqs(recent)
       } else {
         addToast('Failed to save acquisitions', 'error')
@@ -290,19 +300,19 @@ export default function JapanAcquisitions() {
   const handleUndoAcq = async (a) => {
     // One dialog = confirm + reason capture. Cancel (null) aborts.
     const reason = window.prompt(
-      `撤销这笔进货?\n${extractLaunchName(a.product?.name, a.product?.category)} × ${a.quantity_purchased}\n\n会从日本仓扣回 ${a.quantity_purchased} 件。\n(如果这批已经卖掉/发走一部分,会拦下来)\n可填撤销原因(可留空):`,
+      `撤销这笔进货?\n${extractLaunchName(a.product?.name, a.product?.category)} × ${a.quantity_purchased}\n\n会从中国仓扣回 ${a.quantity_purchased} 件。\n(如果这批已经卖掉/发走一部分,会拦下来)\n可填撤销原因(可留空):`,
       ''
     )
     if (reason === null) return
 
     setRowBusy(a.id)
     try {
-      await undoJapanAcquisition(a.id, { deletedById: user?.id || null, reason: reason || null })
-      addToast('✓ 进货已撤销,日本库存已扣回', 'success')
-      const recent = await fetchJapanAcquisitions(20)
+      await undoChinaAcquisition(a.id, { deletedById: user?.id || null, reason: reason || null })
+      addToast('✓ 进货已撤销,中国库存已扣回', 'success')
+      const recent = await fetchChinaAcquisitions(20)
       setRecentAcqs(recent)
     } catch (err) {
-      console.error('[JapanAcq] undo failed:', err)
+      console.error('[ChinaAcq] undo failed:', err)
       addToast(err.message || 'Failed to undo acquisition', 'error')
     } finally {
       setRowBusy(null)
@@ -318,11 +328,10 @@ export default function JapanAcquisitions() {
       <div>
         <h1 className="font-display text-2xl font-bold text-white flex items-center gap-3">
           <ShoppingCart className="text-vault-gold" />
-          🇯🇵 日本进货 / Japan Acquisitions
+          🇨🇳 中国进货 / China Acquisitions
         </h1>
         <p className="text-gray-400 mt-1">
-          Record offline purchases (currency = JPY, instant-receive to <strong>Japan Warehouse</strong>).
-          See current stock in <Link to="/jp/inventory" className="text-vault-gold hover:underline">日本库存</Link>.
+          Record offline purchases (currency = RMB, instant-receive to <strong>China Warehouse</strong>).
         </p>
       </div>
 
@@ -349,69 +358,9 @@ export default function JapanAcquisitions() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Vendor */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-sm font-medium text-gray-300">Vendor (optional)</label>
-              <button
-                type="button"
-                onClick={() => setShowNewVendor(s => !s)}
-                className="text-xs text-vault-gold hover:underline"
-              >
-                {showNewVendor ? 'Cancel' : '+ New'}
-              </button>
-            </div>
-            {showNewVendor ? (
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newVendorName}
-                  onChange={e => setNewVendorName(e.target.value)}
-                  placeholder="New JP vendor name"
-                  className="flex-1"
-                />
-                <button type="button" onClick={handleAddNewVendor} className="btn btn-primary text-sm py-1.5 px-3">Add</button>
-              </div>
-            ) : (
-              <select name="vendor_id" value={header.vendor_id} onChange={handleHeaderChange}>
-                <option value="">— No specific vendor —</option>
-                {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-              </select>
-            )}
-          </div>
-
-          {/* Payment method */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-sm font-medium text-gray-300">Payment Method (optional)</label>
-              <button
-                type="button"
-                onClick={() => setShowNewPayment(s => !s)}
-                className="text-xs text-vault-gold hover:underline"
-              >
-                {showNewPayment ? 'Cancel' : '+ New'}
-              </button>
-            </div>
-            {showNewPayment ? (
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newPaymentName}
-                  onChange={e => setNewPaymentName(e.target.value)}
-                  placeholder="e.g. Cash, Bank Transfer"
-                  className="flex-1"
-                />
-                <button type="button" onClick={handleAddNewPayment} className="btn btn-primary text-sm py-1.5 px-3">Add</button>
-              </div>
-            ) : (
-              <select name="payment_method_id" value={header.payment_method_id} onChange={handleHeaderChange}>
-                <option value="">— Unspecified —</option>
-                {paymentMethods.map(pm => <option key={pm.id} value={pm.id}>{pm.name}</option>)}
-              </select>
-            )}
-          </div>
-        </div>
+        {/* Vendor + Payment Method removed per Gary 2026-07-06 — CN purchases
+            reconcile at channel level (fx_transfers), not per-vendor/per-payment.
+            Data layer still accepts nulls, so nothing else changes. */}
 
         <div>
           <label className="block text-sm font-medium text-gray-300 mb-2">Notes (optional)</label>
@@ -420,7 +369,7 @@ export default function JapanAcquisitions() {
             name="notes"
             value={header.notes}
             onChange={handleHeaderChange}
-            placeholder="e.g. Akihabara convention purchase"
+            placeholder="e.g. 义乌小商品市场进货 / Yiwu market purchase"
           />
         </div>
 
@@ -429,7 +378,7 @@ export default function JapanAcquisitions() {
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-white text-sm">Items</h3>
             <div className="text-xs text-gray-400">
-              Total: <span className="text-vault-gold font-semibold">¥{totalJpy.toLocaleString()}</span>
+              Total: <span className="text-vault-gold font-semibold">¥{totalRmb.toLocaleString()}</span>
               <span className="text-gray-500 mx-2">≈</span>
               <span className="text-green-400 font-semibold">${totalUsd.toFixed(2)} USD</span>
             </div>
@@ -438,8 +387,9 @@ export default function JapanAcquisitions() {
           <div className="space-y-2">
             {lineItems.map((item, idx) => {
               const q = parseInt(item.quantity) || 0
-              const c = parseFloat(item.unit_cost_jpy) || 0
+              const c = parseFloat(item.unit_cost_rmb) || 0
               const lineTotal = q * c
+              const prod = item.product_id ? products.find(p => p.id === item.product_id) : null
               return (
                 <div key={item.id} className="p-3 bg-vault-dark rounded-lg border border-vault-border">
                   {/* items-start + consistent label-then-control structure across all
@@ -474,11 +424,11 @@ export default function JapanAcquisitions() {
                       <label className="block text-xs text-gray-400 mb-1">Unit ¥</label>
                       <input
                         type="number"
-                        value={item.unit_cost_jpy}
-                        onChange={(e) => updateLineItem(item.id, 'unit_cost_jpy', e.target.value)}
+                        value={item.unit_cost_rmb}
+                        onChange={(e) => updateLineItem(item.id, 'unit_cost_rmb', e.target.value)}
                         min="0"
                         step="0.01"
-                        placeholder="JPY"
+                        placeholder="RMB"
                         className="text-sm w-full"
                       />
                     </div>
@@ -501,6 +451,23 @@ export default function JapanAcquisitions() {
                       </button>
                     </div>
                   </div>
+                  {/* Full-width readable name of the selected product — the search
+                      box column is too narrow for long CN/JP names (Gary 2026-07-06) */}
+                  {prod && (
+                    <div className="mt-2 pt-2 border-t border-vault-border/40 flex items-center gap-2">
+                      {prod.variant && (
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${variantChipClasses(prod.variant)} flex-shrink-0`}>
+                          {variantLabel(prod.variant)}
+                        </span>
+                      )}
+                      <span className="text-base text-gray-100 font-medium leading-snug">
+                        {prod.short_code ? `${prod.short_code} · ` : ''}{zhName(prod) || prod.name}
+                      </span>
+                      <span className="text-xs text-gray-500 flex-shrink-0">
+                        {[zhName(prod) ? prod.name : null, prod.category || prod.type].filter(Boolean).join(' · ')}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -522,27 +489,24 @@ export default function JapanAcquisitions() {
             className="btn btn-primary flex items-center gap-2"
           >
             <Save size={16} />
-            {submitting ? 'Saving…' : 'Save → Japan Warehouse'}
+            {submitting ? 'Saving…' : 'Save → China Warehouse'}
           </button>
         </div>
       </form>
 
-      {/* Slab cert quick-intake (shared with China). Flag-gated so the Japan
-          page is unchanged when the feature is off. Defaults currency to JPY. */}
-      {FEATURE_FLAGS.cnJpFinance && (
-        <SlabQuickIntake
-          defaultCurrency="JPY"
-          currentUserId={user?.id}
-          currentUserName={user?.name}
-          addToast={addToast}
-        />
-      )}
+      {/* Slab cert quick-intake (shared with Japan). Defaults currency to RMB. */}
+      <SlabQuickIntake
+        defaultCurrency="RMB"
+        currentUserId={user?.id}
+        currentUserName={user?.name}
+        addToast={addToast}
+      />
 
       {/* Recent acquisitions */}
       <div className="card max-w-4xl">
-        <h3 className="font-semibold text-white text-sm mb-3">Recent Japan acquisitions (last 20)</h3>
+        <h3 className="font-semibold text-white text-sm mb-3">Recent China acquisitions (last 20)</h3>
         {recentAcqs.length === 0 ? (
-          <p className="text-gray-500 text-sm py-3">No Japan acquisitions yet.</p>
+          <p className="text-gray-500 text-sm py-3">No China acquisitions yet.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -553,7 +517,7 @@ export default function JapanAcquisitions() {
                   <th className="pb-2">Vendor</th>
                   <th className="pb-2">Acquirer</th>
                   <th className="pb-2 text-right">Qty</th>
-                  <th className="pb-2 text-right">JPY</th>
+                  <th className="pb-2 text-right">RMB</th>
                   <th className="pb-2 text-right">USD</th>
                   <th className="pb-2 text-right">Actions</th>
                 </tr>
@@ -584,7 +548,7 @@ export default function JapanAcquisitions() {
                           onClick={() => handleUndoAcq(a)}
                           disabled={rowBusy === a.id}
                           className="p-1.5 text-gray-400 hover:text-red-400 rounded-md hover:bg-red-500/10 disabled:opacity-40"
-                          title="撤销这笔进货(扣回日本库存)"
+                          title="撤销这笔进货(扣回中国库存)"
                         >
                           {rowBusy === a.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
                         </button>
@@ -607,7 +571,7 @@ export default function JapanAcquisitions() {
           onClose={() => setEditing(null)}
           onSaved={async () => {
             setEditing(null)
-            const recent = await fetchJapanAcquisitions(20)
+            const recent = await fetchChinaAcquisitions(20)
             setRecentAcqs(recent)
           }}
           addToast={addToast}
@@ -618,24 +582,23 @@ export default function JapanAcquisitions() {
 }
 
 // ============================================================================
-// Edit modal for a Japan acquisition.
+// Edit modal for a China acquisition.
 // ============================================================================
-// Pre-fills the row. Save routes through updateJapanAcquisition, which
-// reconciles Japan Warehouse stock for any product/qty/cost change (reversing
+// Pre-fills the row. Save routes through updateChinaAcquisition, which
+// reconciles China Warehouse stock for any product/qty/cost change (reversing
 // the old buy + re-applying the corrected one, stock-checked server-side) and
 // rewrites the acquisition record. Edits are SILENT on Lark — this is internal
-// Japan stock bookkeeping; the create already announced the buy and a typo fix
-// doesn't need to re-ping the group. The undo/edit are still fully traceable
-// in the DB (updated_at / deleted_* columns) and drop in/out of 日本日志.
+// China stock bookkeeping; the create already announced the buy and a typo fix
+// doesn't need to re-ping the group.
 function EditAcquisitionModal({ acq, products, vendors, paymentMethods, onClose, onSaved, addToast }) {
-  const seedUnitJpy = acq.quantity_purchased > 0
+  const seedUnitRmb = acq.quantity_purchased > 0
     ? Math.round((Number(acq.cost) || 0) / acq.quantity_purchased)
     : 0
 
   const [form, setForm] = useState({
     product_id: acq.product_id || '',
     quantity: acq.quantity_purchased || 1,
-    unit_cost_jpy: seedUnitJpy ? String(seedUnitJpy) : '',
+    unit_cost_rmb: seedUnitRmb ? String(seedUnitRmb) : '',
     vendor_id: acq.vendor_id || '',
     payment_method_id: acq.payment_method_id || '',
     date_purchased: acq.date_purchased || new Date().toLocaleDateString('en-CA'),
@@ -645,28 +608,28 @@ function EditAcquisitionModal({ acq, products, vendors, paymentMethods, onClose,
   const set = (field, value) => setForm(f => ({ ...f, [field]: value }))
 
   const qty = parseInt(form.quantity) || 0
-  const unit = parseFloat(form.unit_cost_jpy) || 0
-  const lineJpy = qty * unit
-  const lineUsd = convertToUSD(lineJpy, 'JPY')
+  const unit = parseFloat(form.unit_cost_rmb) || 0
+  const lineRmb = qty * unit
+  const lineUsd = convertToUSD(lineRmb, 'RMB')
 
   const handleSave = async () => {
     if (!form.product_id) { addToast('Pick a product', 'error'); return }
     if (qty <= 0) { addToast('Quantity must be at least 1', 'error'); return }
     setSaving(true)
     try {
-      await updateJapanAcquisition(acq.id, {
+      await updateChinaAcquisition(acq.id, {
         product_id: form.product_id,
         quantity: qty,
-        unit_cost_jpy: unit,
+        unit_cost_rmb: unit,
         vendor_id: form.vendor_id || null,
         payment_method_id: form.payment_method_id || null,
         date_purchased: form.date_purchased,
         notes: form.notes || null,
       })
-      addToast('✓ 进货已更新,日本库存已同步', 'success')
+      addToast('✓ 进货已更新,中国库存已同步', 'success')
       await onSaved()
     } catch (err) {
-      console.error('[JapanAcq] edit failed:', err)
+      console.error('[ChinaAcq] edit failed:', err)
       addToast(err.message || 'Failed to update acquisition', 'error')
     } finally {
       setSaving(false)
@@ -701,7 +664,7 @@ function EditAcquisitionModal({ acq, products, vendors, paymentMethods, onClose,
               renderOption={renderProductOption}
               placeholder="搜索 short code / 中文 / English..."
             />
-            <p className="text-[11px] text-gray-500 mt-1">改产品/数量/成本会自动调整日本库存(原批已卖/已发会拦下)。</p>
+            <p className="text-[11px] text-gray-500 mt-1">改产品/数量/成本会自动调整中国库存(原批已卖/已发会拦下)。</p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -712,8 +675,8 @@ function EditAcquisitionModal({ acq, products, vendors, paymentMethods, onClose,
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Unit ¥</label>
-              <input type="number" min="0" step="0.01" value={form.unit_cost_jpy}
-                onChange={(e) => set('unit_cost_jpy', e.target.value)} className="text-sm w-full" />
+              <input type="number" min="0" step="0.01" value={form.unit_cost_rmb}
+                onChange={(e) => set('unit_cost_rmb', e.target.value)} className="text-sm w-full" />
             </div>
           </div>
 
@@ -747,7 +710,7 @@ function EditAcquisitionModal({ acq, products, vendors, paymentMethods, onClose,
           </div>
 
           <div className="text-xs text-gray-400 pt-1">
-            New total: <span className="text-vault-gold font-semibold">¥{lineJpy.toLocaleString()}</span>
+            New total: <span className="text-vault-gold font-semibold">¥{lineRmb.toLocaleString()}</span>
             <span className="text-gray-500 mx-1">≈</span>
             <span className="text-green-400 font-semibold">${lineUsd.toFixed(2)} USD</span>
           </div>

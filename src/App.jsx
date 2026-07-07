@@ -51,9 +51,13 @@ import JapanLocalSales from './pages/JapanLocalSales'
 import JapanShipments from './pages/JapanShipments'
 import JapanLog from './pages/JapanLog'
 import JapanAddProduct from './pages/JapanAddProduct'
+// CN/JP finance — flag-gated (VITE_ENABLE_CN_JP_FINANCE)
+import ChinaAcquisitions from './pages/ChinaAcquisitions'
+import FxTransfers from './pages/FxTransfers'
 
 // Components
 import Layout from './components/Layout'
+import { FEATURE_FLAGS } from './lib/featureFlags'
 
 // Protected Route wrapper
 function ProtectedRoute({ children, path }) {
@@ -232,6 +236,17 @@ function AppRoutes() {
       <Route path="/jp/add-product" element={
         <ProtectedRoute path="/jp/add-product"><Layout><JapanAddProduct /></Layout></ProtectedRoute>
       } />
+      {/* China + FX finance — flag-gated (VITE_ENABLE_CN_JP_FINANCE). See sql/cn_jp_finance.sql */}
+      {FEATURE_FLAGS.cnJpFinance && (
+        <>
+          <Route path="/cn/acquisitions" element={
+            <ProtectedRoute path="/cn/acquisitions"><Layout><ChinaAcquisitions /></Layout></ProtectedRoute>
+          } />
+          <Route path="/cn/fx-transfers" element={
+            <ProtectedRoute path="/cn/fx-transfers"><Layout><FxTransfers /></Layout></ProtectedRoute>
+          } />
+        </>
+      )}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

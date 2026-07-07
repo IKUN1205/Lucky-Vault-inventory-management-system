@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
+import { FEATURE_FLAGS } from '../lib/featureFlags'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { Users, Plus, Edit2, Trash2, Save, X, UserPlus, Key, RefreshCw, Check } from 'lucide-react'
@@ -72,6 +73,12 @@ const PAGE_SECTIONS = [
     { path: '/jp/log', label: '日本日志 / Japan Activity Log' },
     { path: '/jp/add-product', label: '日本新增 SKU / Japan Add Product' },
   ]},
+  // China finance branch — flag-gated (VITE_ENABLE_CN_JP_FINANCE).
+  // See sql/cn_jp_finance.sql. Hidden from the picker when the flag is off.
+  ...(FEATURE_FLAGS.cnJpFinance ? [{ title: 'China 🇨🇳', items: [
+    { path: '/cn/acquisitions', label: '中国进货 / China Acquisitions' },
+    { path: '/cn/fx-transfers', label: '外汇划转 / FX Transfers (CNY→USD)' },
+  ]}] : []),
   { title: 'Admin', items: [
     { path: '/high-value', label: 'High Value' },
     { path: '/expenses', label: 'Business Expenses' },

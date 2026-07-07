@@ -2147,6 +2147,321 @@ export const updateJapanAcquisition = async (acqId, {
   return updated
 }
 
+// ============================================================================
+// China (中国进货) — offline acquisitions. Direct mirror of the Japan flow.
+// ============================================================================
+// Same instant-receive model as Japan (buy = receive into China Warehouse in
+// one step). currency = RMB (¥), source_country = 'China', origin = 'cn_vendor'.
+// Requires the schema in sql/cn_jp_finance.sql (China Warehouse location, the
+// 'China' region-enum value, and 'cn_vendor' on the acquisitions.origin CHECK).
+// ============================================================================
+
+let _cachedChinaLocationId = null
+
+export const fetchChinaWarehouseLocation = async () => {
+  if (_cachedChinaLocationId) return _cachedChinaLocationId
+  const { data, error } = await supabase
+    .from('locations')
+    .select('id, name')
+    .eq('name', 'China Warehouse')
+    .maybeSingle()
+  if (error) throw error
+  if (!data) throw new Error("Location 'China Warehouse' not found — run sql/cn_jp_finance.sql first")
+  _cachedChinaLocationId = data.id
+  return data.id
+}
+
+// CN-side vendors (for the China Acquisitions vendor dropdown). STRICTLY
+// country='China' — deliberately NOT null-country legacy vendors, which would
+// pull US/legacy sellers into the China list. If a vendor is missing, set its
+// country to 'China' on the Vendors page (or use "+ New" on the form).
+export const fetchChinaVendors = async () => {
+  const { data, error } = await supabase
+    .from('vendors')
+    .select('*')
+    .eq('active', true)
+    .eq('country', 'China')
+    .order('name')
+  if (error) throw error
+  return data || []
+}
+
+// Recent China offline purchases (cn_vendor origin only), for the Acquisitions
+// page's "recent" list.
+export const fetchChinaAcquisitions = async (limit = 50) => {
+  const { data, error } = await supabase
+    .from('acquisitions')
+    .select(`
+      *,
+      vendor:vendors(name),
+      payment_method:payment_methods(name),
+      acquirer:users!acquirer_id(name),
+      product:products(*)
+    `)
+    .eq('origin', 'cn_vendor')
+    .or('deleted.is.null,deleted.eq.false')
+    .order('date_purchased', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return data || []
+}
+
+// China offline purchase = instant receive (no separate Intake step). Mirrors
+// createJapanAcquisition: create acquisition row with status='Received', then
+// bump China inventory by qty at weighted-avg USD cost basis.
+export const createChinaAcquisition = async ({
+  product_id, quantity, unit_cost_rmb, vendor_id, payment_method_id,
+  acquirer_id, date_purchased, notes,
+}) => {
+  const locId = await fetchChinaWarehouseLocation()
+  const qty = parseInt(quantity, 10)
+  const costRmb = parseFloat(unit_cost_rmb) || 0
+  const totalCostRmb = costRmb * qty
+  const totalCostUsd = convertToUSD(totalCostRmb, 'RMB')
+  const unitCostUsd = qty > 0 ? totalCostUsd / qty : 0
+
+  const acqRow = {
+    date_purchased: date_purchased || new Date().toLocaleDateString('en-CA'),
+    acquirer_id: acquirer_id || null,
+    source_country: 'China',  // region enum accepts 'China', not 'CN'
+    vendor_id: vendor_id || null,
+    payment_method_id: payment_method_id || null,
+    product_id,
+    quantity_purchased: qty,
+    quantity_received: qty,                  // instant-receive
+    cost: totalCostRmb,
+    currency: 'RMB',
+    cost_usd: totalCostUsd,
+    status: 'Received',                       // instant-receive
+    origin: 'cn_vendor',
+    notes: notes || null,
+  }
+
+  const { data: acq, error: acqErr } = await supabase
+    .from('acquisitions')
+    .insert(acqRow)
+    .select()
+    .single()
+  if (acqErr) throw acqErr
+
+  await updateInventory(product_id, locId, qty, unitCostUsd)
+  return acq
+}
+
+// Current China Warehouse stock for one product (0 if no row). Guards undo/edit
+// so we never drive inventory negative by reversing a buy whose units were
+// already sold/shipped.
+const fetchChinaProductStock = async (productId) => {
+  const locId = await fetchChinaWarehouseLocation()
+  const { data } = await supabase
+    .from('inventory')
+    .select('quantity')
+    .eq('product_id', productId)
+    .eq('location_id', locId)
+    .maybeSingle()
+  return data?.quantity || 0
+}
+
+// Undo (撤销) a China acquisition — removes the instant-received qty and
+// soft-deletes the row. Guarded like the Japan version.
+export const undoChinaAcquisition = async (acqId, { deletedById = null, reason = null } = {}) => {
+  const { data: acq, error: getErr } = await supabase
+    .from('acquisitions')
+    .select('id, product_id, quantity_purchased, origin, deleted')
+    .eq('id', acqId)
+    .maybeSingle()
+  if (getErr) throw getErr
+  if (!acq) throw new Error('Acquisition not found')
+  if (acq.origin !== 'cn_vendor') throw new Error('Not a China acquisition')
+  if (acq.deleted) throw new Error('This acquisition was already undone')
+
+  const qty = acq.quantity_purchased || 0
+  const stock = await fetchChinaProductStock(acq.product_id)
+  if (qty > stock) {
+    throw new Error(`Only ${stock} in China stock now, but this buy was ${qty} — some was already sold/shipped. Undo the sale/shipment first, or fix the count in 中国库存.`)
+  }
+
+  const locId = await fetchChinaWarehouseLocation()
+  await updateInventory(acq.product_id, locId, -qty)  // remove (avg unchanged)
+  const { error: delErr } = await supabase
+    .from('acquisitions')
+    .update({
+      deleted: true,
+      deleted_at: new Date().toISOString(),
+      deleted_by_id: deletedById || null,
+      deleted_reason: reason || 'China acquisition undone from China acquisitions page',
+    })
+    .eq('id', acqId)
+  if (delErr) throw delErr
+  return acq
+}
+
+// Edit (修改) a China acquisition — reconciles China Warehouse stock for any
+// product/qty/unit-cost change, then rewrites the row. Mirrors the Japan
+// version's reverse-old + re-apply-new inventory math and stock guard.
+export const updateChinaAcquisition = async (acqId, {
+  product_id, quantity, unit_cost_rmb, vendor_id, payment_method_id,
+  date_purchased, notes,
+}) => {
+  const { data: old, error: getErr } = await supabase
+    .from('acquisitions')
+    .select('id, product_id, quantity_purchased, cost, origin, deleted, date_purchased')
+    .eq('id', acqId)
+    .maybeSingle()
+  if (getErr) throw getErr
+  if (!old) throw new Error('Acquisition not found')
+  if (old.origin !== 'cn_vendor') throw new Error('Not a China acquisition')
+  if (old.deleted) throw new Error('This acquisition was undone')
+
+  if (!product_id) throw new Error('Product is required')
+  const newQty = parseInt(quantity, 10)
+  if (!Number.isFinite(newQty) || newQty <= 0) throw new Error('Quantity must be at least 1')
+
+  const locId = await fetchChinaWarehouseLocation()
+  const oldQty = old.quantity_purchased || 0
+  const oldProduct = old.product_id
+  const oldUnitRmb = oldQty > 0 ? (Number(old.cost) || 0) / oldQty : 0
+  const newUnitRmb = parseFloat(unit_cost_rmb) || 0
+
+  const productChanged = product_id !== oldProduct
+  const qtyChanged = newQty !== oldQty
+  const costChanged = Math.abs(newUnitRmb - oldUnitRmb) > 0.5
+  const invChanged = productChanged || qtyChanged || costChanged
+
+  if (invChanged) {
+    const oldStock = await fetchChinaProductStock(oldProduct)
+    if (oldQty > oldStock) {
+      throw new Error(`Only ${oldStock} of the original product in stock now, but this buy was ${oldQty} — some was already sold/shipped. Fix the sale/shipment first, or adjust in 中国库存.`)
+    }
+    const newTotalUsd = convertToUSD(newUnitRmb * newQty, 'RMB')
+    const newUnitUsd = newQty > 0 ? newTotalUsd / newQty : 0
+    await updateInventory(oldProduct, locId, -oldQty)             // reverse old (avg unchanged)
+    await updateInventory(product_id, locId, newQty, newUnitUsd)  // re-apply new (weighted avg)
+  }
+
+  const totalCostRmb = newUnitRmb * newQty
+  const totalCostUsd = convertToUSD(totalCostRmb, 'RMB')
+  const { data: updated, error: upErr } = await supabase
+    .from('acquisitions')
+    .update({
+      product_id,
+      quantity_purchased: newQty,
+      quantity_received: newQty,   // instant-receive stays in sync
+      cost: totalCostRmb,
+      cost_usd: totalCostUsd,
+      currency: 'RMB',
+      vendor_id: vendor_id || null,
+      payment_method_id: payment_method_id || null,
+      date_purchased: date_purchased || old.date_purchased,
+      notes: notes ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', acqId)
+    .select()
+    .single()
+  if (upErr) throw upErr
+  return updated
+}
+
+// ============================================================================
+// FX transfers (fx_transfers) — CNY/USD cross-border ledger (shared w/ lv-finance).
+// ============================================================================
+// lv-finance auto-inserts the USD leg from US bank feeds; the China team
+// backfills the RMB leg via the app. Rate = CNY per USD = cny_amount /
+// usd_amount. A row needs at least one of the two amounts. Backed by
+// sql/cn_jp_finance.sql (china_recon.py reads these exact columns).
+// ============================================================================
+
+const fxRate = (cny, usd) =>
+  (cny != null && usd != null && Number(usd) !== 0) ? Number(cny) / Number(usd) : null
+
+// Newest first. `pendingBackfill: true` → auto-inserted USD rows still missing
+// the RMB leg (cny_amount IS NULL) — the China team's primary work queue.
+export const fetchFxTransfers = async ({ limit = 50, pendingBackfill = false } = {}) => {
+  let q = supabase
+    .from('fx_transfers')
+    .select('*, created_by:users!fx_transfers_created_by_id_fkey(id, name)')
+    .or('deleted.is.null,deleted.eq.false')
+  if (pendingBackfill) q = q.is('cny_amount', null)
+  const { data, error } = await q
+    .order('date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return data || []
+}
+
+// Backfill the RMB leg on an auto-inserted USD row: set cny_amount + the derived
+// rate (CNY per USD) from the row's existing usd_amount.
+export const backfillFxTransfer = async (id, { cny_amount } = {}) => {
+  const cny = parseFloat(cny_amount)
+  if (!Number.isFinite(cny) || cny <= 0) throw new Error('Enter the RMB amount received')
+  const { data: row, error: getErr } = await supabase
+    .from('fx_transfers')
+    .select('id, usd_amount')
+    .eq('id', id)
+    .maybeSingle()
+  if (getErr) throw getErr
+  if (!row) throw new Error('Transfer not found')
+  const usd = row.usd_amount != null ? Number(row.usd_amount) : null
+  // .is('cny_amount', null) makes a stale tab / double submit a no-op instead of
+  // silently overwriting an already-backfilled RMB leg (Codex review 2026-07-05)
+  const { data, error } = await supabase
+    .from('fx_transfers')
+    .update({ cny_amount: cny, rate: fxRate(cny, usd) })
+    .eq('id', id)
+    .is('cny_amount', null)
+    .select()
+  if (error) throw error
+  if (!data || data.length === 0) throw new Error('该笔已被回填过(可能在别的页签)— 刷新列表确认')
+  return data[0]
+}
+
+// Manual full-row insert for transfers the automation missed. At least one of
+// usd_amount / cny_amount is required; rate is auto-computed when both present.
+export const createFxTransfer = async ({
+  date, usd_amount, cny_amount, counterparty, bank_txn_ref, purpose, note, created_by_id,
+}) => {
+  const usd = usd_amount === '' || usd_amount == null ? null : parseFloat(usd_amount)
+  const cny = cny_amount === '' || cny_amount == null ? null : parseFloat(cny_amount)
+  if (usd == null && cny == null) throw new Error('Enter at least a USD or a CNY amount')
+  const row = {
+    date: date || new Date().toLocaleDateString('en-CA'),
+    usd_amount: usd,
+    cny_amount: cny,
+    rate: fxRate(cny, usd),
+    counterparty: counterparty || null,
+    bank_txn_ref: bank_txn_ref || null,
+    purpose: purpose || null,
+    note: note || null,
+    created_by_id: created_by_id || null,
+  }
+  const { data, error } = await supabase
+    .from('fx_transfers')
+    .insert(row)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export const undoFxTransfer = async (id, { deletedById = null, reason = null } = {}) => {
+  const { data, error } = await supabase
+    .from('fx_transfers')
+    .update({
+      deleted: true,
+      deleted_at: new Date().toISOString(),
+      deleted_by_id: deletedById || null,
+      deleted_reason: reason || 'FX transfer voided',
+    })
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
 // Record a sale out of Japan Warehouse. Decrements inventory + inserts into
 // japan_stream_sales (audit log). USD snapshot uses the static exchange rate
 // at sale time.
