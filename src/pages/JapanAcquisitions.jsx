@@ -11,6 +11,7 @@ import {
   undoJapanAcquisition,
   createVendor,
   createPaymentMethod,
+  createProduct,
   convertToUSD,
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
@@ -32,7 +33,11 @@ import { FEATURE_FLAGS } from '../lib/featureFlags'
 //   - currency is fixed to JPY (auto USD conversion shown)
 //   - source_country fixed to JP, origin = jp_vendor
 //   - status = 'Received' immediately, inventory bumps on submit
-//   - no tracking number field (no shipment to track)
+//   - optional 快递/运单号 (Gary 2026-07-06): online JP buys shipped to the
+//     warehouse get arrival alerts via the daily AfterShip cron
+//   - Chinese-first UI same as ChinaAcquisitions (Gary 2026-07-06): the JP
+//     buying team works in Chinese — 中文 alias shows as the display name and
+//     "+ 新货" quick-add takes a Chinese name (US side normalizes later)
 //   - vendor dropdown limited to JP vendors (or no-country legacy)
 // ============================================================================
 
@@ -43,17 +48,24 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
+// 中文映射:aliases 里第一个含中文的别名 = 本页显示名(其他页面/库里的英文名不动)
+const zhName = (p) =>
+  (Array.isArray(p.aliases) && p.aliases.find(a => /[一-鿿]/.test(a))) || null
+
 const productOptionLabel = (p) => {
   const shortCode = p.short_code ? `${p.short_code} · ` : ''
+  const zh = zhName(p)
+  if (zh) return `${shortCode}${zh}`
   return `${shortCode}${p.brand || '?'} | ${extractLaunchName(p.name, p.category)} | ${p.category || p.type || '?'} | ${p.language || '?'}`
 }
 
-// Aliases + short code joined for SearchableSelect's getOptionSearchText.
-// Lets typing "M2a", "海贼王", "OP15", etc. find the matching SKU even when
-// those terms aren't in the displayed label.
+// Aliases + short code + barcode joined for SearchableSelect's
+// getOptionSearchText. Lets typing "M2a", "海贼王", "OP15", or scanning a
+// barcode find the matching SKU even when those terms aren't in the label.
 const productSearchText = (p) => {
   const parts = []
   if (p.short_code) parts.push(p.short_code)
+  if (p.barcode) parts.push(p.barcode)          // 扫码枪直接命中
   if (Array.isArray(p.aliases)) parts.push(...p.aliases)
   return parts.join(' ')
 }
@@ -91,6 +103,9 @@ export default function JapanAcquisitions() {
   const [editing, setEditing] = useState(null)   // row being edited (null = closed)
   const [rowBusy, setRowBusy] = useState(null)    // id mid-undo
 
+  // Quick-add-product ("+ 新货") modal toggle.
+  const [showQuickAdd, setShowQuickAdd] = useState(false)
+
   // Header (shared across all line items in one submission)
   const [header, setHeader] = useState({
     date_purchased: new Date().toLocaleDateString('en-CA'),
@@ -98,6 +113,8 @@ export default function JapanAcquisitions() {
     vendor_id: '',
     payment_method_id: '',
     notes: '',
+    carrier: '',          // optional — 线上买的货有快递才填
+    tracking_number: '',
   })
 
   const [lineItems, setLineItems] = useState([
@@ -152,6 +169,24 @@ export default function JapanAcquisitions() {
 
   const updateLineItem = (id, field, value) => {
     setLineItems(items => items.map(i => i.id === id ? { ...i, [field]: value } : i))
+  }
+
+  // A new provisional JP product was just created inline. Add it to the options
+  // list and auto-select it into the first empty line (or a fresh line if all
+  // are filled), so the buyer keeps going without hunting for it.
+  const handleQuickAddCreated = (created) => {
+    setProducts(prev => prev.some(p => p.id === created.id) ? prev : [...prev, created])
+    setLineItems(items => {
+      const idx = items.findIndex(i => !i.product_id)
+      if (idx >= 0) {
+        const copy = [...items]
+        copy[idx] = { ...copy[idx], product_id: created.id }
+        return copy
+      }
+      const newId = Math.max(...items.map(i => i.id), 0) + 1
+      return [...items, { id: newId, product_id: created.id, quantity: 1, unit_cost_jpy: '' }]
+    })
+    setShowQuickAdd(false)
   }
 
   // Totals (live preview)
@@ -223,6 +258,8 @@ export default function JapanAcquisitions() {
             acquirer_id: header.acquirer_id,
             date_purchased: header.date_purchased,
             notes: header.notes || null,
+            carrier: header.tracking_number.trim() ? (header.carrier || 'Other') : null,
+            tracking_number: header.tracking_number || null,
           })
           ok++
           // Build Lark payload pieces from the validated form data so we
@@ -266,16 +303,18 @@ export default function JapanAcquisitions() {
               totalCostUSD: convertToUSD(totalJpy, 'JPY'),
               items: larkItems,
               totalUnits,
-              // No carrier/tracking for offline buys
+              carrier: header.tracking_number.trim() ? (header.carrier || 'Other') : null,
+              trackingNumber: header.tracking_number.trim() || null,
             }),
           }).catch(err => console.error('[lark-notify] jp_acquisition failed:', err))
         } catch (err) {
           console.error('[lark-notify] jp_acquisition payload build failed:', err)
         }
 
-        // Reset only line items, keep header so multiple batches from same
-        // vendor go fast.
+        // Reset line items + tracking (per-shipment), keep the rest of the
+        // header so multiple batches from same vendor go fast.
         setLineItems([{ id: 1, product_id: '', quantity: 1, unit_cost_jpy: '' }])
+        setHeader(h => ({ ...h, carrier: '', tracking_number: '' }))
         // Refresh recent list
         const recent = await fetchJapanAcquisitions(20)
         setRecentAcqs(recent)
@@ -424,10 +463,50 @@ export default function JapanAcquisitions() {
           />
         </div>
 
+        {/* Optional shipment tracking (Gary 2026-07-06) — 线上买的货填了单号,
+            每天 AfterShip cron 会自动跟踪并在 Lark 播报到货。
+            Carrier values must match AFTERSHIP_SLUGS keys in api/aftership-sync.js. */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">快递 / Carrier (可选)</label>
+            <select name="carrier" value={header.carrier} onChange={handleHeaderChange}>
+              <option value="">— 线下自提,没有快递 —</option>
+              <option value="Yamato">黑猫 Yamato (ヤマト)</option>
+              <option value="Sagawa">佐川 Sagawa</option>
+              <option value="Japan Post">日本邮政 Japan Post</option>
+              <option value="EMS">EMS</option>
+              <option value="Other">其他 Other (自动识别)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">运单号 / Tracking # (可选)</label>
+            <input
+              type="text"
+              name="tracking_number"
+              value={header.tracking_number}
+              onChange={handleHeaderChange}
+              placeholder="1234-5678-9012"
+              className="font-mono"
+              spellCheck={false}
+            />
+            <p className="text-[11px] text-gray-500 mt-1">填了单号,到货当天会自动在 Lark 提醒。</p>
+          </div>
+        </div>
+
         {/* Line items */}
         <div className="pt-4 border-t border-vault-border">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-white text-sm">Items</h3>
+            <div className="flex items-center gap-3">
+              <h3 className="font-semibold text-white text-sm">Items</h3>
+              <button
+                type="button"
+                onClick={() => setShowQuickAdd(true)}
+                className="text-xs text-vault-gold hover:underline flex items-center gap-1"
+                title="买到目录里没有的日文产品?点这里先建一个(中文名即可)"
+              >
+                <Plus size={12} /> 新货
+              </button>
+            </div>
             <div className="text-xs text-gray-400">
               Total: <span className="text-vault-gold font-semibold">¥{totalJpy.toLocaleString()}</span>
               <span className="text-gray-500 mx-2">≈</span>
@@ -440,6 +519,7 @@ export default function JapanAcquisitions() {
               const q = parseInt(item.quantity) || 0
               const c = parseFloat(item.unit_cost_jpy) || 0
               const lineTotal = q * c
+              const prod = item.product_id ? products.find(p => p.id === item.product_id) : null
               return (
                 <div key={item.id} className="p-3 bg-vault-dark rounded-lg border border-vault-border">
                   {/* items-start + consistent label-then-control structure across all
@@ -501,6 +581,23 @@ export default function JapanAcquisitions() {
                       </button>
                     </div>
                   </div>
+                  {/* Full-width readable name of the selected product — the search
+                      box column is too narrow for long CN/JP names */}
+                  {prod && (
+                    <div className="mt-2 pt-2 border-t border-vault-border/40 flex items-center gap-2">
+                      {prod.variant && (
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${variantChipClasses(prod.variant)} flex-shrink-0`}>
+                          {variantLabel(prod.variant)}
+                        </span>
+                      )}
+                      <span className="text-base text-gray-100 font-medium leading-snug">
+                        {prod.short_code ? `${prod.short_code} · ` : ''}{zhName(prod) || prod.name}
+                      </span>
+                      <span className="text-xs text-gray-500 flex-shrink-0">
+                        {[zhName(prod) ? prod.name : null, prod.category || prod.type].filter(Boolean).join(' · ')}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -613,6 +710,224 @@ export default function JapanAcquisitions() {
           addToast={addToast}
         />
       )}
+
+      {showQuickAdd && (
+        <JpQuickAddProduct
+          existingProducts={products}
+          currentUserName={user?.name}
+          addToast={addToast}
+          onClose={() => setShowQuickAdd(false)}
+          onCreated={handleQuickAddCreated}
+        />
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// JpQuickAddProduct — inline "+ 新货" provisional product creator (日本进货)
+// ============================================================================
+// Same normalize-later convention as the China page: the JP buying team works
+// in Chinese, so a product not yet in the catalog gets created with a CHINESE
+// provisional name (written to BOTH products.name AND aliases[0]); the US side
+// renames name→English later and the Chinese stays searchable in aliases.
+// ============================================================================
+
+const JP_TYPE_OPTIONS = [
+  { key: 'sealed_box', label: '原盒', type: 'Sealed', category: 'Booster Box' },
+  { key: 'pack',       label: '散包', type: 'Pack',   category: 'Booster Pack' },
+  { key: 'gift_box',   label: '礼盒', type: 'Sealed', category: 'Collection Box' },
+  { key: 'other',      label: '其他', type: 'Sealed', category: 'Other' },
+]
+const JP_BRAND_OPTIONS = [
+  { key: 'pokemon',    label: '宝可梦 Pokemon',       brand: 'Pokemon' },
+  { key: 'onepiece',   label: '海贼王 One Piece',     brand: 'One Piece' },
+  { key: 'dragonball', label: '龙珠 Dragon Ball',     brand: 'Dragon Ball' },
+  { key: 'other',      label: '其他 Other',           brand: null },
+]
+const jpNorm = (s) => (s || '').toLowerCase().replace(/\s+/g, '')
+
+function JpQuickAddProduct({ existingProducts = [], currentUserName, addToast, onClose, onCreated }) {
+  const [form, setForm] = useState({ name: '', typeKey: 'sealed_box', brandKey: 'pokemon', brandOther: '', barcode: '' })
+  const [dupMatch, setDupMatch] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const set = (field, value) => setForm(f => ({ ...f, [field]: value }))
+
+  const typeOpt = JP_TYPE_OPTIONS.find(t => t.key === form.typeKey) || JP_TYPE_OPTIONS[0]
+
+  // Case-insensitive similarity against existing products' name + aliases.
+  const findDup = (name) => {
+    const target = jpNorm(name)
+    if (!target) return null
+    return existingProducts.find(p => {
+      const candidates = [p.name, ...(Array.isArray(p.aliases) ? p.aliases : [])]
+      return candidates.some(c => {
+        const x = jpNorm(c)
+        return x && (x === target || x.includes(target) || target.includes(x))
+      })
+    }) || null
+  }
+
+  const doCreate = async (force) => {
+    const name = form.name.trim()
+    if (!name) { addToast?.('中文名必填', 'error'); return }
+
+    if (!force) {
+      const match = findDup(name)
+      if (match) { setDupMatch(match); return }   // pause; require explicit confirm
+    }
+
+    setSubmitting(true)
+    try {
+      const brand = form.brandKey === 'other'
+        ? (form.brandOther.trim() || null)
+        : (JP_BRAND_OPTIONS.find(b => b.key === form.brandKey)?.brand || null)
+      const created = await createProduct({
+        name,                 // Chinese = provisional (CJK in name → not yet normalized by US)
+        aliases: [name],      // keep Chinese searchable even after US renames name→English
+        brand,
+        type: typeOpt.type,
+        category: typeOpt.category,
+        language: 'JP',
+        active: true,
+        breakable: false,     // provisional; US side sets break config on cleanup
+        barcode: form.barcode.trim() || null,
+      })
+
+      // US-side heads-up (fire-and-forget).
+      try {
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'jp_new_product',
+            name,
+            typeLabel: typeOpt.label,
+            user: currentUserName || 'Unknown',
+          }),
+        }).catch(err => console.error('[lark-notify] jp_new_product failed:', err))
+      } catch (err) {
+        console.error('[lark-notify] jp_new_product payload build failed:', err)
+      }
+
+      addToast?.(`✓ 已新建: ${name}`, 'success')
+      onCreated?.(created)
+    } catch (err) {
+      const msg = err.message || 'unknown error'
+      if (/duplicate key|unique constraint/i.test(msg)) {
+        addToast?.('条码已被占用,或产品已存在', 'error')
+      } else {
+        addToast?.(`创建失败: ${msg}`, 'error')
+      }
+      console.error('[JpQuickAddProduct] create failed:', err)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+      onClick={() => !submitting && onClose?.()}>
+      <div className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-lg w-full p-5 shadow-2xl max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center gap-2 text-vault-gold">
+            <Plus size={18} />
+            <h3 className="font-semibold text-base">新建产品 / Quick-add product</h3>
+          </div>
+          <button onClick={onClose} disabled={submitting} className="text-gray-500 hover:text-white p-1 -m-1">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">中文名 *</label>
+            <input
+              type="text"
+              value={form.name}
+              onChange={(e) => { set('name', e.target.value); if (dupMatch) setDupMatch(null) }}
+              placeholder="例如:深渊之瞳 原盒"
+              className="text-sm w-full"
+              autoFocus
+            />
+            <p className="text-[11px] text-gray-500 mt-1">用中文填就行,不用打日文。美国那边之后补英文名/归类,不影响这里搜索。</p>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">类型 *</label>
+            <div className="grid grid-cols-4 gap-2">
+              {JP_TYPE_OPTIONS.map(t => (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => set('typeKey', t.key)}
+                  className={`text-sm py-2 rounded-md border transition-colors ${
+                    form.typeKey === t.key
+                      ? 'bg-vault-gold/20 border-vault-gold/60 text-vault-gold'
+                      : 'border-vault-border text-gray-300 hover:border-vault-gold/40'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-gray-500 mt-1">{typeOpt.type} · {typeOpt.category}</p>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">品牌 (可选)</label>
+            <div className="flex gap-2">
+              <select value={form.brandKey} onChange={(e) => set('brandKey', e.target.value)} className="text-sm flex-1">
+                {JP_BRAND_OPTIONS.map(b => <option key={b.key} value={b.key}>{b.label}</option>)}
+              </select>
+              {form.brandKey === 'other' && (
+                <input
+                  type="text"
+                  value={form.brandOther}
+                  onChange={(e) => set('brandOther', e.target.value)}
+                  placeholder="品牌名 (可留空)"
+                  className="text-sm flex-1"
+                />
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">条码 (可选)</label>
+            <input
+              type="text"
+              value={form.barcode}
+              onChange={(e) => set('barcode', e.target.value)}
+              placeholder="扫码枪可直接扫"
+              className="text-sm w-full font-mono"
+            />
+          </div>
+
+          {dupMatch && (
+            <div className="bg-amber-500/10 border border-amber-500/40 rounded-lg p-3 text-sm">
+              <p className="text-amber-300 font-medium mb-1">可能已存在类似产品:</p>
+              <p className="text-white">{dupMatch.name} <span className="text-gray-500 text-xs">[{dupMatch.language}]</span></p>
+              <p className="text-[11px] text-gray-400 mt-1">确认不是这个?点「仍然创建」继续。</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} disabled={submitting}
+            className="px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-50">
+            取消
+          </button>
+          <button
+            onClick={() => doCreate(Boolean(dupMatch))}
+            disabled={submitting || !form.name.trim()}
+            className="btn btn-primary flex items-center gap-2 disabled:opacity-50"
+          >
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            {dupMatch ? '仍然创建' : '创建并选用'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -858,6 +858,18 @@ function buildMessage(body) {
     return lines.join('\n')
   }
 
+  if (type === 'jp_new_product') {
+    // Japan Acquisitions "+ 新货" quick-add — same normalize-later convention
+    // as cn_new_product (provisional Chinese name, US side fixes name/category).
+    const { name, typeLabel, user } = body
+    if (!name) throw new Error('jp_new_product: missing name')
+    const lines = []
+    lines.push(`🇯🇵 日本新建产品: ${name}${typeLabel ? ` (${typeLabel})` : ''} — 待补英文名/归类`)
+    if (user) lines.push(`By: ${user}`)
+    lines.push(`Time: ${nowUtcStamp()}`)
+    return lines.join('\n')
+  }
+
   if (type === 'manual_inventory') {
     // Triggered after a successful Manual Inventory add (single or bulk).
     // Useful so the team knows "Aldo manually added 50 NIKKE to Master" —

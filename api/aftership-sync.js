@@ -43,6 +43,7 @@ const AFTERSHIP_SLUGS = {
   'Japan Post':  'japan-post',
   'EMS':         'ems',
   'Yamato':      'yamato',
+  'Sagawa':      'sagawa',              // 佐川急便 (JapanAcquisitions tracking)
   'SF Express':  'sf-express',
   'China Post':  'china-post-ems-ept',  // China Post EMS — most common
   // CN domestic couriers (ChinaAcquisitions tracking, Gary 2026-07-06)

@@ -1978,7 +1978,7 @@ export const fetchJapanAcquisitions = async (limit = 50) => {
 // than silently swallow it (matches the US Intake to Master semantics).
 export const createJapanAcquisition = async ({
   product_id, quantity, unit_cost_jpy, vendor_id, payment_method_id,
-  acquirer_id, date_purchased, notes,
+  acquirer_id, date_purchased, notes, carrier, tracking_number,
 }) => {
   const locId = await fetchJapanWarehouseLocation()
   const qty = parseInt(quantity, 10)
@@ -2002,6 +2002,10 @@ export const createJapanAcquisition = async ({
     status: 'Received',                       // instant-receive
     origin: 'jp_vendor',
     notes: notes || null,
+    // Optional shipment info (online JP buys shipped to Japan Warehouse) —
+    // rows with a tracking_number feed the daily AfterShip arrival alerts.
+    carrier: carrier?.trim() || null,
+    tracking_number: tracking_number?.trim() || null,
   }
 
   const { data: acq, error: acqErr } = await supabase
