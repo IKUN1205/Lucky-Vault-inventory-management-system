@@ -1951,7 +1951,16 @@ function DailySummaryCard({ summary, loading, range, onRangeChange, onRefresh, o
 
 // One row in the expanded daily-summary details: header with type +
 // payment method + time + signed net cash, then the item bullets.
+// Self-service edits are only allowed for 5 minutes after a transaction is
+// logged (Gary 2026-07-06 — Paradox Rift Card/Cash mixup). Admins (anyone
+// with Team Management access) can edit anytime. Missing timestamp = locked.
+const EDIT_WINDOW_MS = 5 * 60 * 1000
+const withinEditWindow = (txn) =>
+  Boolean(txn?.timestamp) && (Date.now() - new Date(txn.timestamp).getTime()) <= EDIT_WINDOW_MS
+
 function TransactionDetail({ txn, onEdit }) {
+  const { isAdmin } = useAuth()
+  const canEdit = isAdmin() || withinEditWindow(txn)
   const KIND_ICON_TXT = {
     sealed: '📦', slab: '💎', single: '🎴',
     slab_manual: '💎', single_manual: '🎴',
@@ -2029,7 +2038,7 @@ function TransactionDetail({ txn, onEdit }) {
         <div className="flex items-baseline gap-1.5 flex-shrink-0">
           <span className={`font-semibold ${headerMeta.netColor}`}>{headerMeta.money}</span>
           {headerMeta.sub && <span className="text-[10px] text-gray-500">({headerMeta.sub})</span>}
-          {onEdit && (
+          {onEdit && canEdit && (
             <button
               type="button"
               onClick={() => onEdit(txn)}
@@ -2038,6 +2047,14 @@ function TransactionDetail({ txn, onEdit }) {
             >
               <Edit2 size={12} />
             </button>
+          )}
+          {onEdit && !canEdit && (
+            <span
+              className="ml-1.5 p-1 text-gray-600 cursor-not-allowed select-none text-[11px] leading-none"
+              title="Edit window (5 min) has passed — ask an admin to fix this transaction / 超过5分钟编辑窗口，请找管理员修改"
+            >
+              🔒
+            </span>
           )}
         </div>
       </div>
@@ -2074,6 +2091,7 @@ function TransactionDetail({ txn, onEdit }) {
 // require reversing inventory effects) — those need delete + redo.
 // ============================================================================
 function EditTransactionModal({ txn, paymentMethods, onClose, onSaved, addToast }) {
+  const { isAdmin } = useAuth()
   // Current state read off the txn passed in. payment_method_id comes
   // from the legacy header column (always set when a single method was
   // picked at checkout). If the txn was a split-payment, paymentName
@@ -2116,6 +2134,11 @@ function EditTransactionModal({ txn, paymentMethods, onClose, onSaved, addToast 
     }
     if (wasSplit && paymentMethodId && paymentMethodId !== initialMethodId) {
       if (!confirm('This transaction had a SPLIT payment. Saving will collapse it into a single payment method. Continue?')) return
+    }
+    // re-check the 5-min window at save time — the modal may have sat open
+    if (!isAdmin() && !withinEditWindow(txn)) {
+      addToast('Edit window (5 min) has passed — ask an admin / 超过5分钟编辑窗口，请找管理员修改', 'error')
+      return
     }
     setSaving(true)
     try {
