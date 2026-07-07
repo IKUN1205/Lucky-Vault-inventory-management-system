@@ -2212,7 +2212,7 @@ export const fetchChinaAcquisitions = async (limit = 50) => {
 // bump China inventory by qty at weighted-avg USD cost basis.
 export const createChinaAcquisition = async ({
   product_id, quantity, unit_cost_rmb, vendor_id, payment_method_id,
-  acquirer_id, date_purchased, notes,
+  acquirer_id, date_purchased, notes, carrier, tracking_number,
 }) => {
   const locId = await fetchChinaWarehouseLocation()
   const qty = parseInt(quantity, 10)
@@ -2236,6 +2236,11 @@ export const createChinaAcquisition = async ({
     status: 'Received',                       // instant-receive
     origin: 'cn_vendor',
     notes: notes || null,
+    // Optional shipment info (online CN buys shipped to China Warehouse).
+    // Rows with a tracking_number are picked up by the daily AfterShip cron
+    // (api/aftership-sync.js) for arrival alerts — stock semantics unchanged.
+    carrier: carrier?.trim() || null,
+    tracking_number: tracking_number?.trim() || null,
   }
 
   const { data: acq, error: acqErr } = await supabase

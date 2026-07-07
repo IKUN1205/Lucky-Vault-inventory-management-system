@@ -32,7 +32,9 @@ import { variantLabel, variantChipClasses } from '../lib/japanVariants'
 //   - currency is fixed to RMB (auto USD conversion shown)
 //   - source_country fixed to China, origin = cn_vendor
 //   - status = 'Received' immediately, inventory bumps on submit
-//   - no tracking number field (no shipment to track)
+//   - optional 快递/运单号 (Gary 2026-07-06): online CN buys shipped to the
+//     warehouse get arrival alerts via the daily AfterShip cron; stock still
+//     instant-receives (tracking is informational, not an Intake gate)
 //   - vendor dropdown limited to CN vendors (or no-country legacy)
 // ============================================================================
 
@@ -108,6 +110,8 @@ export default function ChinaAcquisitions() {
     vendor_id: '',
     payment_method_id: '',
     notes: '',
+    carrier: '',          // optional — 线上买的货有快递才填
+    tracking_number: '',
   })
 
   const [lineItems, setLineItems] = useState([
@@ -254,6 +258,8 @@ export default function ChinaAcquisitions() {
             acquirer_id: header.acquirer_id,
             date_purchased: header.date_purchased,
             notes: header.notes || null,
+            carrier: header.tracking_number.trim() ? (header.carrier || 'Other') : null,
+            tracking_number: header.tracking_number || null,
           })
           ok++
           // Build Lark payload pieces from the validated form data so we
@@ -298,16 +304,18 @@ export default function ChinaAcquisitions() {
               totalCostUSD: convertToUSD(totalRmbSubmit, 'RMB'),
               items: larkItems,
               totalUnits,
-              // No carrier/tracking for offline buys
+              carrier: header.tracking_number.trim() ? (header.carrier || 'Other') : null,
+              trackingNumber: header.tracking_number.trim() || null,
             }),
           }).catch(err => console.error('[lark-notify] cn_acquisition failed:', err))
         } catch (err) {
           console.error('[lark-notify] cn_acquisition payload build failed:', err)
         }
 
-        // Reset only line items, keep header so multiple batches from same
-        // vendor go fast.
+        // Reset line items + tracking (per-shipment), keep the rest of the
+        // header so multiple batches from same vendor go fast.
         setLineItems([{ id: 1, product_id: '', quantity: 1, unit_cost_rmb: '' }])
+        setHeader(h => ({ ...h, carrier: '', tracking_number: '' }))
         // Refresh recent list
         const recent = await fetchChinaAcquisitions(20)
         setRecentAcqs(recent)
@@ -393,6 +401,38 @@ export default function ChinaAcquisitions() {
             onChange={handleHeaderChange}
             placeholder="e.g. 义乌小商品市场进货 / Yiwu market purchase"
           />
+        </div>
+
+        {/* Optional shipment tracking (Gary 2026-07-06) — 线上买的货填了单号,
+            每天 AfterShip cron 会自动跟踪并在 Lark 播报到货 (LV CLAW)。
+            Carrier values must match AFTERSHIP_SLUGS keys in api/aftership-sync.js. */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">快递 / Carrier (可选)</label>
+            <select name="carrier" value={header.carrier} onChange={handleHeaderChange}>
+              <option value="">— 线下自提,没有快递 —</option>
+              <option value="SF Express">顺丰 SF Express</option>
+              <option value="China Post">EMS / 中国邮政 China Post</option>
+              <option value="ZTO">中通 ZTO</option>
+              <option value="YTO">圆通 YTO</option>
+              <option value="STO">申通 STO</option>
+              <option value="Yunda">韵达 Yunda</option>
+              <option value="Other">其他 Other (自动识别)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">运单号 / Tracking # (可选)</label>
+            <input
+              type="text"
+              name="tracking_number"
+              value={header.tracking_number}
+              onChange={handleHeaderChange}
+              placeholder="SF1234567890123"
+              className="font-mono"
+              spellCheck={false}
+            />
+            <p className="text-[11px] text-gray-500 mt-1">填了单号,到货当天会自动在 Lark 提醒。</p>
+          </div>
         </div>
 
         {/* Line items */}

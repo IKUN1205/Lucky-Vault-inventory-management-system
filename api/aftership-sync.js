@@ -45,6 +45,11 @@ const AFTERSHIP_SLUGS = {
   'Yamato':      'yamato',
   'SF Express':  'sf-express',
   'China Post':  'china-post-ems-ept',  // China Post EMS — most common
+  // CN domestic couriers (ChinaAcquisitions tracking, Gary 2026-07-06)
+  'ZTO':         'zto',                 // 中通
+  'YTO':         'yto',                 // 圆通
+  'STO':         'sto',                 // 申通
+  'Yunda':       'yunda',               // 韵达
   'Other':       null  // let AfterShip auto-detect
 }
 
