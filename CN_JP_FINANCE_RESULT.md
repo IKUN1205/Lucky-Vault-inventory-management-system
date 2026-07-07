@@ -11,6 +11,18 @@
 
 ---
 
+## CHANGELOG — CN quick-add product "+ 新货" (2026-07-06)
+
+Added inline provisional-product creation to the China Acquisitions page so the China team isn't blocked when they buy a simplified-Chinese SKU not yet in the catalog (US side asleep). Per `CN_QUICKADD_BRIEF.md` (Gary-approved). **Build re-verified** (`npm run build` → ✅ 1474 modules, 3.73s, no errors).
+
+- **`src/pages/ChinaAcquisitions.jsx`** — product dropdown is scoped to `language==='CN'`; a 「+ 新货」button by the Items header opens a new **`CnQuickAddProduct`** modal. Fields (Chinese): 中文名* / 类型* (原盒→Sealed·Booster Box / 散包→Pack·Booster Pack / 礼盒→Sealed·Collection Box / 其他→Sealed·Other) / 品牌 (宝可梦→Pokemon, 海贼王→One Piece, 其他 free-text) / 条码. Creates via existing **`createProduct`** with `language:'CN', active:true, breakable:false`, writing the Chinese to **both `name` and `aliases[0]`**. On success the product is added to the options and **auto-selected into the first empty line** (or a fresh line).
+- **Duplicate guard** — before insert, case-insensitive match of 中文名 against existing CN products' `name`+`aliases`; a similar hit is shown ("可能已存在类似产品…") and creation then requires an explicit 「仍然创建」.
+- **US-side Lark** — fire-and-forget `type:'cn_new_product'` → new `buildMessage` case in **`api/lark-notify.js`** posts `🇨🇳 中国新建产品: <中文名> (<类型>) — 待补英文名/归类` to the main (US-visible) group (falls through like `add_product`).
+- **Normalization convention (no DDL)** — a CN product whose `name` still contains CJK = not yet normalized by US. US later renames `name`→English + fixes category; the Chinese survives in `aliases[0]` so China search/display are unaffected. Documented in a comment on `CnQuickAddProduct`.
+- No new columns / DDL; reused `createProduct` (no second insert path). `sql/cn_jp_finance.sql` unchanged.
+
+---
+
 ## CHANGELOG — Orchestrator review fixes (2026-07-05)
 
 All 3 MUST-FIX defects + both "also worth taking" items applied; build re-verified.
@@ -48,6 +60,7 @@ All 3 MUST-FIX defects + both "also worth taking" items applied; build re-verifi
 | `src/components/Layout.jsx` | Flag-gated sidebar section **China 🇨🇳** (中国进货, 外汇划转) |
 | `src/pages/UserManagement.jsx` | Flag-gated **China 🇨🇳** entries in the `PAGE_SECTIONS` permission registry |
 | `src/pages/JapanAcquisitions.jsx` | Mounts `SlabQuickIntake` (flag-gated → **unchanged when OFF**) |
+| `src/pages/ChinaAcquisitions.jsx` + `api/lark-notify.js` | **CN quick-add "+ 新货"** (see 2026-07-06 changelog): `CnQuickAddProduct` modal + `cn_new_product` Lark message |
 
 ---
 
@@ -69,7 +82,7 @@ Verification queries are appended as comments in the file.
 2. Run **both `ALTER TYPE … ADD VALUE` statements first/alone**, then the `BEGIN…COMMIT` block.
 3. Set `VITE_ENABLE_CN_JP_FINANCE=true` in `.env.local` / deploy env and rebuild.
 4. In **Team Management**, grant `/cn/acquisitions` and `/cn/fx-transfers` to the China team (admins with `/users` already see them).
-5. Smoke test: China acquisition (stock → China Warehouse), slab quick-intake (row `price_check='pending'` + local amount), fx backfill (RMB entered against an auto-inserted USD row → `rate` computed).
+5. Smoke test: China acquisition (stock → China Warehouse), slab quick-intake (row `price_check='pending'` + local amount), fx backfill (RMB entered against an auto-inserted USD row → `rate` computed), CN quick-add ("+ 新货" → new `language='CN'` product auto-selected into the line).
 
 Until steps 2+3 are done, the features are dark and the un-executed DDL touches nothing.
 
@@ -80,12 +93,13 @@ Until steps 2+3 are done, the features are dark and the un-executed DDL touches 
 - **China mirrors Japan:** instant-receive, `origin='cn_vendor'`, `source_country='China'`, `currency='RMB'`, weighted-avg USD cost basis, same undo/edit stock guards. China vendor dropdown is **`country='China'` only**.
 - **Slab quick-intake:** `cert_number` required; `amount`+`currency` (RMB/JPY/USD via `convertToUSD`) optional; `grading_company` defaults `Other`; blank `item_name` → `待定价 Pending pricing (cert …)`. Writes `price_check='pending'` + `acquisition_cost_local`/`acquisition_currency` alongside the USD snapshot. Existing Scan intake untouched (`price_check` defaults `'done'`).
 - **fx_transfers:** shared with lv-finance — USD leg auto-inserted, RMB leg backfilled in-app. Rate = **CNY per USD**. App form does **not** set `bank_txn_ref` (NULL for manual rows; UNIQUE guards automation dupes).
+- **CN quick-add:** provisional products carry the Chinese in `name` **and** `aliases[0]`; CJK-in-`name` is the "not yet normalized by US" signal. Reuses `createProduct`; no DDL.
 
 ## Assumptions & notes
 - **`source_country` enum:** SQL assumes it shares `region` with `vendors.country`; hedged in the SQL comments.
-- **China Lark:** China acquisitions post `type:'purchased', sourceCountry:'China'` → Acquisitions Squad webhook only (no `LARK_WEBHOOK_CHINA` wired). Add server-side later if wanted.
+- **China Lark:** China acquisitions post `type:'purchased', sourceCountry:'China'` → Acquisitions Squad webhook only; the CN quick-add posts `type:'cn_new_product'` → main webhook. Neither uses a dedicated `LARK_WEBHOOK_CHINA` (add server-side later if wanted).
 - **No `/cn/inventory` page** (Task 1 = acquisitions page only). China stock still lands in the `China Warehouse` location and is visible via existing inventory views.
-- Only `/cn/acquisitions` and `/cn/fx-transfers` exist — no China stream-sales / shipments / add-product pages (out of scope).
+- Only `/cn/acquisitions` and `/cn/fx-transfers` exist — no China stream-sales / shipments / add-product *pages* (quick-add is an inline modal, not a page).
 
 ## Not done (per instructions)
 - No `git push`, no deploy. DDL left un-executed. No changes to live Supabase schema or env.

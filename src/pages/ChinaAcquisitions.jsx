@@ -10,6 +10,7 @@ import {
   undoChinaAcquisition,
   createVendor,
   createPaymentMethod,
+  createProduct,
   convertToUSD,
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
@@ -97,6 +98,9 @@ export default function ChinaAcquisitions() {
   const [editing, setEditing] = useState(null)   // row being edited (null = closed)
   const [rowBusy, setRowBusy] = useState(null)    // id mid-undo
 
+  // Quick-add-product ("+ 新货") modal toggle.
+  const [showQuickAdd, setShowQuickAdd] = useState(false)
+
   // Header (shared across all line items in one submission)
   const [header, setHeader] = useState({
     date_purchased: new Date().toLocaleDateString('en-CA'),
@@ -160,6 +164,24 @@ export default function ChinaAcquisitions() {
 
   const updateLineItem = (id, field, value) => {
     setLineItems(items => items.map(i => i.id === id ? { ...i, [field]: value } : i))
+  }
+
+  // A new provisional CN product was just created inline. Add it to the options
+  // list and auto-select it into the first empty line (or a fresh line if all
+  // are filled), so the buyer keeps going without hunting for it.
+  const handleQuickAddCreated = (created) => {
+    setProducts(prev => prev.some(p => p.id === created.id) ? prev : [...prev, created])
+    setLineItems(items => {
+      const idx = items.findIndex(i => !i.product_id)
+      if (idx >= 0) {
+        const copy = [...items]
+        copy[idx] = { ...copy[idx], product_id: created.id }
+        return copy
+      }
+      const newId = Math.max(...items.map(i => i.id), 0) + 1
+      return [...items, { id: newId, product_id: created.id, quantity: 1, unit_cost_rmb: '' }]
+    })
+    setShowQuickAdd(false)
   }
 
   // Totals (live preview)
@@ -376,7 +398,17 @@ export default function ChinaAcquisitions() {
         {/* Line items */}
         <div className="pt-4 border-t border-vault-border">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-white text-sm">Items</h3>
+            <div className="flex items-center gap-3">
+              <h3 className="font-semibold text-white text-sm">Items</h3>
+              <button
+                type="button"
+                onClick={() => setShowQuickAdd(true)}
+                className="text-xs text-vault-gold hover:underline flex items-center gap-1"
+                title="买到新的简体中文产品?点这里先建一个"
+              >
+                <Plus size={12} /> 新货
+              </button>
+            </div>
             <div className="text-xs text-gray-400">
               Total: <span className="text-vault-gold font-semibold">¥{totalRmb.toLocaleString()}</span>
               <span className="text-gray-500 mx-2">≈</span>
@@ -577,6 +609,16 @@ export default function ChinaAcquisitions() {
           addToast={addToast}
         />
       )}
+
+      {showQuickAdd && (
+        <CnQuickAddProduct
+          existingProducts={products}
+          currentUserName={user?.name}
+          addToast={addToast}
+          onClose={() => setShowQuickAdd(false)}
+          onCreated={handleQuickAddCreated}
+        />
+      )}
     </div>
   )
 }
@@ -725,6 +767,219 @@ function EditAcquisitionModal({ acq, products, vendors, paymentMethods, onClose,
             className="btn btn-primary flex items-center gap-2 disabled:opacity-50">
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
             保存修改
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// CnQuickAddProduct — inline "+ 新货" provisional product creator (中国进货)
+// ============================================================================
+// The China team buys a simplified-Chinese product that isn't in the catalog
+// yet (US side asleep). Rather than block, they create a PROVISIONAL product
+// here and keep buying; the US side normalizes it later.
+//
+// NORMALIZATION CONVENTION (no DDL): a CN product whose `name` still contains
+// CJK characters = not yet normalized by the US side. The Chinese name is
+// written to BOTH products.name AND aliases[0]. When US later renames `name`
+// to English + fixes the category, the Chinese stays in aliases[0], so
+// China-side search + the CN display mapping keep working unchanged.
+// ============================================================================
+
+const CN_TYPE_OPTIONS = [
+  { key: 'sealed_box', label: '原盒', type: 'Sealed', category: 'Booster Box' },
+  { key: 'pack',       label: '散包', type: 'Pack',   category: 'Booster Pack' },
+  { key: 'gift_box',   label: '礼盒', type: 'Sealed', category: 'Collection Box' },
+  { key: 'other',      label: '其他', type: 'Sealed', category: 'Other' },
+]
+const CN_BRAND_OPTIONS = [
+  { key: 'pokemon',  label: '宝可梦 Pokemon',   brand: 'Pokemon' },
+  { key: 'onepiece', label: '海贼王 One Piece', brand: 'One Piece' },
+  { key: 'other',    label: '其他 Other',       brand: null },
+]
+const cnNorm = (s) => (s || '').toLowerCase().replace(/\s+/g, '')
+
+function CnQuickAddProduct({ existingProducts = [], currentUserName, addToast, onClose, onCreated }) {
+  const [form, setForm] = useState({ name: '', typeKey: 'sealed_box', brandKey: 'pokemon', brandOther: '', barcode: '' })
+  const [dupMatch, setDupMatch] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const set = (field, value) => setForm(f => ({ ...f, [field]: value }))
+
+  const typeOpt = CN_TYPE_OPTIONS.find(t => t.key === form.typeKey) || CN_TYPE_OPTIONS[0]
+
+  // Case-insensitive similarity against existing CN products' name + aliases.
+  const findDup = (name) => {
+    const target = cnNorm(name)
+    if (!target) return null
+    return existingProducts.find(p => {
+      const candidates = [p.name, ...(Array.isArray(p.aliases) ? p.aliases : [])]
+      return candidates.some(c => {
+        const x = cnNorm(c)
+        return x && (x === target || x.includes(target) || target.includes(x))
+      })
+    }) || null
+  }
+
+  const doCreate = async (force) => {
+    const name = form.name.trim()
+    if (!name) { addToast?.('中文名必填', 'error'); return }
+
+    if (!force) {
+      const match = findDup(name)
+      if (match) { setDupMatch(match); return }   // pause; require explicit confirm
+    }
+
+    setSubmitting(true)
+    try {
+      const brand = form.brandKey === 'other'
+        ? (form.brandOther.trim() || null)
+        : (CN_BRAND_OPTIONS.find(b => b.key === form.brandKey)?.brand || null)
+      const created = await createProduct({
+        name,                 // Chinese = provisional (CJK in name → not yet normalized by US)
+        aliases: [name],      // keep Chinese searchable even after US renames name→English
+        brand,
+        type: typeOpt.type,
+        category: typeOpt.category,
+        language: 'CN',
+        active: true,
+        breakable: false,     // provisional; US side sets break config on cleanup
+        barcode: form.barcode.trim() || null,
+      })
+
+      // US-side heads-up (fire-and-forget). Reuses the /api/lark-notify path;
+      // the 'cn_new_product' message is formatted server-side in buildMessage.
+      try {
+        fetch('/api/lark-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'cn_new_product',
+            name,
+            typeLabel: typeOpt.label,
+            user: currentUserName || 'Unknown',
+          }),
+        }).catch(err => console.error('[lark-notify] cn_new_product failed:', err))
+      } catch (err) {
+        console.error('[lark-notify] cn_new_product payload build failed:', err)
+      }
+
+      addToast?.(`✓ 已新建: ${name}`, 'success')
+      onCreated?.(created)
+    } catch (err) {
+      const msg = err.message || 'unknown error'
+      if (/duplicate key|unique constraint/i.test(msg)) {
+        addToast?.('条码已被占用,或产品已存在', 'error')
+      } else {
+        addToast?.(`创建失败: ${msg}`, 'error')
+      }
+      console.error('[CnQuickAddProduct] create failed:', err)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+      onClick={() => !submitting && onClose?.()}>
+      <div className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-lg w-full p-5 shadow-2xl max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center gap-2 text-vault-gold">
+            <Plus size={18} />
+            <h3 className="font-semibold text-base">新建产品 / Quick-add product</h3>
+          </div>
+          <button onClick={onClose} disabled={submitting} className="text-gray-500 hover:text-white p-1 -m-1">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">中文名 *</label>
+            <input
+              type="text"
+              value={form.name}
+              onChange={(e) => { set('name', e.target.value); if (dupMatch) setDupMatch(null) }}
+              placeholder="例如:黑白闪耀 加强包"
+              className="text-sm w-full"
+              autoFocus
+            />
+            <p className="text-[11px] text-gray-500 mt-1">中文名会同时存入 name 和 aliases;美国那边之后补英文名/归类,不影响这里搜索。</p>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">类型 *</label>
+            <div className="grid grid-cols-4 gap-2">
+              {CN_TYPE_OPTIONS.map(t => (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => set('typeKey', t.key)}
+                  className={`text-sm py-2 rounded-md border transition-colors ${
+                    form.typeKey === t.key
+                      ? 'bg-vault-gold/20 border-vault-gold/60 text-vault-gold'
+                      : 'border-vault-border text-gray-300 hover:border-vault-gold/40'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-gray-500 mt-1">{typeOpt.type} · {typeOpt.category}</p>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">品牌 (可选)</label>
+            <div className="flex gap-2">
+              <select value={form.brandKey} onChange={(e) => set('brandKey', e.target.value)} className="text-sm flex-1">
+                {CN_BRAND_OPTIONS.map(b => <option key={b.key} value={b.key}>{b.label}</option>)}
+              </select>
+              {form.brandKey === 'other' && (
+                <input
+                  type="text"
+                  value={form.brandOther}
+                  onChange={(e) => set('brandOther', e.target.value)}
+                  placeholder="品牌名 (可留空)"
+                  className="text-sm flex-1"
+                />
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">条码 (可选)</label>
+            <input
+              type="text"
+              value={form.barcode}
+              onChange={(e) => set('barcode', e.target.value)}
+              placeholder="扫码枪可直接扫"
+              className="text-sm w-full font-mono"
+            />
+          </div>
+
+          {dupMatch && (
+            <div className="bg-amber-500/10 border border-amber-500/40 rounded-lg p-3 text-sm">
+              <p className="text-amber-300 font-medium mb-1">可能已存在类似产品:</p>
+              <p className="text-white">{dupMatch.name} <span className="text-gray-500 text-xs">[{dupMatch.language}]</span></p>
+              <p className="text-[11px] text-gray-400 mt-1">确认不是这个?点「仍然创建」继续。</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} disabled={submitting}
+            className="px-3 py-2 text-sm text-gray-300 hover:text-white disabled:opacity-50">
+            取消
+          </button>
+          <button
+            onClick={() => doCreate(Boolean(dupMatch))}
+            disabled={submitting || !form.name.trim()}
+            className="btn btn-primary flex items-center gap-2 disabled:opacity-50"
+          >
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            {dupMatch ? '仍然创建' : '创建并选用'}
           </button>
         </div>
       </div>

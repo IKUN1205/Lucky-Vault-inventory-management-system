@@ -843,6 +843,21 @@ function buildMessage(body) {
     return lines.join('\n')
   }
 
+  if (type === 'cn_new_product') {
+    // Fired when the China Acquisitions "+ 新货" quick-add creates a provisional
+    // simplified-Chinese product (US side asleep). Heads-up so the US team can
+    // normalize name→English + fix the category later. No dedicated handler —
+    // falls through to the default (main) webhook, which is US-visible, same as
+    // add_product.
+    const { name, typeLabel, user } = body
+    if (!name) throw new Error('cn_new_product: missing name')
+    const lines = []
+    lines.push(`🇨🇳 中国新建产品: ${name}${typeLabel ? ` (${typeLabel})` : ''} — 待补英文名/归类`)
+    if (user) lines.push(`By: ${user}`)
+    lines.push(`Time: ${nowUtcStamp()}`)
+    return lines.join('\n')
+  }
+
   if (type === 'manual_inventory') {
     // Triggered after a successful Manual Inventory add (single or bulk).
     // Useful so the team knows "Aldo manually added 50 NIKKE to Master" —
