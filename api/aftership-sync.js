@@ -91,7 +91,7 @@ export default async function handler(req, res) {
       .select(`
         id, carrier, tracking_number, aftership_registered, aftership_slug,
         tracking_status, tracking_expected_delivery, tracking_delivered_at,
-        delivered_notified, product_id,
+        delivered_notified, product_id, quantity_purchased,
         product:products(name, brand, category, language),
         acquirer:users!acquisitions_acquirer_id_fkey(name)
       `)
@@ -161,6 +161,7 @@ export default async function handler(req, res) {
         const productLabel = formatProductLabel(row.product)
         const trackInfo = {
           name: productLabel,
+          qty: row.quantity_purchased || null,
           tracking: row.tracking_number,
           carrier: row.carrier,
           acquirer: row.acquirer?.name || null
@@ -287,35 +288,35 @@ async function maybeSendDigest({ arrivingToday, arrivingTomorrow, justDelivered 
     return false
   }
 
+  // Tracking-only digest (Gary 2026-07-06): product ×qty + carrier/tracking,
+  // no costs/vendors, and an explicit ask to confirm receipt in the group chat.
+  const itemLines = (item) => [
+    `  • ${item.name}${item.qty ? ` ×${item.qty}` : ''}`,
+    `    ${item.carrier || '?'}: ${item.tracking}${item.acquirer ? `  (by ${item.acquirer})` : ''}`
+  ]
+
   const lines = ['📦 Tracking Update']
-  lines.push(`Time: ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`)
   lines.push('')
 
   if (justDelivered.length > 0) {
     lines.push(`✅ Delivered (${justDelivered.length})`)
-    for (const item of justDelivered) {
-      lines.push(`  • ${item.name}`)
-      lines.push(`    ${item.carrier || '?'}: ${item.tracking}${item.acquirer ? `  (by ${item.acquirer})` : ''}`)
-    }
+    for (const item of justDelivered) lines.push(...itemLines(item))
     lines.push('')
   }
 
   if (arrivingToday.length > 0) {
     lines.push(`🚨 Arriving TODAY (${arrivingToday.length})`)
-    for (const item of arrivingToday) {
-      lines.push(`  • ${item.name}`)
-      lines.push(`    ${item.carrier || '?'}: ${item.tracking}${item.acquirer ? `  (by ${item.acquirer})` : ''}`)
-    }
+    for (const item of arrivingToday) lines.push(...itemLines(item))
     lines.push('')
   }
 
   if (arrivingTomorrow.length > 0) {
     lines.push(`⏰ Arriving tomorrow (${arrivingTomorrow.length})`)
-    for (const item of arrivingTomorrow) {
-      lines.push(`  • ${item.name}`)
-      lines.push(`    ${item.carrier || '?'}: ${item.tracking}${item.acquirer ? `  (by ${item.acquirer})` : ''}`)
-    }
+    for (const item of arrivingTomorrow) lines.push(...itemLines(item))
+    lines.push('')
   }
+
+  lines.push('👉 Please confirm in this group chat when you receive it. 收到货请在群里确认。')
 
   const text = lines.join('\n')
   // Fan out concurrently. We log per-target failures but consider the
