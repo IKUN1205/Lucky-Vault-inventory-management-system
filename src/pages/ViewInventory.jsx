@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { fetchInventory, fetchLocations, supabase } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
+import { LangChip } from '../components/ProductChips'
 import { Eye, Package, Search, Edit2, Save, X, Trash2, ArrowUp, ArrowDown, ArrowUpDown, ChevronDown, ChevronUp, Layers, Diamond } from 'lucide-react'
 
 // All cost values stored in inventory.avg_cost_basis are USD-denominated —
@@ -572,7 +573,7 @@ export default function ViewInventory() {
 
                     return (
                       <tr key={inv.id} className="hover:bg-vault-dark/50">
-                        <td className="py-3 font-medium text-white">{launchName}</td>
+                        <td className="py-3 font-medium text-white">{launchName}<LangChip lang={inv.product?.language} /></td>
                         <td className="py-3 max-w-[96px]">
                           <span className={`badge ${
                             inv.product?.brand === 'Pokemon' ? 'badge-warning' :

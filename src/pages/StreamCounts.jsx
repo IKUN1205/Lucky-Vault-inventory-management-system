@@ -13,6 +13,7 @@ import {
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
+import { BrandChip, LangChip } from '../components/ProductChips'
 import { 
   ClipboardList, 
   Play, 
@@ -35,48 +36,8 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(categoryPattern, '').trim() || fullName
 }
 
-// Compact brand "logo" chip + language chip (Gary 2026-07-06: replace the Brand text badge
-// with a logo to save space, and surface language right next to the name). Pure RENDER-time
-// decoration from the existing product.brand / product.language fields — no input/data changes.
-// Official logos live in public/brands/ (fetched from the official card-game sites 2026-07-06).
-// Unknown brands fall back to a compact colored initial chip.
-const BRAND_LOGO = {
-  'pokemon': '/brands/pokemon.svg',
-  'one piece': '/brands/onepiece.png',
-  'yu-gi-oh': '/brands/yugioh.png',
-  'dragon ball': '/brands/dragonball.png',
-}
-const BrandChip = ({ brand }) => {
-  const key = (brand || '').toLowerCase()
-  const logo = BRAND_LOGO[key]
-  if (logo) {
-    // white pill behind the mark — several official logos are dark-on-transparent and
-    // would vanish on the app's dark background
-    return (
-      <span title={brand} className="inline-flex items-center justify-center bg-white/90 rounded px-1 py-0.5 shrink-0">
-        <img src={logo} alt={brand} className="h-4 w-auto max-w-[70px] object-contain" loading="lazy" />
-      </span>
-    )
-  }
-  return (
-    <span title={brand || 'Unknown'}
-      className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white shrink-0 bg-gray-600">
-      {(brand || '?').slice(0, 2).toUpperCase()}
-    </span>
-  )
-}
-const LANG_CHIP = {
-  EN: 'bg-sky-600/80', JP: 'bg-amber-500/90 text-black', CN: 'bg-rose-600/80',
-}
-const LangChip = ({ lang }) => {
-  const l = (lang || '').toUpperCase().slice(0, 2)
-  if (!l) return null
-  return (
-    <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold text-white align-middle ${LANG_CHIP[l] || 'bg-gray-600'}`}>
-      {l}
-    </span>
-  )
-}
+// BrandChip + LangChip now live in ../components/ProductChips (shared with ViewInventory
+// so the inventory list and the counting UI distinguish EN/JP/CN identically).
 
 // Blind-count "is this box actually counted?" — the ONE predicate shared by the
 // M/N progress display and the blank-row list in handleSubmitCount's confirm,
