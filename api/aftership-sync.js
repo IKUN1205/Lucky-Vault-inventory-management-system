@@ -317,7 +317,7 @@ async function maybeSendDigest({ arrivingToday, arrivingTomorrow, justDelivered 
     lines.push('')
   }
 
-  lines.push('👉 Please confirm in this group chat when you receive it. 收到货请在群里确认。')
+  lines.push('👉 Please confirm in this group chat when you receive it.')
 
   const text = lines.join('\n')
   // Fan out concurrently. We log per-target failures but consider the
