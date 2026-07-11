@@ -164,6 +164,14 @@ export default async function handler(req, res) {
 
     if (req.method === 'GET') {
       const exp = await computeExpected(supabase)
+      // BLIND mode (Gary 2026-07-11): the count modal must not see the expected
+      // balance before submitting — a visible target makes "matches" self-
+      // fulfilling (same blind-count principle as stream counts). blind=1
+      // returns only what the modal needs to render; amounts stay server-side
+      // until the POST reveals the result.
+      if (req.query && req.query.blind === '1') {
+        return res.status(200).json({ ok: true, baseline: !!exp.baseline })
+      }
       const { data: recent } = await supabase
         .from('cash_counts')
         .select('pt_date, period, counted_amount, expected_amount, difference, cash_removed_usd, counted_by_name, created_at, notes')

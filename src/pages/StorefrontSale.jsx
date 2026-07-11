@@ -1295,9 +1295,12 @@ export default function StorefrontSale() {
 }
 
 // ============================================================================
-// CashCountModal — twice-daily cash-drawer audit. Pulls the system-expected
-// drawer balance, lets staff enter their physical count, shows the live
-// over/short, and on submit records it + Larks the Storefront group.
+// CashCountModal — twice-daily cash-drawer audit. BLIND COUNT (Gary 2026-07-11):
+// staff enter their physical count WITHOUT seeing the system-expected balance
+// (a visible target makes "matches" self-fulfilling — same principle as the
+// blind stream counts). The GET uses ?blind=1 so the amount never even reaches
+// the browser; the POST computes the diff server-side and reveals the result
+// after submit (toast + Lark to the Storefront group, unchanged).
 // ============================================================================
 function CashCountModal({ user, onClose, addToast }) {
   const guessPeriod = () => {
@@ -1306,7 +1309,7 @@ function CashCountModal({ user, onClose, addToast }) {
     return h < 14 ? 'morning' : 'evening'
   }
   const [loading, setLoading] = useState(true)
-  const [info, setInfo] = useState(null)      // { expected, prior, cash_net_since, baseline, recent }
+  const [info, setInfo] = useState(null)      // blind: { ok, baseline } only — no amounts
   const [period, setPeriod] = useState(guessPeriod())
   const [counted, setCounted] = useState('')
   const [removed, setRemoved] = useState('')
@@ -1318,7 +1321,7 @@ function CashCountModal({ user, onClose, addToast }) {
     let cancelled = false
     ;(async () => {
       try {
-        const r = await fetch('/api/cash-count')
+        const r = await fetch('/api/cash-count?blind=1')   // blind: no expected amount reaches the browser
         const d = await r.json()
         if (cancelled) return
         if (d.outcome === 'not_migrated') { setErr('Cash audit not enabled yet — run scripts/add_cash_counts.sql in Supabase.'); setInfo(null) }
@@ -1330,10 +1333,7 @@ function CashCountModal({ user, onClose, addToast }) {
   }, [])
 
   const money = (n) => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-  const expected = info && !info.baseline ? Number(info.expected) : null
   const countedNum = counted === '' ? null : Number(counted)
-  const diff = (expected != null && countedNum != null) ? +(countedNum - expected).toFixed(2) : null
-  const matches = diff != null && Math.abs(diff) <= 1
 
   const submit = async () => {
     if (countedNum == null || !Number.isFinite(countedNum)) { addToast('Enter the counted amount', 'error'); return }
@@ -1366,7 +1366,7 @@ function CashCountModal({ user, onClose, addToast }) {
         <h3 className="font-semibold text-base text-white mb-1">💵 Cash drawer count</h3>
         <p className="text-xs text-gray-500 mb-4">Count the drawer, the system checks it, and the result goes to the Storefront group.</p>
 
-        {loading && <div className="text-sm text-gray-400 py-6 text-center">Loading expected balance…</div>}
+        {loading && <div className="text-sm text-gray-400 py-6 text-center">Loading…</div>}
         {err && <div className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/40 rounded p-3 mb-3">{err}</div>}
 
         {!loading && info && (
@@ -1381,31 +1381,19 @@ function CashCountModal({ user, onClose, addToast }) {
               ))}
             </div>
 
-            {/* expected */}
+            {/* blind-count note — the expected balance is deliberately NOT shown */}
             <div className="bg-vault-darker/40 border border-vault-border rounded-lg p-3 mb-3 text-sm">
               {info.baseline ? (
                 <div className="text-cyan-300">First count — no prior balance. This sets the baseline; future counts compare to it.</div>
               ) : (
-                <>
-                  <div className="flex justify-between"><span className="text-gray-400">System expects</span><span className="text-white font-semibold">{money(expected)}</span></div>
-                  <div className="text-[11px] text-gray-500 mt-1">
-                    = last count {money(info.prior?.counted_amount)}{info.prior?.cash_removed_usd ? ` − ${money(info.prior.cash_removed_usd)} removed` : ''} + {money(info.cash_net_since)} cash since
-                  </div>
-                </>
+                <div className="text-gray-400">🙈 Blind count — count the drawer first, then enter the total. The system checks it and reveals the result after you submit.</div>
               )}
             </div>
 
             {/* counted amount */}
             <label className="block text-xs text-gray-400 mb-1">Counted in drawer <span className="text-red-400">*</span></label>
             <input type="number" inputMode="decimal" step="0.01" autoFocus value={counted}
-              onChange={(e) => setCounted(e.target.value)} placeholder="0.00" className="w-full mb-2" />
-
-            {/* live diff */}
-            {diff != null && (
-              <div className={`text-sm rounded p-2 mb-3 ${matches ? 'bg-emerald-500/10 border border-emerald-500/40 text-emerald-300' : 'bg-amber-500/10 border border-amber-500/40 text-amber-300'}`}>
-                {matches ? '✅ Matches' : `⚠️ ${diff > 0 ? 'OVER' : 'SHORT'} by ${money(Math.abs(diff))}`}
-              </div>
-            )}
+              onChange={(e) => setCounted(e.target.value)} placeholder="0.00" className="w-full mb-3" />
 
             {/* optional removed + notes */}
             <label className="block text-xs text-gray-400 mb-1">Cash removed now <span className="text-gray-600">(handed to owner / deposited — optional)</span></label>
