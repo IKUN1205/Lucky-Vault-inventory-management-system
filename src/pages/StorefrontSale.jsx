@@ -1386,7 +1386,11 @@ function CashCountModal({ user, onClose, addToast }) {
               {info.baseline ? (
                 <div className="text-cyan-300">First count — no prior balance. This sets the baseline; future counts compare to it.</div>
               ) : (
-                <div className="text-gray-400">🙈 Blind count — count the drawer first, then enter the total. The system checks it and reveals the result after you submit.</div>
+                <div className="text-gray-400 space-y-0.5">
+                  <div>💵 Please count and enter today's cash amount.</div>
+                  <div>本日のレジ現金を数えて入力してください。</div>
+                  <div>请清点并输入今天的现金金额。</div>
+                </div>
               )}
             </div>
 
