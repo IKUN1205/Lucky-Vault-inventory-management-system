@@ -6,7 +6,7 @@ import {
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import BarcodeScanner from '../components/BarcodeScanner'
-import { ShoppingCart, Plus, Save, X, Trash2, HelpCircle, ChevronDown, ChevronUp, ClipboardPaste, Sparkles, Loader2 } from 'lucide-react'
+import { ShoppingCart, Plus, Save, X, Trash2, HelpCircle, ChevronDown, ChevronUp, ClipboardPaste, Sparkles, Loader2, AlertTriangle } from 'lucide-react'
 import { parsePurchaseText } from '../lib/parsePurchaseText'
 
 // Helper to extract Launch Name from full product name
@@ -49,6 +49,10 @@ export default function PurchasedItems() {
   const [showInstructions, setShowInstructions] = useState(false)
   // Paste-from-message: staff drop a vendor chat in, we parse it, they confirm.
   const [pasteOpen, setPasteOpen] = useState(false)
+  // Zero-cost guard: when a submit is attempted with any product line at 0/blank
+  // cost, holds the offending 1-based line numbers so the confirm modal can list
+  // them. null = no pending confirmation.
+  const [zeroCostConfirm, setZeroCostConfirm] = useState(null)
 
   const [header, setHeader] = useState({
     date_purchased: new Date().toLocaleDateString('en-CA'),
@@ -267,15 +271,42 @@ export default function PurchasedItems() {
     }
   }
 
-  const handleSubmit = async (e) => {
+  // A product line whose entered cost is blank or parses to 0 — it would save
+  // at 0 cost (or be silently dropped), poisoning avg cost & pricing reports.
+  // Currency-agnostic: 0 is 0 in USD/YEN/RMB.
+  const isZeroCostLine = (item) => {
+    const c = String(item.cost).trim()
+    return c === '' || (parseFloat(c) || 0) === 0
+  }
+
+  // Final submit handler. The zero-cost guard runs BEFORE the existing submit
+  // logic: if any product line is 0/blank cost, block and make the staffer
+  // consciously confirm. "Submit with 0 anyway" re-enters submitPurchases()
+  // so the actual submit path below stays completely UNCHANGED.
+  const handleSubmit = (e) => {
     e.preventDefault()
-    
+    const zeroLines = lineItems
+      .map((item, idx) => ({ item, num: idx + 1 }))
+      .filter(({ item }) => item.product_id && isZeroCostLine(item))
+      .map(({ num }) => num)
+    if (zeroLines.length > 0) {
+      setZeroCostConfirm(zeroLines)
+      return
+    }
+    submitPurchases()
+  }
+
+  // itemsOverride: the zero-cost confirm passes a normalized copy (blank→'0')
+  // directly, because setLineItems hasn't flushed yet when we submit — and a
+  // blank cost is falsy, so the validItems filter below would silently DROP a
+  // line the staffer just explicitly confirmed (Codex blocker 2026-07-13).
+  const submitPurchases = async (itemsOverride) => {
     if (!header.acquirer_id) {
       addToast('Please select an acquirer', 'error')
       return
     }
 
-    const validItems = lineItems.filter(item => item.product_id && item.cost)
+    const validItems = (itemsOverride ?? lineItems).filter(item => item.product_id && item.cost)
     if (validItems.length === 0) {
       addToast('Please add at least one product with cost', 'error')
       return
@@ -762,6 +793,23 @@ export default function PurchasedItems() {
           getProductLabel={getProductLabel}
         />
       )}
+
+      {zeroCostConfirm && (
+        <ZeroCostConfirmModal
+          lineNumbers={zeroCostConfirm}
+          onCancel={() => setZeroCostConfirm(null)}
+          onConfirm={() => {
+            setZeroCostConfirm(null)
+            // Blank costs were consciously confirmed as 0 — make them explicit
+            // ('0' is truthy) so the submit filter keeps them, and pass the
+            // normalized copy straight in (state flush is async).
+            const normalized = lineItems.map(it =>
+              it.product_id && isZeroCostLine(it) ? { ...it, cost: '0' } : it)
+            setLineItems(normalized)
+            submitPurchases(normalized)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -1082,6 +1130,72 @@ function PasteParseModal({ onClose, onApply, products, paymentMethods, vendors, 
             </div>
           </>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// ZeroCostConfirmModal — bilingual guard before logging a 0-cost purchase line
+// ============================================================================
+// JP staff kept submitting purchase lines at cost 0, which poisons avg cost and
+// every downstream pricing report. This forces a conscious choice: go back and
+// fix it (default), or explicitly submit at 0 anyway. All copy is 中文 / English.
+// Minimal inline modal reusing the app's overlay+card dark-theme pattern (see
+// PasteParseModal / DeleteCountModal) — no new dependency.
+function ZeroCostConfirmModal({ lineNumbers, onCancel, onConfirm }) {
+  // Escape closes (= Go back), same as clicking the overlay.
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Zero cost confirmation"
+        className="bg-vault-surface border border-amber-500/50 rounded-xl max-w-md w-full p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 text-amber-300 mb-3">
+          <AlertTriangle size={18} />
+          <h3 className="font-semibold text-base">成本为 0 / Zero cost</h3>
+        </div>
+
+        <div className="space-y-1 mb-3">
+          {lineNumbers.map(n => (
+            <p key={n} className="text-sm text-amber-200">
+              ⚠️ 第 {n} 行成本为 0 / Line {n} has zero cost
+            </p>
+          ))}
+        </div>
+
+        <p className="text-sm text-gray-300 mb-4 leading-relaxed">
+          按 0 成本入库会污染均价和定价报表。确定继续吗？/ Zero cost poisons avg cost and pricing reports. Continue anyway?
+        </p>
+
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="px-3 py-2 text-sm bg-red-500/20 border border-red-500/60 text-red-200 hover:bg-red-500/30 rounded-lg"
+          >
+            确认按 0 提交 / Submit with 0 anyway
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            autoFocus
+            className="btn btn-primary text-sm"
+          >
+            返回修改 / Go back
+          </button>
+        </div>
       </div>
     </div>
   )

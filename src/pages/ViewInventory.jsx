@@ -29,6 +29,12 @@ export default function ViewInventory() {
   
   const [inventory, setInventory] = useState([])
   const [pricesByProduct, setPricesByProduct] = useState({})
+  // Product thumbnails keyed by the FIRST 8 chars of products.id →
+  // { "<uuid8>": "<https image url>" }. Served by the kaitori pipeline
+  // (CORS-enabled for this origin), refreshed nightly. Fetched once on mount;
+  // ANY failure degrades to an empty map so the table renders exactly as
+  // before with no error shown. Products absent from the map show no image.
+  const [productImages, setProductImages] = useState({})
   const [locations, setLocations] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedLocation, setSelectedLocation] = useState('')
@@ -83,6 +89,20 @@ export default function ViewInventory() {
   useEffect(() => {
     loadInventory()
   }, [selectedLocation])
+
+  // Load sealed-product thumbnails once on mount. Best-effort only: on ANY
+  // failure (network / CORS / bad JSON) we leave the map empty and show no
+  // error — the page must work exactly as today with zero images.
+  useEffect(() => {
+    let cancelled = false
+    fetch('https://lv-slabs.luckyvault.us/kaitori/product_images.json')
+      .then(res => (res.ok ? res.json() : null))
+      .then(map => {
+        if (!cancelled && map && typeof map === 'object') setProductImages(map)
+      })
+      .catch(() => { /* silent — no image column, page unchanged */ })
+    return () => { cancelled = true }
+  }, [])
 
   const loadData = async () => {
     try {
@@ -538,6 +558,7 @@ export default function ViewInventory() {
               <table className="w-full">
                 <thead>
                   <tr className="text-left text-gray-400 text-sm border-b border-vault-border">
+                    <th className="pb-3 font-medium w-12 text-center" title="Product image" aria-label="Image">📷</th>
                     <th className="pb-3 font-medium cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('launchName')}>
                       LAUNCH NAME<SortArrow field="launchName" />
                     </th>
@@ -570,9 +591,29 @@ export default function ViewInventory() {
                   {sortItems(items).map(inv => {
                     const isEditing = editingId === inv.id
                     const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
+                    // Thumbnail keyed by first 8 chars of the product UUID.
+                    // https-only guard: the map is remote JSON — never let a
+                    // malformed/compromised value become a javascript: href.
+                    const productId = inv.product_id ?? inv.product?.id
+                    const rawImg = productId ? productImages[String(productId).slice(0, 8)] : null
+                    let imgSrc = null
+                    try { if (rawImg && new URL(rawImg).protocol === 'https:') imgSrc = rawImg } catch { /* not a URL — no thumb */ }
 
                     return (
                       <tr key={inv.id} className="hover:bg-vault-dark/50">
+                        <td className="py-3 pr-2 w-12">
+                          {imgSrc ? (
+                            <a href={imgSrc} target="_blank" rel="noreferrer" title="Open image full size">
+                              <img
+                                src={imgSrc}
+                                alt=""
+                                loading="lazy"
+                                className="w-10 h-10 object-cover rounded"
+                                onError={(e) => { e.currentTarget.style.display = 'none' }}
+                              />
+                            </a>
+                          ) : null}
+                        </td>
                         <td className="py-3 font-medium text-white">{launchName}<LangChip lang={inv.product?.language} /></td>
                         <td className="py-3 max-w-[96px]">
                           <span className={`badge ${
