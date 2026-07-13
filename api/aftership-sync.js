@@ -290,6 +290,12 @@ async function getTracking(trackingNumber, slug) {
 // --- Lark digest ---
 
 async function maybeSendDigest({ arrivingToday, arrivingTomorrow, justDelivered }) {
+  // Gary 2026-07-13 "这个不用daily": no daily Lark digest — the cron just
+  // keeps tracking_status fresh in the DB (visible in the app, e.g. Japan
+  // Shipments). Set TRACKING_DIGEST=on in Vercel env to re-enable.
+  if (process.env.TRACKING_DIGEST !== 'on') {
+    return false
+  }
   if (arrivingToday.length === 0 && arrivingTomorrow.length === 0 && justDelivered.length === 0) {
     return false  // nothing to say
   }
