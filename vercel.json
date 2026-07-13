@@ -7,10 +7,6 @@
   ],
   "crons": [
     {
-      "path": "/api/aftership-sync",
-      "schedule": "0 13 * * *"
-    },
-    {
       "path": "/api/cash-alert-eod",
       "schedule": "0 2 * * *"
     },
