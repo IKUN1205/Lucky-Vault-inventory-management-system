@@ -54,7 +54,10 @@ const AFTERSHIP_SLUGS = {
   'Other':       null  // let AfterShip auto-detect
 }
 
-const AFTERSHIP_BASE = 'https://api.aftership.com/v4'
+// Date-versioned API (2026-07). The legacy /v4 endpoints + aftership-api-key
+// header were retired — every call 404'd, which is why the tracking bot never
+// worked from day one (diagnosed 2026-07-13: checked 111 / errors 111).
+const AFTERSHIP_BASE = 'https://api.aftership.com/tracking/2026-07'
 
 // Allow up to 60s — default 10s isn't enough when there are 30+ trackings to
 // register + GET (each AfterShip call is ~500ms).
@@ -118,21 +121,20 @@ export default async function handler(req, res) {
 
     for (const row of rows) {
       try {
-        const slug = row.aftership_slug || AFTERSHIP_SLUGS[row.carrier] || null
+        // effectiveSlug follows the freshest knowledge: sheet value → carrier
+        // map → whatever AfterShip auto-detected at registration (Codex: the
+        // GET right after a fresh register must use the detected slug, or an
+        // ambiguous tracking number could match another courier's shipment).
+        let effectiveSlug = row.aftership_slug || AFTERSHIP_SLUGS[row.carrier] || null
 
         // 2. Register with AfterShip if we haven't yet.
         if (!row.aftership_registered) {
-          const reg = await registerTracking(row.tracking_number, slug, row.id)
-          if (reg.ok) {
+          const reg = await registerTracking(row.tracking_number, effectiveSlug, row.id)
+          if (reg.ok || reg.alreadyExists) {
+            effectiveSlug = reg.slug || effectiveSlug
             await supabase.from('acquisitions').update({
               aftership_registered: true,
-              aftership_slug: reg.slug || slug
-            }).eq('id', row.id)
-          } else if (reg.alreadyExists) {
-            // Already registered by a previous run that crashed before saving — fine.
-            await supabase.from('acquisitions').update({
-              aftership_registered: true,
-              aftership_slug: reg.slug || slug
+              aftership_slug: effectiveSlug
             }).eq('id', row.id)
           } else {
             errors.push({ id: row.id, step: 'register', error: reg.error })
@@ -141,7 +143,7 @@ export default async function handler(req, res) {
         }
 
         // 3. GET latest status from AfterShip.
-        const status = await getTracking(row.tracking_number, row.aftership_slug || slug)
+        const status = await getTracking(row.tracking_number, effectiveSlug)
         if (!status.ok) {
           errors.push({ id: row.id, step: 'get', error: status.error })
           continue
@@ -219,13 +221,15 @@ export default async function handler(req, res) {
 // --- AfterShip helpers ---
 
 async function registerTracking(trackingNumber, slug, rowId) {
-  const body = { tracking: { tracking_number: trackingNumber } }
-  if (slug) body.tracking.slug = slug
+  // 2026-07 API: FLAT body (v4's nested {tracking:{...}} is gone) and the
+  // as-api-key header (aftership-api-key stopped being accepted in 2023-10).
+  const body = { tracking_number: trackingNumber }
+  if (slug) body.slug = slug
 
   const r = await fetch(`${AFTERSHIP_BASE}/trackings`, {
     method: 'POST',
     headers: {
-      'aftership-api-key': AFTERSHIP_KEY,
+      'as-api-key': AFTERSHIP_KEY,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(body)
@@ -233,25 +237,26 @@ async function registerTracking(trackingNumber, slug, rowId) {
   const json = await r.json().catch(() => ({}))
 
   if (r.ok) {
-    return { ok: true, slug: json?.data?.tracking?.slug || slug }
+    // 2026-07 create returns the Tracking object directly under data.
+    return { ok: true, slug: json?.data?.slug || json?.data?.tracking?.slug || slug }
   }
-  // 4003 = "Tracking already exists" — treat as success.
-  if (json?.meta?.code === 4003) {
+  // "Tracking already exists" — 4003 was the v4 code; the newer API says it in
+  // the message. A bare 409 is NOT enough (Codex: could be another conflict
+  // shape and would falsely mark the row registered).
+  const msg = json?.meta?.message || ''
+  if (json?.meta?.code === 4003 || /already exist/i.test(msg)) {
     return { ok: false, alreadyExists: true, slug: slug }
   }
-  return { ok: false, error: `${json?.meta?.code || r.status}: ${json?.meta?.message || 'Unknown'}` }
+  return { ok: false, error: `${json?.meta?.code || r.status}: ${msg || 'Unknown'}` }
 }
 
 async function getTracking(trackingNumber, slug) {
-  // If we have a slug, use the indexed lookup; otherwise search by number.
-  let url
-  if (slug) {
-    url = `${AFTERSHIP_BASE}/trackings/${slug}/${encodeURIComponent(trackingNumber)}`
-  } else {
-    url = `${AFTERSHIP_BASE}/trackings?tracking_numbers=${encodeURIComponent(trackingNumber)}`
-  }
+  // 2026-07 API dropped the /:slug/:number path — filter the list endpoint by
+  // number (+ slug when known: the same number can exist on two couriers).
+  let url = `${AFTERSHIP_BASE}/trackings?tracking_numbers=${encodeURIComponent(trackingNumber)}`
+  if (slug) url += `&slug=${encodeURIComponent(slug)}`
   const r = await fetch(url, {
-    headers: { 'aftership-api-key': AFTERSHIP_KEY }
+    headers: { 'as-api-key': AFTERSHIP_KEY }
   })
   const json = await r.json().catch(() => ({}))
 
@@ -259,18 +264,25 @@ async function getTracking(trackingNumber, slug) {
     return { ok: false, error: `${json?.meta?.code || r.status}: ${json?.meta?.message || 'Unknown'}` }
   }
 
-  // Single-fetch returns data.tracking; list returns data.trackings[]
-  const t = json?.data?.tracking || json?.data?.trackings?.[0]
-  if (!t) return { ok: false, error: 'Empty AfterShip response' }
+  const t = json?.data?.trackings?.[0] || json?.data?.tracking
+  if (!t) return { ok: false, error: 'Tracking not found in AfterShip response' }
 
+  // ETA moved into nested estimate objects; prefer the freshest one. The old
+  // flat expected_delivery stays as a harmless last fallback.
+  const eta = t.latest_estimated_delivery?.datetime
+    || t.latest_estimated_delivery?.datetime_min
+    || t.aftership_estimated_delivery_date?.estimated_delivery_date
+    || t.courier_estimated_delivery_date?.estimated_delivery_date
+    || t.expected_delivery
   return {
     ok: true,
     tag: t.tag || null,
     subtag: t.subtag || null,
-    // expected_delivery may be ISO date or full datetime; normalize to YYYY-MM-DD
-    expected_delivery: t.expected_delivery ? String(t.expected_delivery).slice(0, 10) : null,
+    expected_delivery: eta ? String(eta).slice(0, 10) : null,
     delivered_at: t.tag === 'Delivered'
-      ? (t.checkpoints?.find?.(c => c.tag === 'Delivered')?.checkpoint_time || new Date().toISOString())
+      ? (t.shipment_delivery_date
+         || t.checkpoints?.find?.(c => c.tag === 'Delivered')?.checkpoint_time
+         || new Date().toISOString())
       : null
   }
 }
