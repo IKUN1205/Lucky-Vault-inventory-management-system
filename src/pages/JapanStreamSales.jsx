@@ -10,6 +10,7 @@ import {
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
+import ProductThumb from '../components/ProductThumb'
 import { useAuth } from '../lib/AuthContext'
 import { Tv2, Save, Plus, Trash2, Undo2 } from 'lucide-react'
 import { variantLabel, variantChipClasses } from '../lib/japanVariants'
@@ -329,6 +330,16 @@ export default function JapanStreamSales() {
                         renderOption={renderProductOption}
                         placeholder="搜索 short code / 中文 / English..."
                       />
+                      {/* Thumbnail + name of the picked product (display-only),
+                          so the streamer can confirm the box by sight. */}
+                      {inv && (
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <ProductThumb productId={inv.product_id} size={28} />
+                          <span className="text-xs text-gray-300 truncate">
+                            {extractLaunchName(inv.product?.name, inv.product?.category)}
+                          </span>
+                        </div>
+                      )}
                     </div>
                     <div className="col-span-4 md:col-span-2">
                       <label className="block text-xs text-gray-400 mb-1">Qty</label>

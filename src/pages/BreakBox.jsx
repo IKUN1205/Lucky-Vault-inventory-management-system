@@ -3,6 +3,7 @@ import { fetchProducts, fetchLocations, fetchInventory, createBoxBreak, deleteBo
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import Instructions from '../components/Instructions'
+import ProductThumb from '../components/ProductThumb'
 import { Box, ArrowDown, Save, AlertCircle, Package } from 'lucide-react'
 
 // Helper to extract Launch Name
@@ -255,6 +256,16 @@ export default function BreakBox() {
 
         {form.sealed_product_id && (
           <>
+            {/* The box being broken — thumbnail for a quick visual confirmation. */}
+            {selectedProduct && (
+              <div className="mt-4 flex items-center gap-3">
+                <ProductThumb productId={selectedProduct.id} size={48} />
+                <span className="text-sm font-medium text-white">
+                  {selectedProduct.brand} | {extractLaunchName(selectedProduct.name, selectedProduct.category)}
+                </span>
+              </div>
+            )}
+
             <div className="mt-4">
               <label className="block text-sm font-medium text-gray-300 mb-2">Boxes to Break * (max: {maxBoxes})</label>
               <input type="number" name="boxes_broken" value={form.boxes_broken} onChange={handleChange} min="1" max={maxBoxes} required />

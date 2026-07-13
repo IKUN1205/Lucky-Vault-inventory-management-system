@@ -14,6 +14,7 @@ import {
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { BrandChip, LangChip } from '../components/ProductChips'
+import ProductThumb from '../components/ProductThumb'
 import { 
   ClipboardList, 
   Play, 
@@ -987,6 +988,7 @@ export default function StreamCounts() {
                 <table>
                   <thead>
                     <tr>
+                      <th className="w-12 text-center" aria-label="Image">📷</th>
                       <th>Product</th>
                       <th>Product Type</th>
                       <th className="text-right w-32">Actual Count</th>
@@ -1006,7 +1008,7 @@ export default function StreamCounts() {
                         <React.Fragment key={inv.id}>
                           {groupBreak && (
                             <tr className="bg-vault-surface/60">
-                              <td colSpan={3} className="py-1.5 text-xs font-semibold tracking-wide uppercase text-gray-400">
+                              <td colSpan={4} className="py-1.5 text-xs font-semibold tracking-wide uppercase text-gray-400">
                                 {inv._fresh
                                   ? '🆕 Recently restocked / sold — count these first · 最近补货/有动销 — 先数这些'
                                   : 'Older stock (by value) · 其余库存（按价值排序）'}
@@ -1014,6 +1016,9 @@ export default function StreamCounts() {
                             </tr>
                           )}
                           <tr>
+                            {/* Display-only thumbnail so counters can identify the
+                                box by sight. Does NOT touch the blind-count logic. */}
+                            <td className="w-12"><ProductThumb productId={inv.product_id} /></td>
                             <td className="font-medium text-white">
                               <span className="inline-flex items-center gap-2">
                                 <BrandChip brand={inv.product?.brand} />

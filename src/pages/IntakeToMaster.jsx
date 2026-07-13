@@ -18,6 +18,7 @@ import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
 import BarcodeScanner from '../components/BarcodeScanner'
 import Instructions from '../components/Instructions'
+import ProductThumb from '../components/ProductThumb'
 import { Package, Check, AlertTriangle, Loader2, Search, X } from 'lucide-react'
 
 // Helper to extract Launch Name from full product name
@@ -687,12 +688,16 @@ function IntakeCard({ acquisition, onReceive, processing }) {
             </span>
           </div>
           
-          <h3 className="font-display text-lg font-semibold text-white">
-            <span className="text-vault-gold">{acquisition.product?.brand}</span>
-            <span className="text-gray-400"> | </span>
-            {extractLaunchName(acquisition.product?.name, acquisition.product?.category)}
-            <span className="text-gray-400"> | </span>
-            <span className="text-gray-300">{acquisition.product?.category}</span>
+          <h3 className="font-display text-lg font-semibold text-white flex items-center gap-2">
+            {/* Thumbnail for 收货对版 — eyeball the arriving box against the order */}
+            <ProductThumb productId={acquisition.product_id} size={40} />
+            <span>
+              <span className="text-vault-gold">{acquisition.product?.brand}</span>
+              <span className="text-gray-400"> | </span>
+              {extractLaunchName(acquisition.product?.name, acquisition.product?.category)}
+              <span className="text-gray-400"> | </span>
+              <span className="text-gray-300">{acquisition.product?.category}</span>
+            </span>
           </h3>
           
           <div className="flex flex-wrap gap-4 mt-2 text-sm text-gray-400">

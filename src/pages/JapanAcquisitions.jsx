@@ -16,6 +16,7 @@ import {
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
+import ProductThumb from '../components/ProductThumb'
 import { useAuth } from '../lib/AuthContext'
 import { ShoppingCart, Save, Plus, Trash2, X, Pencil, RotateCcw, Loader2 } from 'lucide-react'
 import { variantLabel, variantChipClasses } from '../lib/japanVariants'
@@ -585,6 +586,9 @@ export default function JapanAcquisitions() {
                       box column is too narrow for long CN/JP names */}
                   {prod && (
                     <div className="mt-2 pt-2 border-t border-vault-border/40 flex items-center gap-2">
+                      {/* Thumbnail of the chosen box, inline before its name (this
+                          whole block only renders once a product is selected). */}
+                      <ProductThumb productId={prod.id} size={32} />
                       {prod.variant && (
                         <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${variantChipClasses(prod.variant)} flex-shrink-0`}>
                           {variantLabel(prod.variant)}

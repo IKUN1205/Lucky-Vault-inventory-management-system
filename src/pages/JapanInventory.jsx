@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchJapanInventory, supabase } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
+import ProductThumb from '../components/ProductThumb'
 import { Package, Search, RefreshCw, ShoppingCart, ArrowRight, Edit2, Save, X } from 'lucide-react'
 import { variantLabel, variantChipClasses, VARIANT_ORDER, VARIANT_META } from '../lib/japanVariants'
 
@@ -273,6 +274,7 @@ export default function JapanInventory() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-400 text-xs border-b border-vault-border">
+                  <th className="pb-2 w-12 text-center" aria-label="Image">📷</th>
                   <th className="pb-2">Code</th>
                   <th className="pb-2">Brand</th>
                   <th className="pb-2">Product</th>
@@ -292,6 +294,7 @@ export default function JapanInventory() {
                   const isEditing = editingId === r.id
                   return (
                     <tr key={r.id} className={`border-b border-vault-border/50 ${isEditing ? 'bg-vault-gold/5' : 'hover:bg-vault-darker/30'}`}>
+                      <td className="py-2 align-middle w-12"><ProductThumb productId={r.product_id} /></td>
                       <td className="py-2 text-gray-300 font-mono text-xs align-middle">{r.product?.short_code || '—'}</td>
                       <td className="py-2 text-vault-gold align-middle">{r.product?.brand || '—'}</td>
                       <td className="py-2 align-middle">

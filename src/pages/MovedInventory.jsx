@@ -9,6 +9,7 @@ import {
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
+import ProductThumb from '../components/ProductThumb'
 import { useAuth } from '../lib/AuthContext'
 import {
   ArrowRightLeft, ArrowRight, Save, Plus, X, Trash2, ScanLine, Loader2,
@@ -1044,6 +1045,9 @@ function CartRow({ item, onQtyChange, onRemove, onSalePriceChange, mysteryGame, 
     <div className="grid grid-cols-12 gap-3 items-center p-3 bg-vault-darker/40 border border-vault-border rounded-lg">
       <div className={`col-span-7 md:col-span-8 flex items-center gap-3 min-w-0 ${meta.color}`}>
         <Icon size={20} className="flex-shrink-0" />
+        {/* Sealed lines carry a products.id → show its thumbnail. Singles/slabs
+            aren't in the product image map, so they keep just their kind icon. */}
+        {item.kind === 'sealed' && <ProductThumb productId={item.product_id} size={32} />}
         <div className="min-w-0">
           <div className="text-white font-medium truncate">{title}</div>
           <div className="text-xs text-gray-500 truncate">{sub}</div>
@@ -1212,6 +1216,7 @@ function ManualEntrySection({
                 <ResultRow
                   key={r.product_id}
                   icon={Package} color="text-amber-300"
+                  productId={r.product_id}
                   title={`${r.product?.brand} | ${extractLaunchName(r.product?.name, r.product?.category)}`}
                   sub={`${r.product?.category || ''} · ${r.product?.language || ''} · ${r.quantity} in stock`}
                   onAdd={() => onPickSealed(r.product_id)}
@@ -1273,10 +1278,12 @@ function ManualTab({ active, onClick, icon: Icon, label, color }) {
   )
 }
 
-function ResultRow({ icon: Icon, color, title, sub, onAdd, disabled }) {
+function ResultRow({ icon: Icon, color, title, sub, onAdd, disabled, productId }) {
   return (
     <li className="flex items-center gap-3 px-3 py-2 bg-vault-darker/30 hover:bg-vault-darker/60 transition-colors">
       <Icon size={16} className={`${color} flex-shrink-0`} />
+      {/* Sealed rows pass a productId → thumbnail; singles/slabs omit it. */}
+      {productId && <ProductThumb productId={productId} size={28} />}
       <div className="flex-1 min-w-0">
         <div className="text-sm text-white truncate">{title}</div>
         <div className="text-xs text-gray-500 truncate">{sub}</div>

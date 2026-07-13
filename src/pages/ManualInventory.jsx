@@ -4,6 +4,7 @@ import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import BarcodeScanner from '../components/BarcodeScanner'
 import Instructions from '../components/Instructions'
+import ProductThumb from '../components/ProductThumb'
 import { useAuth } from '../lib/AuthContext'
 import { PackagePlus, Save, Plus, Trash2 } from 'lucide-react'
 
@@ -412,6 +413,12 @@ export default function ManualInventory() {
                 getOptionLabel={getProductLabel}
                 renderOption={formatProductOption}
               />
+              {/* Thumbnail preview of the chosen product (display-only). */}
+              {form.product_id && (
+                <div className="mt-2">
+                  <ProductThumb productId={form.product_id} size={40} />
+                </div>
+              )}
             </div>
           </div>
 
@@ -467,7 +474,11 @@ export default function ManualInventory() {
               {bulkItems.map((item, index) => (
                 <div key={item.id} className="p-4 bg-vault-dark rounded-lg border border-vault-border">
                   <div className="flex items-center justify-between mb-3">
-                    <span className="text-vault-gold font-semibold text-sm">Item {index + 1}</span>
+                    <span className="flex items-center gap-2">
+                      <span className="text-vault-gold font-semibold text-sm">Item {index + 1}</span>
+                      {/* Thumbnail of the chosen product — only once one is picked. */}
+                      {item.product_id && <ProductThumb productId={item.product_id} size={32} />}
+                    </span>
                     {bulkItems.length > 1 && (
                       <button type="button" onClick={() => removeBulkItem(item.id)} className="p-1 text-gray-500 hover:text-red-400">
                         <Trash2 size={16} />
