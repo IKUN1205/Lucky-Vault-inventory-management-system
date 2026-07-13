@@ -647,6 +647,10 @@ export default function StorefrontSale() {
               return {
                 kind: 'slab',
                 name: line.slab.item_name,
+                // cert link in the Lark message → 1 click opens the grader's
+                // official cert page with slab photos (Gary 2026-07-13)
+                cert_number: line.slab.cert_number || null,
+                grading_company: line.slab.grading_company || null,
                 quantity: 1,
                 price: Number(line.price) || 0,
               }

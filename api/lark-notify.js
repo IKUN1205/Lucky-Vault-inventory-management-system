@@ -56,6 +56,23 @@ function buildTrackingUrl(carrier, trackingNumber) {
   return fn(trackingNumber)
 }
 
+// Cert-verification link for graded slabs. Clicking it in Lark opens the
+// grader's official cert page — photos of the exact slab included — which is
+// how sale messages "carry the image" (Gary 2026-07-13: 直接发 cert link,
+// custom-bot webhooks can't attach real images but links are one tap).
+// Only emit URL patterns we've verified; unknown graders get no link rather
+// than a broken one.
+function certUrl(gradingCompany, certNumber) {
+  if (!certNumber) return null
+  const c = encodeURIComponent(String(certNumber).trim())
+  if (!c) return null
+  switch (String(gradingCompany || '').toLowerCase()) {
+    case 'psa': return `https://www.psacard.com/cert/${c}`
+    case 'cgc': return `https://www.cgccards.com/certlookup/${c}/`
+    default: return null
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST')
@@ -1055,6 +1072,8 @@ function buildMessage(body) {
       const qtyStr = qty > 1 ? ` ×${qty}` : ''
       const name = it.name || it.description || 'Unknown'
       lines.push(`${icon} ${name}${qtyStr} — $${sub.toFixed(2)}`)
+      const cu = certUrl(it.grading_company, it.cert_number)
+      if (cu) lines.push(`   🔗 ${cu}`)
     }
 
     // Trade only: add a one-line context note for what the customer brought.
@@ -1146,6 +1165,8 @@ function buildMessage(body) {
       const qtyStr = qty > 1 ? ` ×${qty}` : ''
       const name = it.name || 'Unknown'
       lines.push(`${icon} ${name}${qtyStr} — $${sub.toFixed(2)}`)
+      const cu = certUrl(it.grading_company, it.cert_number)
+      if (cu) lines.push(`   🔗 ${cu}`)
     }
     lines.push('')
     if (units !== items.length) {
