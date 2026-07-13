@@ -121,6 +121,11 @@ export default function Dashboard() {
           (boss 2026-06-24). One 进 / one 出, shown together. */}
       <DailyBuyCard />
 
+      {/* 🇯🇵 JP Buyback Board — embeds the nightly kaitori price image so the
+          US + JP teams see today's JP market at a glance. Hides itself if the
+          image can't load. */}
+      <KaitoriBoardCard />
+
       {/* Quick Stats — wired to real data; each card hides itself when
           it has nothing to show. */}
       <QuickStats />
@@ -466,6 +471,41 @@ function DailyBuyCard() {
           </>
         )
       )}
+    </div>
+  )
+}
+
+// 🇯🇵 JP Buyback Board — embeds the nightly-rendered kaitori (買取) price
+// board image, served at a fixed public URL that updates in place ~23:40
+// (boss: US + JP teams see today's JP market at a glance). The ?v= day
+// stamp busts the browser cache once per day; if the image can't load we
+// hide the whole card — no broken-image icon.
+function KaitoriBoardCard() {
+  const [broken, setBroken] = useState(false)
+  if (broken) return null
+  const day = new Date().toLocaleDateString('en-CA').replace(/-/g, '')
+  const url = `https://lv-slabs.luckyvault.us/kaitori/today.png?v=${day}`
+  return (
+    <div className="mt-8 card">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
+        <h2 className="font-display text-lg font-semibold text-white flex items-center gap-2">
+          <BarChart3 className="text-vault-gold" size={20} /> 🇯🇵 日本買取行情 · JP Buyback Board
+        </h2>
+        <a href={url} target="_blank" rel="noreferrer"
+          className="text-xs text-vault-gold hover:underline">
+          在新窗口打开 · Open full size
+        </a>
+      </div>
+      <p className="text-xs text-gray-500 mb-3">每晚 23:40 自动更新 · auto-updates nightly</p>
+      <div className="max-h-[420px] overflow-y-auto">
+        <img
+          src={url}
+          loading="lazy"
+          alt="JP Buyback Board"
+          onError={() => setBroken(true)}
+          className="w-full rounded-lg"
+        />
+      </div>
     </div>
   )
 }
