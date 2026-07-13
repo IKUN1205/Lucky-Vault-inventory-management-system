@@ -3,52 +3,66 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>CG — 动态金边框</title>
+<title>CG — 动态霓虹边框</title>
 <!--
-  常驻动态金色边框。一道高光沿画框四周流动 + 金色内辉光脉冲 + 四角亮点。
-  「一直显示」型:OBS 里加一个浏览器源让它常开即可(不用 Stream Deck)。
-  透明背景 —— 浏览器里看是白底是正常的,盖到 OBS 深色画面上才显金边。
-  想在浏览器里看清楚效果:网址后面加 ?demo  (会铺一层深色背景预览)
-  1920×1080。
+  常驻动态霓虹边框(可换色)。LED 灯带质感:边缘向内渗出大范围光晕 +
+  一道高光沿画框流动 + 呼吸脉冲 + 四角亮点。
+  「一直显示」型:OBS 加一个浏览器源让它常开(不用 Stream Deck 触发)。
+
+  网址参数:
+    ?color=purple   紫色霓虹(ChopChop 那种)     ← 也支持 gold / pink /
+    ?color=gold     金色(默认,Lucky Vault 品牌)    blue / red / green
+    ?color=%23B026FF  任意 hex 色(# 写成 %23)
+    ?demo           铺深色背景,浏览器里预览用(OBS 里别加,要保持透明)
+    ?strength=1.5   光晕强度倍率(0.5 淡 ~ 2 浓,默认 1)
+
+  多直播间可以各用一个颜色,一眼认出是哪个间。1920×1080 透明背景。
 -->
 <style>
   @property --a { syntax:'<angle>'; inherits:false; initial-value:0deg; }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
 
-  /* 主金边 + 内辉光,带呼吸脉冲 */
+  /* LED 渗光层:四边各一条大范围光晕,像灯带打在墙上 */
+  .bleed { position:fixed; pointer-events:none; opacity:calc(.75 * var(--k,1)); }
+  .bleed.t { inset:0 0 auto 0; height:14vmin; background:linear-gradient(180deg, rgba(var(--c),.55), rgba(var(--c),.18) 45%, transparent); }
+  .bleed.b { inset:auto 0 0 0; height:14vmin; background:linear-gradient(0deg,   rgba(var(--c),.55), rgba(var(--c),.18) 45%, transparent); }
+  .bleed.l { inset:0 auto 0 0; width:14vmin;  background:linear-gradient(90deg,  rgba(var(--c),.55), rgba(var(--c),.18) 45%, transparent); }
+  .bleed.r { inset:0 0 0 auto; width:14vmin;  background:linear-gradient(270deg, rgba(var(--c),.55), rgba(var(--c),.18) 45%, transparent); }
+
+  /* 主霓虹边 + 呼吸 */
   .frame {
     position:fixed; inset:0;
-    border:0.6vmin solid rgba(246,197,68,.85);
-    box-shadow: inset 0 0 7vmin rgba(246,197,68,.45), inset 0 0 1.6vmin rgba(255,228,140,.9);
-    animation: breathe 3.2s ease-in-out infinite;
+    border:0.6vmin solid rgba(var(--c), .95);
+    box-shadow: inset 0 0 8vmin rgba(var(--c), calc(.5 * var(--k,1))),
+                inset 0 0 2vmin  rgba(var(--cl), .95);
+    animation: breathe 3s ease-in-out infinite;
   }
   @keyframes breathe {
-    50% { box-shadow: inset 0 0 10vmin rgba(246,197,68,.62), inset 0 0 2.2vmin rgba(255,228,140,1); }
+    50% { box-shadow: inset 0 0 12vmin rgba(var(--c), calc(.7 * var(--k,1))),
+                      inset 0 0 2.6vmin rgba(var(--cl), 1); }
   }
-  /* 内侧第二条细线,更像精致画框 */
-  .frame2 { position:fixed; inset:1.8vmin; border:0.28vmin solid rgba(255,238,180,.4); }
+  .frame2 { position:fixed; inset:1.8vmin; border:0.28vmin solid rgba(var(--cl),.45); }
 
-  /* 沿边框流动的高光(conic-gradient + 只露边框的遮罩) */
+  /* 沿边框流动的高光 */
   .sweep {
     position:fixed; inset:0; padding:0.8vmin;
     background: conic-gradient(from var(--a),
       transparent 0 48%,
-      rgba(255,243,196,.95) 68%,
+      rgba(var(--cl),.95) 68%,
       #ffffff 80%,
-      rgba(246,197,68,1) 90%,
+      rgba(var(--c),1) 90%,
       transparent 100%);
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
             mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor; mask-composite: exclude;
-    filter: drop-shadow(0 0 1.8vmin rgba(255,210,90,1));
+    filter: drop-shadow(0 0 1.8vmin rgba(var(--c),1));
     animation: travel 4s linear infinite;
   }
   @keyframes travel { to { --a: 360deg; } }
 
-  /* 四角亮点 */
-  .corner { position:fixed; width:4.5vmin; height:4.5vmin; border:0.6vmin solid rgba(255,243,196,1);
-    filter:drop-shadow(0 0 1.4vmin rgba(255,210,90,1)); }
+  .corner { position:fixed; width:4.5vmin; height:4.5vmin; border:0.6vmin solid rgba(var(--cl),1);
+    filter:drop-shadow(0 0 1.4vmin rgba(var(--c),1)); }
   .tl{ top:1.5vmin; left:1.5vmin; border-right:none; border-bottom:none; }
   .tr{ top:1.5vmin; right:1.5vmin; border-left:none; border-bottom:none; }
   .bl{ bottom:1.5vmin; left:1.5vmin; border-right:none; border-top:none; }
@@ -56,17 +70,40 @@
 </style>
 </head>
 <body>
+  <div class="bleed t"></div><div class="bleed b"></div>
+  <div class="bleed l"></div><div class="bleed r"></div>
   <div class="frame"></div>
   <div class="frame2"></div>
   <div class="sweep"></div>
   <div class="corner tl"></div><div class="corner tr"></div>
   <div class="corner bl"></div><div class="corner br"></div>
   <script>
-    // ?demo 时铺深色背景,方便在浏览器里预览金边(OBS 里别加 ?demo,要保持透明)
-    if (new URLSearchParams(location.search).get('demo') !== null) {
-      document.body.style.background =
-        'radial-gradient(120% 90% at 50% 30%, #241c10, #0c0905 80%)';
+  (function(){
+    var q = new URLSearchParams(location.search);
+    // 预设色(主色 hex)。purple 调成 ChopChop 那种品红紫。
+    var PRESET = {
+      gold:   'F6C544',
+      purple: 'C026FF',
+      pink:   'FF2FD6',
+      blue:   '2F9DFF',
+      red:    'FF3B30',
+      green:  '2FE07A',
+    };
+    var raw = (q.get('color') || 'gold').replace('#','');
+    var hex = PRESET[raw.toLowerCase()] || raw;
+    if(!/^[0-9a-fA-F]{6}$/.test(hex)) hex = PRESET.gold;
+    var r=parseInt(hex.slice(0,2),16), g=parseInt(hex.slice(2,4),16), b=parseInt(hex.slice(4,6),16);
+    // 亮色 = 主色掺 60% 白,用于高光/细线
+    var lr=Math.round(r+(255-r)*.6), lg=Math.round(g+(255-g)*.6), lb=Math.round(b+(255-b)*.6);
+    var root=document.documentElement;
+    root.style.setProperty('--c',  r+','+g+','+b);
+    root.style.setProperty('--cl', lr+','+lg+','+lb);
+    var k=parseFloat(q.get('strength')); if(k>0 && k<=3) root.style.setProperty('--k', k);
+    // ?demo:铺深色背景方便浏览器预览(OBS 里别加)
+    if (q.get('demo') !== null) {
+      document.body.style.background='radial-gradient(120% 90% at 50% 30%, #17121e, #0a080d 80%)';
     }
+  })();
   </script>
 </body>
 </html>
