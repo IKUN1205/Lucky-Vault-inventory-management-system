@@ -195,13 +195,19 @@ export default async function handler(req, res) {
       arrivingToday, arrivingTomorrow, justDelivered
     })
 
+    // A run where EVERY row errored is a failure, not a success — for weeks
+    // this returned ok:true with errors:111 and nobody could tell the tracking
+    // bot was dead (2026-07-13). Surface error samples so the cause is
+    // diagnosable from the response without Vercel log access.
+    const allFailed = rows.length > 0 && errors.length >= rows.length
     return res.status(200).json({
-      ok: true,
+      ok: !allFailed,
       checked: rows.length,
       arrivingToday: arrivingToday.length,
       arrivingTomorrow: arrivingTomorrow.length,
       justDelivered: justDelivered.length,
       errors: errors.length,
+      errorSamples: errors.slice(0, 3),
       digestSent
     })
   } catch (err) {
