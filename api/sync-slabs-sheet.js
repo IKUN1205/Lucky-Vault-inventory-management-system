@@ -306,6 +306,14 @@ export default async function handler(req, res) {
     // skip ALL relocations this run and page the team instead of silently
     // re-shelving the store. Prices/names/bins still sync normally.
     const RELOCATION_CAP = 30
+    // Override gate (Gary 2026-07-13): a verified mass re-shelving can legitimately
+    // exceed the cap. Approve ONE batch by re-triggering the sync with
+    // ?approve_relocations=N where N is the EXACT count from the warning. We
+    // recount here and only override when it STILL matches — if the sheet changed
+    // since the warning, N won't match and the cap re-engages, so a stale/blind
+    // approval can't fire. A hard ceiling caps even an approved batch as a final
+    // backstop. No param (the hourly cron) → approveN=0 → behaviour unchanged.
+    const RELOCATION_HARD_CEILING = 500
     const plannedRelocations = []
     for (const it of items) {
       const ex = existing.get(it.cert_number)
@@ -315,11 +323,21 @@ export default async function handler(req, res) {
         plannedRelocations.push({ cert: it.cert_number, room: ROOM_NAMES[it.location_route], cell: it.sheet_location_raw })
       }
     }
-    const allowRelocations = plannedRelocations.length <= RELOCATION_CAP
+    const approveN = Number((req.query && req.query.approve_relocations) || 0)
+    const overrideApproved = approveN > 0
+      && approveN === plannedRelocations.length
+      && plannedRelocations.length <= RELOCATION_HARD_CEILING
+    const allowRelocations = plannedRelocations.length <= RELOCATION_CAP || overrideApproved
     if (!allowRelocations) {
       const sample = plannedRelocations.slice(0, 5).map(p => `${p.cert}→${p.room} ("${p.cell}")`).join(', ')
       console.error(`[sync-slabs-sheet] relocation cap: ${plannedRelocations.length} > ${RELOCATION_CAP} — skipping ALL relocations this run`)
-      await postLark(`⚠️ Slabs sync safety stop: the sheet wants to relocate ${plannedRelocations.length} slabs in one run (cap ${RELOCATION_CAP}) — skipped ALL relocations. Sample: ${sample}. If this is a real mass re-shelving, check the sheet's Location column, then rerun.`)
+      const howto = plannedRelocations.length > RELOCATION_HARD_CEILING
+        ? `That exceeds the hard ceiling ${RELOCATION_HARD_CEILING} — split the batch or apply manually.`
+        : `If this is a real mass re-shelving, verify the sheet's Location column, then approve THIS batch by re-running the sync with ?approve_relocations=${plannedRelocations.length}.`
+      await postLark(`⚠️ Slabs sync safety stop: the sheet wants to relocate ${plannedRelocations.length} slabs in one run (cap ${RELOCATION_CAP}) — skipped ALL relocations. Sample: ${sample}. ${howto}`)
+    } else if (overrideApproved && plannedRelocations.length > RELOCATION_CAP) {
+      console.log(`[sync-slabs-sheet] relocation cap OVERRIDE approved (${approveN}) — applying ${plannedRelocations.length} relocations this run`)
+      await postLark(`✅ Slabs sync: approved bulk relocation of ${plannedRelocations.length} slabs (override) — applying this run.`)
     }
 
     let upd = 0, updErr = 0, updSkip = 0, renamed = 0, relocated = 0
