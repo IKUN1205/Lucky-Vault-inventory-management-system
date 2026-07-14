@@ -848,6 +848,23 @@ export const createUser = async (name) => {
   return data
 }
 
+// BLIND product list for the Inventory Audit page: which products are at this
+// location (quantity>0 used only as a server-side filter), WITHOUT returning
+// the quantity — so the counter can't see the expected number in DevTools /
+// network state (Codex 2026-07-14). Never select inventory.quantity here.
+export const fetchAuditProducts = async (locationId) => {
+  const { data, error } = await supabase
+    .from('inventory')
+    .select('product_id, product:products(id, name, brand, type, language)')
+    .eq('location_id', locationId)
+    .gt('quantity', 0)
+  if (error) throw error
+  return (data || []).sort((a, b) => {
+    const bc = (a.product?.brand || '').localeCompare(b.product?.brand || '')
+    return bc !== 0 ? bc : (a.product?.name || '').localeCompare(b.product?.name || '')
+  })
+}
+
 export const fetchInventoryForRoom = async (locationId) => {
   const { data, error } = await supabase
     .from('inventory')

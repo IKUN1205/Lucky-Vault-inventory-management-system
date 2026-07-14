@@ -183,6 +183,30 @@ export async function batchUpdateValues(spreadsheetId, updates) {
 }
 
 /**
+ * Atomically append rows to the END of a tab's data table. Uses the Sheets
+ * values:append API with INSERT_ROWS, so Google finds the last row itself —
+ * no read-then-write race (two concurrent callers can't overwrite each other,
+ * unlike computing nextRow client-side). `range` is any A1 range inside the
+ * target tab, e.g. "SEALED AUDIT!A1".
+ */
+export async function appendRows(spreadsheetId, range, rows) {
+  if (!rows || rows.length === 0) return { updates: { updatedRows: 0 } }
+  const token = await getAccessToken()
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/`
+    + `${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`
+  const resp = await fetchRetry(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values: rows }),
+  }, { label: 'appendRows' })
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`appendRows failed (${resp.status}): ${text}`)
+  }
+  return await resp.json()
+}
+
+/**
  * Hourly back-sync helper used by sync-singles-sheet + sync-slabs-sheet.
  *
  * MODE A (slabs — no qtyColumn): for each sheet row whose id is in

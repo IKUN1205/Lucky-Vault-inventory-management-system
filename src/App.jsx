@@ -21,6 +21,7 @@ import AddProduct from './pages/AddProduct'
 import ManualInventory from './pages/ManualInventory'
 import Reports from './pages/Reports'
 import StreamCounts from './pages/StreamCounts'
+import InventoryAudit from './pages/InventoryAudit'
 import PlatformSales from './pages/PlatformSales'
 import ProductMapping from './pages/ProductMapping'
 import ProductBarcodes from './pages/ProductBarcodes'
@@ -102,6 +103,9 @@ function AppRoutes() {
       <Route path="/access-denied" element={<AccessDenied />} />
       <Route path="/" element={
         <ProtectedRoute path="/"><Layout><Dashboard /></Layout></ProtectedRoute>
+      } />
+      <Route path="/inventory-audit" element={
+        <ProtectedRoute path="/inventory-audit"><Layout><InventoryAudit /></Layout></ProtectedRoute>
       } />
       <Route path="/stream-counts" element={
         <ProtectedRoute path="/stream-counts"><Layout><StreamCounts /></Layout></ProtectedRoute>

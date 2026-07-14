@@ -20,6 +20,7 @@ import {
   Plus,
   PackagePlus,
   ClipboardList,
+  ClipboardCheck,
   TrendingUp,
   Link2,
   Users,
@@ -88,6 +89,7 @@ const navSections = [
     title: 'Sales',
     items: [
       { path: '/stream-counts', label: 'Stream Counts', icon: ClipboardList },
+      { path: '/inventory-audit', label: 'Inventory Audit', icon: ClipboardCheck },
       { path: '/stream-sessions', label: 'Session History', icon: History },
       { path: '/platform-sales', label: 'Platform Sales', icon: TrendingUp },
       { path: '/online-orders', label: 'Online Orders', icon: ShoppingBag },
