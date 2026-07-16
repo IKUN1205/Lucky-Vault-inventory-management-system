@@ -61,7 +61,8 @@ const STREAM_ROOM_NAMES = [
   'Stream Room - eBay SlabbiePatty',
   'Stream Room - TikTok RocketsHQ',
   'Stream Room - TikTok Packheads',
-  'Stream Room - Whatnot'
+  'Stream Room - Whatnot',
+  'Stream Room - PokeAuctionHouse'
 ]
 
 export default function StreamCounts() {

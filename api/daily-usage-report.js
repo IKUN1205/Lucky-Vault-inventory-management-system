@@ -51,6 +51,7 @@ const CHANNEL_SHORT = {
   PackHeadsTCG: 'Packheads', Packheads: 'Packheads',
   RocketsHQ: 'Rockets', LuckyVaultUS: 'Lucky',
   SlabbiePatty: 'Slabbie', Whatnot: 'Whatnot', Shows: 'Shows',
+  PokeAuctionHouse: 'PokeAuction',
 }
 function roomShort(locationName) {
   const n = String(locationName || '').toLowerCase()
@@ -59,6 +60,7 @@ function roomShort(locationName) {
   if (n.includes('luckyvault') || n.includes('lucky')) return 'Lucky'
   if (n.includes('slabbie') || n.includes('patty')) return 'Slabbie'
   if (n.includes('whatnot')) return 'Whatnot'
+  if (n.includes('pokeauction')) return 'PokeAuction'
   if (n.includes('show')) return 'Shows'
   return locationName || '?'
 }
@@ -69,6 +71,7 @@ const ROOM_LABEL = {
   Packheads: 'TikTok · PackHeadsTCG',
   Rockets: 'TikTok · RocketsHQ',
   Whatnot: 'Whatnot',
+  PokeAuction: 'PokeAuctionHouse',
   Shows: 'Card Show',
 }
 const roomLabel = (short) => ROOM_LABEL[short] || short

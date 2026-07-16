@@ -27,6 +27,7 @@ const SOURCE_ROOMS = [
   { value: 'LuckyVaultUS', label: 'eBay · LuckyVaultUS' },
   { value: 'SlabbiePatty', label: 'eBay · SlabbiePatty' },
   { value: 'Whatnot', label: 'Whatnot' },
+  { value: 'PokeAuctionHouse', label: 'PokeAuctionHouse' },
   { value: 'Shows', label: 'Card Show' },
   { value: 'Storefront', label: 'Storefront' },
   { value: 'Online', label: 'Online' },

@@ -126,6 +126,7 @@ function routeSlabSheetLocation(locText) {
   if (/rocket/i.test(t)) return 'Stream Room - TikTok RocketsHQ'
   if (/packhead/i.test(t)) return 'Stream Room - TikTok Packheads'
   if (/whatnot/i.test(t)) return 'Stream Room - Whatnot'
+  if (/pokeauction/i.test(t)) return 'Stream Room - PokeAuctionHouse'
   if (/master/i.test(t)) return 'Master Inventory'
   if (/front/i.test(t)) return 'Front Store'
   if (/japan/i.test(t)) return 'Japan Warehouse'

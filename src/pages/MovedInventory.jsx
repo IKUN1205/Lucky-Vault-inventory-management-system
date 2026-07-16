@@ -39,6 +39,7 @@ const ALLOWED_LOCATION_NAMES = [
   'Stream Room - TikTok RocketsHQ',
   'Stream Room - TikTok Packheads',
   'Stream Room - Whatnot',
+  'Stream Room - PokeAuctionHouse',
   'Shows',
 ]
 

@@ -72,6 +72,7 @@ const CHANNEL_SHORT = {
   PackHeadsTCG: 'Packheads', Packheads: 'Packheads',
   RocketsHQ: 'Rockets', LuckyVaultUS: 'Lucky',
   SlabbiePatty: 'Slabbie', Whatnot: 'Whatnot', Shows: 'Shows',
+  PokeAuctionHouse: 'PokeAuction',
 }
 // Stream-count rooms are identified by location NAME ("Stream Room -
 // TikTok Packheads") — collapse to the same short labels.
@@ -82,6 +83,7 @@ function roomShort(locationName) {
   if (n.includes('luckyvault') || n.includes('lucky')) return 'Lucky'
   if (n.includes('slabbie') || n.includes('patty')) return 'Slabbie'
   if (n.includes('whatnot')) return 'Whatnot'
+  if (n.includes('pokeauction')) return 'PokeAuction'
   if (n.includes('show')) return 'Shows'
   return locationName || '?'
 }

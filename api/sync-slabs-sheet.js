@@ -72,6 +72,7 @@ const ROOM_NAMES = {
   rockets:   'Stream Room - TikTok RocketsHQ',
   packheads: 'Stream Room - TikTok Packheads',
   whatnot:   'Stream Room - Whatnot',
+  pokeauction: 'Stream Room - PokeAuctionHouse',
   master:    'Master Inventory',
   front:     'Front Store',
   japan:     'Japan Warehouse',
@@ -93,6 +94,7 @@ const routeLocation = (locText) => {
   if (/rocket/.test(t)) return 'rockets'
   if (/packhead/.test(t)) return 'packheads'
   if (/whatnot/.test(t)) return 'whatnot'
+  if (/pokeauction/.test(t)) return 'pokeauction'
   if (/master/.test(t)) return 'master'
   if (/front/.test(t)) return 'front'
   if (/japan/.test(t)) return 'japan'

@@ -368,6 +368,7 @@ const CHANNEL_TO_STREAM_ROOM = {
   'PackHeadsTCG':  'Stream Room - TikTok Packheads',
   'RocketsHQ':     'Stream Room - TikTok RocketsHQ',
   'Whatnot':       'Stream Room - Whatnot',
+  'PokeAuctionHouse': 'Stream Room - PokeAuctionHouse',
 }
 
 export const computeAllocationSuggestion = async ({

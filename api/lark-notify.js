@@ -611,6 +611,7 @@ function getRoomWebhook(roomName) {
   if (n.includes('luckyvault'))                           return process.env.LARK_WEBHOOK_STREAM_LUCKYVAULTUS || null
   if (n.includes('slabbiepatty') || n.includes('slabbypatty')) return process.env.LARK_WEBHOOK_STREAM_SLABBIEPATTY || null
   if (n.includes('whatnot'))                              return process.env.LARK_WEBHOOK_STREAM_WHATNOT     || null
+  if (n.includes('pokeauction'))                          return process.env.LARK_WEBHOOK_STREAM_POKEAUCTIONHOUSE || null
   return null
 }
 

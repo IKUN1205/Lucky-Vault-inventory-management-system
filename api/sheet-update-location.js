@@ -56,6 +56,7 @@ const KEYWORD_BY_ROOM = {
   'Stream Room - TikTok RocketsHQ':  'rockets',
   'Stream Room - TikTok Packheads':  'packheads',
   'Stream Room - Whatnot':           'whatnot',
+  'Stream Room - PokeAuctionHouse':  'pokeauction',
   'Shows':                           'show',
   'Master Inventory':                'master',
   'Front Store':                     'front store',
