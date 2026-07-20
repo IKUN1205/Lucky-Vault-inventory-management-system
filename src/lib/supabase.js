@@ -327,6 +327,113 @@ export const updateProductBarcode = async (productId, barcode) => {
 }
 
 // ============================================================================
+// PRODUCT IMAGES (Gary 2026-07-20)
+// ============================================================================
+// Mirror of the high_value_items.photo_url flow (see HighValueTracking.jsx):
+// upload to a PUBLIC Supabase Storage bucket straight from the browser (anon
+// key — the same call that already works for high-value photos), then persist
+// the returned public URL on the product row's `image_url` column. Because
+// useProductImages / ProductThumb read that column live, a freshly added image
+// shows across every page on next load — no nightly kaitori rebuild needed.
+//
+// One-time infra (William): a PUBLIC bucket `product-images` (same RLS as
+// high-value-photos) + `ALTER TABLE products ADD COLUMN image_url text;`.
+// Everything here degrades gracefully until that exists — product creation is
+// never blocked by a missing bucket/column.
+export const PRODUCT_IMAGE_BUCKET = 'product-images'
+
+// Downscale a user-picked image so booster-box photos stay crisp but small
+// (phone shots can be 4000px / several MB). Returns a Blob, or the original
+// File if it's already small or anything in the canvas path fails (upload
+// still works, just larger — never blocks on a nice-to-have).
+async function normalizeImage(file, maxDim = 900, quality = 0.85) {
+  try {
+    if (!file?.type?.startsWith('image/') || typeof document === 'undefined') return file
+    const bitmap = await createImageBitmap(file)
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
+    if (scale >= 1) return file // already small enough — don't re-encode
+    const w = Math.round(bitmap.width * scale)
+    const h = Math.round(bitmap.height * scale)
+    const canvas = document.createElement('canvas')
+    canvas.width = w; canvas.height = h
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h)
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', quality))
+    return blob || file
+  } catch {
+    return file
+  }
+}
+
+// Upload a product image to Storage and return its public URL. Path is keyed
+// by the product's uuid8 + timestamp (cache-busts on replace; any prior file
+// orphans harmlessly). Throws on upload failure so the caller can decide.
+export const uploadProductImage = async (file, productId) => {
+  const uuid8 = String(productId).slice(0, 8)
+  const body = await normalizeImage(file)
+  // If we re-encoded to jpeg, force the extension; otherwise keep the original.
+  const reencoded = body !== file
+  const rawExt = (file.name?.split('.').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  const ext = reencoded ? 'jpg' : (rawExt || 'jpg')
+  const path = `${uuid8}-${Date.now()}.${ext}`
+  const { error } = await supabase.storage.from(PRODUCT_IMAGE_BUCKET).upload(path, body, {
+    cacheControl: '3600',
+    upsert: false,
+    contentType: body.type || file.type || 'image/jpeg',
+  })
+  if (error) throw error
+  const { data } = supabase.storage.from(PRODUCT_IMAGE_BUCKET).getPublicUrl(path)
+  return data.publicUrl
+}
+
+// Persist a product's image URL. Kept separate from createProduct so the SKU
+// insert still succeeds even if the column/bucket aren't provisioned yet.
+export const setProductImageUrl = async (productId, imageUrl) => {
+  const { error } = await supabase
+    .from('products')
+    .update({ image_url: imageUrl })
+    .eq('id', productId)
+  if (error) throw error
+}
+
+// Upload + persist in one call. Returns the URL, or null on any failure —
+// NEVER throws: the image is a nice-to-have and product creation has already
+// succeeded by the time we attach one.
+export const attachProductImage = async (productId, file) => {
+  if (!file || !productId) return null
+  try {
+    const url = await uploadProductImage(file, productId)
+    await setProductImageUrl(productId, url)
+    return url
+  } catch (err) {
+    console.warn('[attachProductImage] failed (non-fatal):', err?.message || err)
+    return null
+  }
+}
+
+// Live map { uuid8 -> image_url } of every product that has an uploaded image.
+// Filtered to non-null so it stays small (well under the 1000-row PostgREST
+// cap for the foreseeable future). Merged OVER the nightly kaitori map by
+// useProductImages so uploads win. Degrades to {} if the column doesn't exist
+// yet (pre-infra) — the app just shows the kaitori/Shopify images as before.
+export const fetchProductImageMap = async () => {
+  try {
+    const { data, error } = await supabase
+      .from('products')
+      .select('id, image_url')
+      .not('image_url', 'is', null)
+    if (error) throw error
+    const map = {}
+    for (const p of data || []) {
+      if (p.image_url) map[String(p.id).slice(0, 8)] = p.image_url
+    }
+    return map
+  } catch (err) {
+    console.warn('[fetchProductImageMap] unavailable (non-fatal):', err?.message || err)
+    return {}
+  }
+}
+
+// ============================================================================
 // Smart allocation suggestions for Intake to Master
 // ============================================================================
 // When a shipment lands at Master Inventory and is "big enough" per category
@@ -4475,6 +4582,14 @@ export const fetchStorefrontDailySummary = async (from, to) => {
   // Pull header-relevant fields from each table for this date.
   // singles / slabs are filtered by sale_date + transaction_id IS NOT NULL
   // so we don't pick up Cards-Scan-Sell rows (those have null transaction_id).
+  //
+  // ALSO gate on sale_channel = 'in_person': that is the exact channel the
+  // Front Store register writes (see the unified storefront checkout). Without
+  // this, platform/stream slab & single sales (sale_channel 'tiktok' /
+  // 'PackHeadsTCG' / 'Whatnot' / auction …) — which ALSO set a transaction_id —
+  // leak into the Storefront bucket and get miscredited to the store (Gary:
+  // "Packheads slab sales all showing in storefront"). Only the physical
+  // register uses 'in_person', so this cleanly keeps platform sales out.
   const [salesRes, singlesRes, slabsRes, pmRes, paymentsRes] = await Promise.all([
     supabase
       .from('storefront_sales')
@@ -4496,6 +4611,7 @@ export const fetchStorefrontDailySummary = async (from, to) => {
       .gte('sale_date', fromStr).lte('sale_date', toStr)
       .not('transaction_id', 'is', null)
       .eq('status', 'sold')
+      .eq('sale_channel', 'in_person')   // Front Store register only — keep platform sales out
       .order('updated_at', { ascending: false }),
     supabase
       .from('slabs')
@@ -4507,6 +4623,7 @@ export const fetchStorefrontDailySummary = async (from, to) => {
       .gte('sale_date', fromStr).lte('sale_date', toStr)
       .not('transaction_id', 'is', null)
       .eq('status', 'sold')
+      .eq('sale_channel', 'in_person')   // Front Store register only — keep platform/Packheads slab sales out
       .order('updated_at', { ascending: false }),
     supabase
       .from('payment_methods')

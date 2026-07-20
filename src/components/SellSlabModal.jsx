@@ -12,14 +12,27 @@ import { markSlabAsSold, notifySlabsLark } from '../lib/supabase'
 // fields populated.
 // ============================================================================
 
+// Channel a slab sale is credited to. Room/platform values MATCH the
+// platform_sales.channel vocabulary + CHANNEL_TO_STREAM_ROOM keys in
+// supabase.js, so a stream-room slab sale carries the room signal instead of
+// masquerading as a Front Store walk-in. `in_person` is (and must stay) the
+// Front Store register channel — it is the ONLY value the Storefront daily
+// summary counts (see fetchStorefrontDailySummary). Anything else is excluded
+// from Storefront, so picking the right room here keeps Packheads/RocketsHQ/
+// auction slab sales out of the storefront bucket.
 const CHANNEL_OPTIONS = [
-  { value: 'ebay',       label: 'eBay' },
-  { value: 'whatnot',    label: 'Whatnot' },
-  { value: 'comc',       label: 'COMC' },
-  { value: 'tcgplayer',  label: 'TCGplayer' },
-  { value: 'in_person',  label: 'In Person' },
-  { value: 'trade_out',  label: 'Trade Out' },
-  { value: 'other',      label: 'Other' },
+  { value: 'in_person',        label: 'Front Store (In Person)' },
+  { value: 'PackHeadsTCG',     label: 'TikTok — Packheads' },
+  { value: 'RocketsHQ',        label: 'TikTok — RocketsHQ' },
+  { value: 'Whatnot',          label: 'Whatnot (auction)' },
+  { value: 'PokeAuctionHouse', label: 'PokeAuctionHouse (auction)' },
+  { value: 'SlabbiePatty',     label: 'eBay — SlabbiePatty' },
+  { value: 'LuckyVaultUS',     label: 'eBay — LuckyVaultUS' },
+  { value: 'ebay',             label: 'eBay (other)' },
+  { value: 'tcgplayer',        label: 'TCGplayer' },
+  { value: 'comc',             label: 'COMC' },
+  { value: 'trade_out',        label: 'Trade Out' },
+  { value: 'other',            label: 'Other' },
 ]
 
 export default function SellSlabModal({ slab, currentUserId, currentUserName, onCancel, onSold, addToast }) {
