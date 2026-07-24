@@ -13,12 +13,20 @@
 //            + cash net of cash transactions SINCE the prior count.
 // First-ever count is a baseline (expected = counted, difference 0).
 //
-// Cash-net logic mirrors cash-alert-eod.js exactly (sales add, buys
-// subtract, split payments count only their Cash slice) but windowed by
-// timestamp instead of a whole PT day:
-//   - storefront_sales: created_at (= sale time) in (since, until]
-//   - singles / slabs:   updated_at (≈ sale time) in (since, until]
-//   - storefront_payments: created_at in (since, until], Cash method only
+// Cash-net semantics mirror cash-alert-eod.js (sales add, buys subtract,
+// splits count only their Cash slice), but the WINDOW is taken from the
+// payment ledger itself:
+//   - storefront_payments: created_at in (since, until], Cash method only —
+//     created_at is the moment cash physically entered/left the drawer.
+//   - each payment is signed by its parent transaction's net_cash direction
+//     (sale / trade cash-in → +, buy cash-out → −), parents looked up across
+//     storefront_sales / singles / slabs; fully-deleted (voided) parents drop
+//     their payments.
+// 2026-07-24: this REPLACED windowing storefront_sales by created_at +
+// singles/slabs by updated_at. updated_at is not a sale time — the nightly
+// market-price refresh touches SOLD singles/slabs too, dragging months-old
+// cash sales into the window and inflating `expected` (recurring phantom
+// morning SHORTs; 7/24's −$1,880.40 was $1,235.40 re-counted history).
 
 import { createClient } from '@supabase/supabase-js'
 
@@ -54,7 +62,7 @@ function nowPtStamp() {
 }
 const money = (n) => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-// Signed cash flow of cash transactions created/updated in (sinceISO, untilISO].
+// Signed cash flow of cash PAYMENTS created in (sinceISO, untilISO].
 // sinceISO may be null → from the beginning of time.
 async function cashNetInWindow(supabase, sinceISO, untilISO) {
   const { data: cashRow } = await supabase
@@ -62,58 +70,78 @@ async function cashNetInWindow(supabase, sinceISO, untilISO) {
   const cashMethodId = cashRow?.id
   if (!cashMethodId) return 0
 
-  const win = (q, col) => {
-    let r = q
-    if (sinceISO) r = r.gt(col, sinceISO)
-    if (untilISO) r = r.lte(col, untilISO)
-    return r
-  }
-  const [salesRes, singlesRes, slabsRes] = await Promise.all([
-    win(supabase.from('storefront_sales')
-      .select('transaction_id, net_cash_usd, payment_method_id, created_at')
-      .eq('deleted', false).not('transaction_id', 'is', null), 'created_at'),
-    win(supabase.from('singles')
-      .select('transaction_id, net_cash_usd, payment_method_id, updated_at')
-      .not('transaction_id', 'is', null).eq('status', 'sold'), 'updated_at'),
-    win(supabase.from('slabs')
-      .select('transaction_id, net_cash_usd, payment_method_id, updated_at')
-      .not('transaction_id', 'is', null).eq('status', 'sold'), 'updated_at'),
-  ])
-  if (salesRes.error) throw salesRes.error
-  if (singlesRes.error) throw singlesRes.error
-  if (slabsRes.error) throw slabsRes.error
+  let q = supabase.from('storefront_payments')
+    .select('transaction_id, amount_usd, created_at')
+    .eq('payment_method_id', cashMethodId)
+  if (sinceISO) q = q.gt('created_at', sinceISO)
+  if (untilISO) q = q.lte('created_at', untilISO)
+  const payRes = await q
+  if (payRes.error) throw payRes.error
+  const pays = payRes.data || []
 
-  const txMeta = new Map()
-  for (const rows of [salesRes.data, singlesRes.data, slabsRes.data]) {
-    for (const r of rows || []) {
-      if (!txMeta.has(r.transaction_id)) {
-        txMeta.set(r.transaction_id, { netCash: Number(r.net_cash_usd) || 0, pmId: r.payment_method_id })
+  // Look up each payment's parent transaction across the 3 sale tables to get
+  // the cash direction (net_cash sign) and the void state. A transaction whose
+  // found parent rows are ALL deleted is a void — its payments don't count.
+  const txIds = [...new Set(pays.map(p => p.transaction_id).filter(Boolean))]
+  const meta = new Map()   // txid → { sign, live }
+  for (let i = 0; i < txIds.length; i += 200) {
+    const batch = txIds.slice(i, i + 200)
+    const [salesRes, singlesRes, slabsRes] = await Promise.all([
+      supabase.from('storefront_sales')
+        .select('transaction_id, net_cash_usd, deleted').in('transaction_id', batch),
+      supabase.from('singles')
+        .select('transaction_id, net_cash_usd, deleted').in('transaction_id', batch),
+      supabase.from('slabs')
+        .select('transaction_id, net_cash_usd, deleted').in('transaction_id', batch),
+    ])
+    for (const r of [salesRes, singlesRes, slabsRes]) {
+      if (r.error) throw r.error
+      for (const row of r.data || []) {
+        const m = meta.get(row.transaction_id)
+          || { sign: (Number(row.net_cash_usd) || 0) >= 0 ? 1 : -1, live: false }
+        if (row.deleted !== true) m.live = true   // null-deleted legacy rows are live
+        meta.set(row.transaction_id, m)
       }
     }
   }
-  const txIds = [...txMeta.keys()]
-  if (txIds.length === 0) return 0
-
   let cashNet = 0
-  const splitCovered = new Set()
-  for (let i = 0; i < txIds.length; i += 200) {
+  for (const p of pays) {
+    const m = p.transaction_id ? meta.get(p.transaction_id) : null
+    if (m && !m.live) continue                    // voided transaction
+    // orphan / null-txid payments count as inflow (none in prod as of 7/24)
+    cashNet += (m ? m.sign : 1) * (Number(p.amount_usd) || 0)
+  }
+
+  // Belt-and-suspenders for ledger-less legacy cash rows (1 of 72 cash tx since
+  // 7/1 had no storefront_payments row): window storefront_sales by its own
+  // created_at like the old code, but ONLY for transactions the payments ledger
+  // doesn't know at all — any cash payment row anywhere means the ledger owns
+  // the tx in whichever window that payment falls, so counting it here too
+  // would double it.
+  let s = supabase.from('storefront_sales')
+    .select('transaction_id, net_cash_usd')
+    .eq('deleted', false).eq('payment_method_id', cashMethodId)
+    .not('transaction_id', 'is', null)
+  if (sinceISO) s = s.gt('created_at', sinceISO)
+  if (untilISO) s = s.lte('created_at', untilISO)
+  const legacyRes = await s
+  if (legacyRes.error) throw legacyRes.error
+  const legacy = new Map()
+  for (const r of legacyRes.data || []) {
+    if (!legacy.has(r.transaction_id)) legacy.set(r.transaction_id, Number(r.net_cash_usd) || 0)
+  }
+  const legacyIds = [...legacy.keys()]
+  for (let i = 0; i < legacyIds.length; i += 200) {
     const { data, error } = await supabase
       .from('storefront_payments')
-      .select('transaction_id, amount_usd')
-      .in('transaction_id', txIds.slice(i, i + 200))
+      .select('transaction_id')
+      .in('transaction_id', legacyIds.slice(i, i + 200))
       .eq('payment_method_id', cashMethodId)
     if (error) throw error
-    for (const p of data || []) {
-      const meta = txMeta.get(p.transaction_id)
-      if (!meta) continue
-      cashNet += (meta.netCash >= 0 ? 1 : -1) * (Number(p.amount_usd) || 0)
-      splitCovered.add(p.transaction_id)
-    }
+    for (const p of data || []) legacy.delete(p.transaction_id)
   }
-  for (const [txid, meta] of txMeta) {
-    if (splitCovered.has(txid)) continue
-    if (meta.pmId === cashMethodId) cashNet += meta.netCash
-  }
+  for (const net of legacy.values()) cashNet += net
+
   return +cashNet.toFixed(2)
 }
 
