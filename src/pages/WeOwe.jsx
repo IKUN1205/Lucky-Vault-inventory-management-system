@@ -62,8 +62,10 @@ export default function WeOwe() {
       // method — treat every same-named row as the IOU method, newest last.
       let iouRows = (pms || []).filter(m => m.name === IOU_METHOD_NAME)
       if (iouRows.length === 0) {
+        // NOTE: insert name only — BusinessExpenses does the same; sending
+        // `active` 400s (column not insertable for the client role)
         const { error: insErr } = await supabase
-          .from('payment_methods').insert({ name: IOU_METHOD_NAME, active: true })
+          .from('payment_methods').insert({ name: IOU_METHOD_NAME })
         if (insErr) throw insErr
         const { data: again, error: reErr } = await supabase
           .from('payment_methods').select('id, name, active').order('name')
@@ -125,7 +127,11 @@ export default function WeOwe() {
     } finally {
       setLoading(false)
     }
-  }, [addToast])
+    // deps intentionally empty: useToast's addToast is a new identity every
+    // render — depending on it re-creates load() and the mount effect refires
+    // forever (hit live 7/24: infinite fetch loop + toast pile-up)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => { load() }, [load])
 
