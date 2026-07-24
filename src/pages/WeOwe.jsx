@@ -62,10 +62,11 @@ export default function WeOwe() {
       // method — treat every same-named row as the IOU method, newest last.
       let iouRows = (pms || []).filter(m => m.name === IOU_METHOD_NAME)
       if (iouRows.length === 0) {
-        // NOTE: insert name only — BusinessExpenses does the same; sending
-        // `active` 400s (column not insertable for the client role)
+        // type is enum payment_type with no IOU member — borrow 'Store Credit';
+        // nothing in the codebase reads .type, all logic keys off name.
+        // (Normally pre-seeded by scripts/add_iou_payment_method_2026_07_24.sql.)
         const { error: insErr } = await supabase
-          .from('payment_methods').insert({ name: IOU_METHOD_NAME })
+          .from('payment_methods').insert({ name: IOU_METHOD_NAME, type: 'Store Credit' })
         if (insErr) throw insErr
         const { data: again, error: reErr } = await supabase
           .from('payment_methods').select('id, name, active').order('name')
