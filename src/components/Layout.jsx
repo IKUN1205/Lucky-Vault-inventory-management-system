@@ -40,7 +40,8 @@ import {
   Tv2,
   Scale,
   Tent,
-  Undo2
+  Undo2,
+  Banknote
 } from 'lucide-react'
 
 // localStorage key for the icon-only-vs-expanded sidebar preference.
@@ -95,6 +96,7 @@ const navSections = [
       { path: '/online-orders', label: 'Online Orders', icon: ShoppingBag },
       { path: '/storefront-sale', label: 'Storefront Sales', icon: Store },
       { path: '/returns', label: 'Returns', icon: Undo2 },
+      { path: '/we-owe', label: 'We Owe (IOU)', icon: Banknote },
     ]
   },
   {

@@ -14,6 +14,7 @@ import BreakBox from './pages/BreakBox'
 import SendToGrading from './pages/SendToGrading'
 import StorefrontSale from './pages/StorefrontSale'
 import Returns from './pages/Returns'
+import WeOwe from './pages/WeOwe'
 import BusinessExpenses from './pages/BusinessExpenses'
 import ViewInventory from './pages/ViewInventory'
 import HighValueTracking from './pages/HighValueTracking'
@@ -133,6 +134,9 @@ function AppRoutes() {
       } />
       <Route path="/storefront-sale" element={
         <ProtectedRoute path="/storefront-sale"><Layout><StorefrontSale /></Layout></ProtectedRoute>
+      } />
+      <Route path="/we-owe" element={
+        <ProtectedRoute path="/we-owe"><Layout><WeOwe /></Layout></ProtectedRoute>
       } />
       <Route path="/returns" element={
         <ProtectedRoute path="/returns"><Layout><Returns /></Layout></ProtectedRoute>
