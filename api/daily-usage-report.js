@@ -50,7 +50,7 @@ const fmtQty = (boxes, packs) => {
 const CHANNEL_SHORT = {
   PackHeadsTCG: 'Packheads', Packheads: 'Packheads',
   RocketsHQ: 'Rockets', LuckyVaultUS: 'Lucky',
-  SlabbiePatty: 'Slabbie', Whatnot: 'Whatnot', Shows: 'Shows',
+  SlabbiePatty: 'Slabbie', Whatnot: 'PokeCasino', Shows: 'Shows',
   PokeAuctionHouse: 'PokeAuction',
 }
 function roomShort(locationName) {
@@ -59,7 +59,7 @@ function roomShort(locationName) {
   if (n.includes('rockets') || n.includes('rocket')) return 'Rockets'
   if (n.includes('luckyvault') || n.includes('lucky')) return 'Lucky'
   if (n.includes('slabbie') || n.includes('patty')) return 'Slabbie'
-  if (n.includes('whatnot')) return 'Whatnot'
+  if (n.includes('whatnot') || n.includes('pokecasino')) return 'PokeCasino'
   if (n.includes('pokeauction')) return 'PokeAuction'
   if (n.includes('show')) return 'Shows'
   return locationName || '?'
@@ -70,7 +70,7 @@ const ROOM_LABEL = {
   Slabbie: 'eBay · SlabbiePatty',
   Packheads: 'TikTok · PackHeadsTCG',
   Rockets: 'TikTok · RocketsHQ',
-  Whatnot: 'Whatnot',
+  PokeCasino: 'Whatnot · PokeCasino',
   PokeAuction: 'PokeAuctionHouse',
   Shows: 'Card Show',
 }

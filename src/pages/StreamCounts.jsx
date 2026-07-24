@@ -61,7 +61,7 @@ const STREAM_ROOM_NAMES = [
   'Stream Room - eBay SlabbiePatty',
   'Stream Room - TikTok RocketsHQ',
   'Stream Room - TikTok Packheads',
-  'Stream Room - Whatnot',
+  'Stream Room - PokeCasino',
   'Stream Room - PokeAuctionHouse'
 ]
 
@@ -416,17 +416,31 @@ export default function StreamCounts() {
         throw itemsErr
       }
       
-      // Update inventory for each changed item
-      const appliedDeltas = []  // for undo
+      // Update inventory for each changed item.
+      //
+      // POLICY (Gary 2026-07-14 "先转库才可以有库存"): a stream count may only
+      // DECREMENT room inventory (sales / shrink). It must NOT create inventory
+      // upward. Stock only enters a room via a recorded transfer (Move
+      // Inventory), which decrements the source location. Silently absorbing a
+      // "+extra" here was the ROOT CAUSE of the dual-location double-count: the
+      // room quantity went up but the source (e.g. Master) was never
+      // decremented, so the same units were counted twice and the total
+      // inflated over time. Positive diffs are still recorded in
+      // stream_count_items (audit) + surfaced in the report/Lark as
+      // "needs transfer-in", but they no longer touch inventory.
+      const appliedDeltas = []  // for undo (only downward deltas are applied)
       for (const item of items) {
-        if (item.difference !== 0) {
+        if (item.difference < 0) {
           await updateInventory(
             item.product_id,
             form.location_id,
-            item.difference // This will subtract if negative (sold) or add if positive
+            item.difference // sale / shrink — decrement only
           )
           appliedDeltas.push({ product_id: item.product_id, delta: item.difference })
         }
+        // item.difference > 0 (found beyond system): intentionally NOT applied.
+        // A count cannot conjure inventory — these must be transferred in via
+        // Move Inventory (source → this room). Surfaced as a TODO below.
       }
 
       // Build report
@@ -1187,7 +1201,7 @@ export default function StreamCounts() {
               <div className="mb-6">
                 <h3 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
                   <AlertTriangle size={20} className="text-amber-400" />
-                  Discrepancies (needs review)
+                  Found beyond system — needs transfer-in
                 </h3>
                 <div className="bg-amber-400/10 rounded-lg border border-amber-400/30 overflow-hidden">
                   <table>
@@ -1211,8 +1225,10 @@ export default function StreamCounts() {
                     </tbody>
                   </table>
                 </div>
-                <p className="text-xs text-amber-400/70 mt-2">
-                  ⚠️ Possible unlogged inbound movement
+                <p className="text-xs text-amber-400/80 mt-2">
+                  ⚠️ These were <b>NOT</b> added to inventory — a count can't add stock. They
+                  arrived without a transfer. Record a <b>Move</b> (source → this room, e.g.
+                  Master → {report.location_name || 'this room'}) so they're properly accounted for.
                 </p>
               </div>
             )}

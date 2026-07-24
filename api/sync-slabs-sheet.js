@@ -71,7 +71,10 @@ const ROOM_NAMES = {
   shows:     'Shows',
   rockets:   'Stream Room - TikTok RocketsHQ',
   packheads: 'Stream Room - TikTok Packheads',
-  whatnot:   'Stream Room - Whatnot',
+  // Room renamed 2026-07-22: PokeCasino is the Whatnot account. 'whatnot'
+  // stays as a legacy alias so old sheet cells still route to the room.
+  whatnot:   'Stream Room - PokeCasino',
+  pokecasino: 'Stream Room - PokeCasino',
   pokeauction: 'Stream Room - PokeAuctionHouse',
   master:    'Master Inventory',
   front:     'Front Store',
@@ -93,7 +96,7 @@ const routeLocation = (locText) => {
   if (/show/.test(t)) return 'shows'
   if (/rocket/.test(t)) return 'rockets'
   if (/packhead/.test(t)) return 'packheads'
-  if (/whatnot/.test(t)) return 'whatnot'
+  if (/whatnot|pokecasino/.test(t)) return 'pokecasino'
   if (/pokeauction/.test(t)) return 'pokeauction'
   if (/master/.test(t)) return 'master'
   if (/front/.test(t)) return 'front'

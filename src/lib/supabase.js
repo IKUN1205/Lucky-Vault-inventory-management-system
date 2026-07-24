@@ -474,7 +474,9 @@ const CHANNEL_TO_STREAM_ROOM = {
   'LuckyVaultUS':  'Stream Room - eBay LuckyVaultUS',
   'PackHeadsTCG':  'Stream Room - TikTok Packheads',
   'RocketsHQ':     'Stream Room - TikTok RocketsHQ',
-  'Whatnot':       'Stream Room - Whatnot',
+  // Room renamed 2026-07-22 (Whatnot account is now PokeCasino). The channel
+  // key stays 'Whatnot' — it's the value stored on historical sale rows.
+  'Whatnot':       'Stream Room - PokeCasino',
   'PokeAuctionHouse': 'Stream Room - PokeAuctionHouse',
 }
 

@@ -41,7 +41,9 @@ const CHANNELS = [
   { id: 'ebay-luckyvaultus', label: 'eBay · LuckyVaultUS',   platform: 'eBay',    channel: 'LuckyVaultUS',   streamRoom: 'Stream Room - eBay LuckyVaultUS' },
   { id: 'tiktok-packheads',  label: 'TikTok · PackHeadsTCG', platform: 'TikTok',  channel: 'PackHeadsTCG',   streamRoom: 'Stream Room - TikTok Packheads'  },
   { id: 'tiktok-rocketshq',  label: 'TikTok · RocketsHQ',    platform: 'TikTok',  channel: 'RocketsHQ',      streamRoom: 'Stream Room - TikTok RocketsHQ'  },
-  { id: 'whatnot',           label: 'Whatnot',               platform: 'Whatnot', channel: 'Whatnot',        streamRoom: 'Stream Room - Whatnot'           },
+  // PokeCasino = the Whatnot account (room renamed 2026-07-22). id/platform/
+  // channel keep the stored 'Whatnot' values so historical rows still match.
+  { id: 'whatnot',           label: 'Whatnot · PokeCasino',  platform: 'Whatnot', channel: 'Whatnot',        streamRoom: 'Stream Room - PokeCasino'        },
   { id: 'pokeauctionhouse',  label: 'PokeAuctionHouse',      platform: 'PokeAuctionHouse', channel: 'PokeAuctionHouse', streamRoom: 'Stream Room - PokeAuctionHouse' },
   // In-person card shows — stock gets Moved to the "Shows" location first
   // (Move Inventory), then sold here so show sales are recorded exactly

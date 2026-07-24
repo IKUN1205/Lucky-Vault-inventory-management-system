@@ -1,9 +1,9 @@
 import React, { useState } from 'react'
-import { createProduct } from '../lib/supabase'
+import { createProduct, attachProductImage } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
-import { Plus, Save, Trash2, ScanLine } from 'lucide-react'
+import { Plus, Save, Trash2, ScanLine, ImagePlus, X } from 'lucide-react'
 
 // Product Type options matching sheet nomenclature
 const PRODUCT_TYPES = [
@@ -45,6 +45,17 @@ export default function AddProduct() {
 
   const [submitting, setSubmitting] = useState(false)
   const [mode, setMode] = useState('single')
+
+  // Optional product photo (single-add mode). Uploaded to Supabase Storage
+  // after the SKU is created, then saved on products.image_url. Purely
+  // additive — leaving it empty adds the product exactly as before.
+  const [photoFile, setPhotoFile] = useState(null)
+  const [photoPreview, setPhotoPreview] = useState(null)
+  const handlePhotoChange = (e) => {
+    const file = e.target.files?.[0]
+    if (file) { setPhotoFile(file); setPhotoPreview(URL.createObjectURL(file)) }
+  }
+  const clearPhoto = () => { setPhotoFile(null); setPhotoPreview(null) }
 
   // Form matches sheet: Brand, Launch Name, Product Type, Sealed/Unsealed, Language, Breakable, # of Packs.
   // `barcode` is new — optional UPC for scanner-based intake/move. Saving
@@ -105,7 +116,7 @@ export default function AddProduct() {
       // Build full product name: "Launch Name Product Type"
       const fullName = `${form.launch_name.trim()} ${form.product_type}`
       
-      await createProduct({
+      const created = await createProduct({
         brand: form.brand,
         type: form.sealed_unsealed,  // "Sealed" or "Pack"
         category: form.product_type,  // "Booster Box", "ETB", etc.
@@ -118,7 +129,20 @@ export default function AddProduct() {
         barcode: form.barcode?.trim() || null,
       })
 
-      addToast(`Added: ${form.brand} | ${form.launch_name} ${form.product_type} (${form.language})`)
+      // Optional photo: upload + save on products.image_url. Non-fatal — the
+      // product already exists; a failed image never rolls it back or blocks
+      // the "Added" confirmation.
+      if (photoFile && created?.id) {
+        const url = await attachProductImage(created.id, photoFile)
+        addToast(
+          url
+            ? `Added: ${form.brand} | ${form.launch_name} ${form.product_type} (${form.language}) + photo`
+            : `Added: ${form.brand} | ${form.launch_name} ${form.product_type} (${form.language}) — photo upload failed, add it later`,
+          url ? 'success' : 'error'
+        )
+      } else {
+        addToast(`Added: ${form.brand} | ${form.launch_name} ${form.product_type} (${form.language})`)
+      }
 
       // Fire-and-forget Lark notification. New products propagate everywhere
       // (inventory, audit mappings, reports) so visibility helps the team
@@ -151,6 +175,7 @@ export default function AddProduct() {
         packs_per_box: '',
         barcode: ''
       }))
+      clearPhoto()
     } catch (error) {
       console.error('Error adding product:', error)
       if (error.message?.includes('duplicate')) {
@@ -478,6 +503,38 @@ export default function AddProduct() {
             {form.breakable && form.packs_per_box && (
               <p className="text-green-400 text-sm mt-2">• Breakable: {form.packs_per_box} packs</p>
             )}
+          </div>
+
+          {/* Optional product photo. Uploaded to Supabase Storage after the
+              SKU is created and saved on products.image_url, so it shows as
+              the thumbnail everywhere (inventory, counts, intake) on next
+              load. Leaving it empty adds the product exactly as before. */}
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Product Photo <span className="text-gray-500 font-normal">(optional)</span>
+            </label>
+            <div className="border-2 border-dashed border-vault-border rounded-lg p-4 text-center">
+              {photoPreview ? (
+                <div className="relative inline-block">
+                  <img src={photoPreview} alt="Preview" className="max-h-40 mx-auto rounded" />
+                  <button
+                    type="button"
+                    onClick={clearPhoto}
+                    className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1"
+                    title="Remove photo"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              ) : (
+                <label className="cursor-pointer flex flex-col items-center gap-2 text-gray-400 hover:text-white py-3">
+                  <ImagePlus size={28} className="text-vault-gold" />
+                  <span className="text-sm">Click to add a photo of this product</span>
+                  <span className="text-[11px] text-gray-500">Auto-shrunk to ~900px on upload — big phone shots are fine</span>
+                  <input type="file" accept="image/*" onChange={handlePhotoChange} className="hidden" />
+                </label>
+              )}
+            </div>
           </div>
 
           <button type="submit" className="btn btn-primary w-full" disabled={submitting}>

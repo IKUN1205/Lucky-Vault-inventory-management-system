@@ -20,14 +20,20 @@ import { markSlabAsSold, notifySlabsLark } from '../lib/supabase'
 // summary counts (see fetchStorefrontDailySummary). Anything else is excluded
 // from Storefront, so picking the right room here keeps Packheads/RocketsHQ/
 // auction slab sales out of the storefront bucket.
+// Order (Gary 2026-07-21): Front Store, then every stream room, then `shows`
+// (card shows/events — matches the active "Shows" physical location and the
+// historical sale_channel='shows' rows; NOT a stream room, so it has no
+// CHANNEL_TO_STREAM_ROOM entry and stays out of Storefront), then
+// marketplaces/misc.
 const CHANNEL_OPTIONS = [
   { value: 'in_person',        label: 'Front Store (In Person)' },
   { value: 'PackHeadsTCG',     label: 'TikTok — Packheads' },
   { value: 'RocketsHQ',        label: 'TikTok — RocketsHQ' },
-  { value: 'Whatnot',          label: 'Whatnot (auction)' },
+  { value: 'Whatnot',          label: 'Whatnot — PokeCasino (auction)' },
   { value: 'PokeAuctionHouse', label: 'PokeAuctionHouse (auction)' },
   { value: 'SlabbiePatty',     label: 'eBay — SlabbiePatty' },
   { value: 'LuckyVaultUS',     label: 'eBay — LuckyVaultUS' },
+  { value: 'shows',            label: 'Card Show (Shows)' },
   { value: 'ebay',             label: 'eBay (other)' },
   { value: 'tcgplayer',        label: 'TCGplayer' },
   { value: 'comc',             label: 'COMC' },

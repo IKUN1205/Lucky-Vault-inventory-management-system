@@ -610,7 +610,8 @@ function getRoomWebhook(roomName) {
   if (n.includes('packheads'))                            return process.env.LARK_WEBHOOK_STREAM_PACKHEADS    || null
   if (n.includes('luckyvault'))                           return process.env.LARK_WEBHOOK_STREAM_LUCKYVAULTUS || null
   if (n.includes('slabbiepatty') || n.includes('slabbypatty')) return process.env.LARK_WEBHOOK_STREAM_SLABBIEPATTY || null
-  if (n.includes('whatnot'))                              return process.env.LARK_WEBHOOK_STREAM_WHATNOT     || null
+  // pokecasino = renamed Whatnot room (2026-07-22); env var name unchanged
+  if (n.includes('whatnot') || n.includes('pokecasino'))  return process.env.LARK_WEBHOOK_STREAM_WHATNOT     || null
   if (n.includes('pokeauction'))                          return process.env.LARK_WEBHOOK_STREAM_POKEAUCTIONHOUSE || null
   return null
 }
@@ -671,7 +672,8 @@ function buildStreamCountDetailed(body) {
 
   if (discrepancyItems.length > 0) {
     lines.push('')
-    lines.push(`⚠️ More than expected: +${Number(totalDiscrepancies) || 0} units (needs review)`)
+    lines.push(`⚠️ Found beyond system: +${Number(totalDiscrepancies) || 0} units — NOT added to inventory`)
+    lines.push(`   A count can't add stock. Record a Move (source → this room, e.g. Master →) to account for these:`)
     for (const item of discrepancyItems) {
       lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}`)
     }

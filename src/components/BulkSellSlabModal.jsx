@@ -14,7 +14,7 @@ import { markSlabsAsSoldBatch, notifySlabsLark } from '../lib/supabase'
 
 const CHANNEL_OPTIONS = [
   { value: 'ebay',       label: 'eBay' },
-  { value: 'whatnot',    label: 'Whatnot' },
+  { value: 'whatnot',    label: 'Whatnot · PokeCasino' },
   { value: 'comc',       label: 'COMC' },
   { value: 'tcgplayer',  label: 'TCGplayer' },
   { value: 'in_person',  label: 'In Person' },

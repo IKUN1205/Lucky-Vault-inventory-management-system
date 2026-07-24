@@ -250,14 +250,25 @@ export default async function handler(req, res) {
     if (itemsErr) {
       return res.status(500).json({ ok: false, error: `Failed to load items: ${itemsErr.message}` })
     }
-    // delta originally applied = actual_qty - expected_qty
-    // (positive = inventory added; negative = inventory subtracted/sold)
+    // POLICY (Gary 2026-07-14 "先转库才可以有库存"): a stream count only applies
+    // DOWNWARD deltas to inventory (sold: actual<expected). Positive "found
+    // beyond system" deltas are NOT applied on save (they require a transfer-in
+    // instead), so retract must reverse ONLY the downward deltas — reversing a
+    // positive delta that was never applied would wrongly subtract real stock
+    // (oversell risk). Mirrors the save loop in src/pages/StreamCounts.jsx.
+    //
+    // Migration note: counts saved BEFORE this policy DID apply positive deltas.
+    // Skipping their reversal on retract leaves the old upward inflation in
+    // place — but that inflation is exactly the dual-location phantom we're
+    // already reconciling out of Master, and leaving it is far safer than
+    // subtracting stock that physically exists. We fail toward not-oversell.
+    //
     // Reversal applies -delta. We do this BEFORE marking the row deleted
     // so a mid-flow crash leaves the row recoverable + visible (better
     // than a deleted row with half-reversed inventory).
     for (const it of (items || [])) {
       const delta = (it.actual_qty || 0) - (it.expected_qty || 0)
-      if (delta === 0) continue
+      if (delta >= 0) continue  // extras were never applied → nothing to reverse
       try {
         await reverseInventoryDelta(supabase, {
           productId: it.product_id,

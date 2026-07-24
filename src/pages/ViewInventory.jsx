@@ -579,8 +579,12 @@ export default function ViewInventory() {
 
                     return (
                       <tr key={inv.id} className="hover:bg-vault-dark/50">
-                        <td className="py-3 pr-2 w-12">
-                          <ProductThumb productId={inv.product_id ?? inv.product?.id} />
+                        <td className="py-3 pr-2 w-16">
+                          <ProductThumb
+                            productId={inv.product_id ?? inv.product?.id}
+                            imageUrl={inv.product?.image_url}
+                            size={60}
+                          />
                         </td>
                         <td className="py-3 font-medium text-white">{launchName}<LangChip lang={inv.product?.language} /></td>
                         <td className="py-3 max-w-[96px]">

@@ -38,7 +38,7 @@ const ALLOWED_LOCATION_NAMES = [
   'Stream Room - eBay SlabbiePatty',
   'Stream Room - TikTok RocketsHQ',
   'Stream Room - TikTok Packheads',
-  'Stream Room - Whatnot',
+  'Stream Room - PokeCasino',
   'Stream Room - PokeAuctionHouse',
   'Shows',
 ]

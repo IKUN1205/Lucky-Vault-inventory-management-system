@@ -13,11 +13,15 @@ import useProductImages from '../lib/useProductImages'
 // Props:
 //   productId — product UUID string (or undefined/null → renders null)
 //   size      — square px size of the thumb (default 40, matching ViewInventory)
-export default function ProductThumb({ productId, size = 40 }) {
+//   imageUrl  — optional direct URL (e.g. a page that already loaded
+//               product.image_url). Used verbatim when present, so a
+//               just-uploaded image shows instantly without waiting for the
+//               session-cached image map to refresh. Falls back to the map.
+export default function ProductThumb({ productId, size = 40, imageUrl = null }) {
   const images = useProductImages()
-  if (!productId) return null
+  if (!productId && !imageUrl) return null
 
-  const raw = images[String(productId).slice(0, 8)]
+  const raw = imageUrl || images[String(productId).slice(0, 8)]
   // https-only guard: the map is remote JSON — never let a malformed or
   // compromised value become a javascript: href.
   let imgSrc = null
