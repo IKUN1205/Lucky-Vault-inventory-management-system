@@ -41,7 +41,7 @@
 
 ## App(本仓库,Vercel,push=生产)
 - 只在 Gary 说"发"时 push;**所有改动过 Codex review(铁律 7/20)**。
-- **7/29 已上线(60d2f12,Codex 三轮过审)**:单卡拆卖(sellSingleQtySplit 三路共用:POS/弹窗/platform 扫车,先插 sold 行+乐观锁扣减)· **singles sale_price_usd 语义统一=单价**(消费方全对齐;7/29 前弹窗整行卖存的是总价,旧行 P/L 显示偏高属已知)· 渠道词表 `src/lib/saleChannels.js`(每直播间一值、eBay 分账号、去 COMC/泛 ebay、in_person 显示名=Storefront、加 shows、默认空强制选)· 标题直达 TCGplayer(tcg_id)。
+- **7/29 已上线(60d2f12→b31bde4 五连发,每笔过 Codex)**:单卡拆卖(sellSingleQtySplit 三路共用,先插 sold 行+乐观锁扣减)· **singles sale_price_usd 语义统一=单价**(旧整行卖存总价,P/L 显示偏高属已知)· 渠道词表 `src/lib/saleChannels.js`(每直播间一值、eBay 分账号、去 COMC/泛 ebay、in_person 显示名=Storefront、加 shows、默认空强制选)· 标题直达 TCGplayer(tcg_id)· 卖卡弹窗显示 Market+sheet D 列 recent sales(`api/singles-price-detail` 实时读表,边缘缓存 10min)· /cards 两表 50 行分页 · /inventory 房间默认折叠(搜索自动展开)· scan 队列芯片带市价。验证部署要盯 **bundle 换名**,别用宽泛词 grep(7/29 误报教训)。
 - 设计已定待 Gary 点头开工:Cards Scan 加"来源交易"下拉(trade/buy 关联+trade_in 按市价分摊成本,治单卡无成本病根)+ 重提防双录 + buy 手写行 sealed 关键词提示。7/28 双录 trade 已修(备份 double_trade_backup_0728.json)。platform 扫车 singles 仍存小写渠道('ebay' 等,报表兼容,细分待办)。
 - 历史疑案待门店确认:7/28 Pikachu ×3 $9、7/24 Elgyem ×2 $15 两笔 in_person 整行多张 sold —— 真打包卖 or 误全卖?误卖则拆回。
 - 房间名是硬编码字符串:改名/加房要全改 StreamCounts/Moved/OnlineOrders/PlatformSales/Returns + api/*(lark-notify/sheet 路由/日报周报)+ inventory-sync 脚本 + lv-finance/weekly_cogs。

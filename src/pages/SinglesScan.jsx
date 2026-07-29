@@ -7,6 +7,7 @@ import QuickIntakeModal from '../components/QuickIntakeModal'
 import BulkSellModal from '../components/BulkSellModal'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
+import { tcgProductUrl } from '../lib/saleChannels'
 import {
   ScanLine, ArrowRight, AlertTriangle, CheckCircle2, Loader2,
   Package, DollarSign, X, Layers
@@ -44,13 +45,18 @@ export default function SinglesScan() {
   //   flowMode   — single (one at a time, modal pops immediately) vs
   //                batch (queue scans, process all at end)
   // The combined `mode` string is derived for downstream branching logic.
-  const [actionType, setActionType] = useState('intake')   // 'intake' | 'sell'
+  const [actionType, setActionType] = useState('intake')   // 'intake' | 'sell' | 'check'
   const [flowMode, setFlowMode] = useState('single')        // 'single' | 'batch'
   const mode = (
-    actionType === 'intake'
-      ? (flowMode === 'batch' ? 'batch_intake' : 'intake')
-      : (flowMode === 'batch' ? 'batch_sell' : 'sell')
+    actionType === 'check' ? 'check'
+      : actionType === 'intake'
+        ? (flowMode === 'batch' ? 'batch_intake' : 'intake')
+        : (flowMode === 'batch' ? 'batch_sell' : 'sell')
   )
+  // 查价 result (Gary 2026-07-29): Price Check mode is READ-ONLY — scan shows
+  // the card + market + the sheet's recent-sales text, never touches the DB
+  // (the old workaround was scanning in Intake mode, which +1'd stock).
+  const [checkResult, setCheckResult] = useState(null)
   const [cert, setCert] = useState('')
   const [processing, setProcessing] = useState(false)
   const [history, setHistory] = useState([])   // [{ ts, cert, mode, ok, msg, single? }, ...]
@@ -120,7 +126,26 @@ export default function SinglesScan() {
     try {
       const existing = await fetchSingleByIdentifier(trimmed)
 
-      if (mode === 'intake') {
+      if (mode === 'check') {
+        // READ-ONLY price check — DB row (market/qty/location) + the singles
+        // sheet's recent-sales text via the edge-cached detail route.
+        let sheet = null
+        try {
+          const r = await fetch(`/api/singles-price-detail?tcg_id=${encodeURIComponent(trimmed)}`)
+          if (r.ok) { const d = await r.json(); if (d?.found) sheet = d }
+        } catch { /* sheet lookup is best-effort */ }
+        setCheckResult({ code: trimmed, single: existing || null, sheet })
+        const mkt = existing?.current_market_price_usd
+        pushHistory({
+          cert: trimmed, mode, ok: !!(existing || sheet),
+          msg: existing
+            ? `${existing.card_name} — market ${mkt != null ? `$${Number(mkt).toFixed(2)}` : (sheet?.market || 'n/a')} · qty ${existing.quantity || 1}${existing.location?.name ? ` @ ${existing.location.name}` : ''}`
+            : sheet
+              ? `${sheet.name || trimmed} — sheet ${sheet.market || 'n/a'} (not in inventory)`
+              : 'Not found in inventory or on the singles sheet',
+          single: existing || undefined,
+        })
+      } else if (mode === 'intake') {
         // Stacking intake (per user directive 2026-05-21): if the same TCG ID
         // is scanned again AND the existing row is a raw card sitting in
         // inventory, bump its quantity by 1 instead of refusing. No modal,
@@ -327,9 +352,9 @@ export default function SinglesScan() {
         </div>
       </Instructions>
 
-      {/* Tier 1 — Intake vs Sell. Solid-filled active state so it's
-          unmistakable which action you're in. */}
-      <div className="grid grid-cols-2 gap-3 mb-3">
+      {/* Tier 1 — Intake vs Sell vs Price Check. Solid-filled active state
+          so it's unmistakable which action you're in. */}
+      <div className="grid grid-cols-3 gap-3 mb-3">
         <button
           type="button"
           onClick={() => setActionTypeSafe('intake')}
@@ -366,11 +391,30 @@ export default function SinglesScan() {
             Scan to record sales of cards already in inventory.
           </p>
         </button>
+        <button
+          type="button"
+          onClick={() => { setCheckResult(null); setActionTypeSafe('check') }}
+          className={`p-5 rounded-xl text-left transition-all border-2 ${
+            actionType === 'check'
+              ? 'bg-blue-500/25 border-blue-400 text-white shadow-lg shadow-blue-500/20'
+              : 'bg-vault-darker/40 border-vault-border text-gray-400 hover:border-blue-500/40 hover:text-blue-300'
+          }`}
+        >
+          <div className="flex items-center gap-2 mb-1">
+            <ScanLine size={20} className={actionType === 'check' ? 'text-blue-300' : ''} />
+            <span className="font-bold text-base">Price Check</span>
+            {actionType === 'check' && <span className="ml-auto text-blue-300 text-xs uppercase font-semibold tracking-wider">Active</span>}
+          </div>
+          <p className={`text-xs ${actionType === 'check' ? 'text-blue-100/80' : 'text-gray-500'}`}>
+            Scan to look up price only — never changes inventory.
+          </p>
+        </button>
       </div>
 
       {/* Tier 2 — Single (modal pops immediately) vs Batch (queue and
-          process all at end). Always visible so users can see and toggle
-          it freely. Pill-style toggle for compact + clear active state. */}
+          process all at end). Hidden in Price Check mode (no flow there).
+          Pill-style toggle for compact + clear active state. */}
+      {actionType !== 'check' && (
       <div className="flex items-center gap-3 mb-6 px-1">
         <span className="text-xs text-gray-400 uppercase font-semibold tracking-wider">
           Flow:
@@ -409,6 +453,58 @@ export default function SinglesScan() {
                 : 'Scans queue below — click "Continue to Bulk Sell" when done.')}
         </span>
       </div>
+      )}
+
+      {/* 查价 result card — big and readable at the counter. */}
+      {actionType === 'check' && checkResult && (() => {
+        const s = checkResult.single
+        const sheet = checkResult.sheet
+        const name = s ? `${s.card_name}${s.card_number ? ` ${s.card_number}` : ''}` : (sheet?.name || checkResult.code)
+        const mkt = s?.current_market_price_usd != null
+          ? `$${Number(s.current_market_price_usd).toFixed(2)}`
+          : (sheet?.market || null)
+        // Prefer the row's tcg_id — a cert# scan must not build a bogus
+        // tcgplayer.com/product/<cert> URL (Codex review).
+        const url = tcgProductUrl(s?.tcg_id || checkResult.code)
+        return (
+          <div className="card mb-6 border-blue-500/40 border-2">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <div className="text-white font-semibold text-lg">
+                  {url ? (
+                    <a href={url} target="_blank" rel="noreferrer" className="hover:text-vault-gold hover:underline">
+                      {name}
+                    </a>
+                  ) : name}
+                </div>
+                <div className="text-gray-400 text-sm mt-0.5">
+                  {s?.set?.name || '—'}
+                  {s ? ` · ${s.condition || 'raw'} · qty ${s.quantity || 1}${s.location?.name ? ` @ ${s.location.name}` : ''}` : ' · not in inventory'}
+                </div>
+                {s?.acquisition_cost_usd != null && (
+                  <div className="text-gray-400 text-sm">
+                    Cost: <span className="text-vault-gold">${Number(s.acquisition_cost_usd).toFixed(2)}</span>
+                  </div>
+                )}
+              </div>
+              <div className="text-right">
+                <div className="text-3xl font-bold text-blue-300">{mkt || '—'}</div>
+                <div className="text-xs text-gray-500 uppercase tracking-wider">market</div>
+              </div>
+            </div>
+            {sheet?.detail && (
+              <div className="mt-3 pt-3 border-t border-vault-border/50 text-blue-200/90 text-sm">
+                {sheet.detail}
+              </div>
+            )}
+            {!s && !sheet && (
+              <div className="mt-2 text-amber-300 text-sm">
+                Not found in inventory or on the singles sheet.
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Batch SELL queue (only visible in batch_sell mode and non-empty) */}
       {mode === 'batch_sell' && sellQueue.length > 0 && (
@@ -541,7 +637,8 @@ export default function SinglesScan() {
             {processing
               ? <Loader2 className="animate-spin" size={18} />
               : <>
-                  {mode === 'intake' ? 'Intake'
+                  {mode === 'check' ? 'Check price'
+                    : mode === 'intake' ? 'Intake'
                     : mode === 'batch_intake' ? 'Queue'
                     : mode === 'batch_sell' ? 'Queue'
                     : 'Sell'}

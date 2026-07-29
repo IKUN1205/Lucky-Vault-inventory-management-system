@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { fetchSlabs, softDeleteSlab } from '../lib/supabase'
+import { slabCertUrl, ebaySearchUrl } from '../lib/saleChannels'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
@@ -325,10 +326,35 @@ export default function SlabsInventory() {
                 const statusClass = STATUS_BADGE[s.status] || 'badge-secondary'
                 return (
                   <tr key={s.id} className="border-b border-vault-border last:border-0 hover:bg-vault-darker/40">
-                    <td className="px-4 py-3 font-mono text-white text-xs">{s.cert_number}</td>
+                    <td className="px-4 py-3 font-mono text-white text-xs">
+                      {/* cert# deep-links to the grader's official cert page
+                          (photos of the exact slab) — PSA/CGC verified URLs only. */}
+                      {slabCertUrl(s.grading_company, s.cert_number) ? (
+                        <a
+                          href={slabCertUrl(s.grading_company, s.cert_number)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="hover:text-vault-gold hover:underline"
+                          title={`Open ${s.grading_company} cert page`}
+                        >
+                          {s.cert_number}
+                        </a>
+                      ) : s.cert_number}
+                    </td>
                     <td className="px-4 py-3 text-gray-300">{s.grading_company}</td>
                     <td className="px-4 py-3 text-white max-w-[420px]">
-                      <div className="truncate" title={s.item_name}>{s.item_name}</div>
+                      {/* item name → eBay search for comps */}
+                      <div className="truncate" title={s.item_name}>
+                        <a
+                          href={ebaySearchUrl(s.item_name)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="hover:text-vault-gold hover:underline"
+                          title="Search this card on eBay"
+                        >
+                          {s.item_name}
+                        </a>
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <span className={`badge ${statusClass} text-xs`}>{s.status}</span>

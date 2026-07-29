@@ -30,3 +30,22 @@ export const tcgProductUrl = (tcgId) =>
   tcgId && /^\d+$/.test(String(tcgId))
     ? `https://www.tcgplayer.com/product/${tcgId}`
     : null
+
+// Grader cert-verification page for a slab — the official page with photos
+// of the exact slab. Only VERIFIED URL patterns (mirrors certUrl in
+// api/lark-notify.js); unknown graders return null rather than a broken link.
+export const slabCertUrl = (gradingCompany, certNumber) => {
+  if (!certNumber) return null
+  const c = encodeURIComponent(String(certNumber).trim())
+  if (!c) return null
+  switch (String(gradingCompany || '').toLowerCase()) {
+    case 'psa': return `https://www.psacard.com/cert/${c}`
+    case 'cgc': return `https://www.cgccards.com/certlookup/${c}/`
+    default: return null
+  }
+}
+
+// eBay search for an item (active listings — eBay's sold-listings filter is
+// login-walled since 2026-07, so we link the plain search).
+export const ebaySearchUrl = (query) =>
+  query ? `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(String(query).trim())}` : null

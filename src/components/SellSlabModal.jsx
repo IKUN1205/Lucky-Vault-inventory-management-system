@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { DollarSign, X, Loader2, TrendingUp, TrendingDown } from 'lucide-react'
 import { markSlabAsSold, notifySlabsLark } from '../lib/supabase'
+import { slabCertUrl, ebaySearchUrl } from '../lib/saleChannels'
 
 // ============================================================================
 // SellSlabModal — record a slab's sale
@@ -129,11 +130,33 @@ export default function SellSlabModal({ slab, currentUserId, currentUserName, on
           </button>
         </div>
 
-        {/* Card identity */}
+        {/* Card identity — item name → eBay comps search; cert# → the
+            grader's official cert page (PSA/CGC verified URLs only). */}
         <div className="bg-vault-darker/60 border border-vault-border rounded-lg p-3 text-xs space-y-1 mb-3">
-          <div className="text-white font-medium">{slab.item_name}</div>
+          <div className="text-white font-medium">
+            <a
+              href={ebaySearchUrl(slab.item_name)}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-vault-gold hover:underline"
+              title="Search this card on eBay"
+            >
+              {slab.item_name}
+            </a>
+          </div>
           <div className="text-gray-400 font-mono">
-            {slab.grading_company} · #{slab.cert_number}
+            {slab.grading_company} ·{' '}
+            {slabCertUrl(slab.grading_company, slab.cert_number) ? (
+              <a
+                href={slabCertUrl(slab.grading_company, slab.cert_number)}
+                target="_blank"
+                rel="noreferrer"
+                className="hover:text-vault-gold hover:underline"
+                title={`Open ${slab.grading_company} cert page`}
+              >
+                #{slab.cert_number}
+              </a>
+            ) : `#${slab.cert_number}`}
           </div>
           {costUsd != null && (
             <div className="text-gray-400">
