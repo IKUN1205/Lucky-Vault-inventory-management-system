@@ -1,50 +1,49 @@
 import { useState } from 'react'
-import { DollarSign, X, Loader2, TrendingUp, TrendingDown } from 'lucide-react'
-import { markSingleAsSold, notifySinglesLark } from '../lib/supabase'
+import { DollarSign, X, Loader2, TrendingUp, TrendingDown, ExternalLink } from 'lucide-react'
+import { sellSingleQtySplit, notifySinglesLark } from '../lib/supabase'
+import { SINGLES_CHANNEL_OPTIONS, tcgProductUrl } from '../lib/saleChannels'
 
 // ============================================================================
 // SellSingleModal — record a single's sale (out-flow)
 // ============================================================================
 // Opens from the Sell button on SinglesInventory. Reads the card identity
-// from the passed `single` prop, takes sale price + channel + date + fees +
-// buyer fields, calls markSingleAsSold(), and on success closes the modal
-// and notifies the parent so the list reloads.
+// from the passed `single` prop, takes quantity + sale price + channel +
+// date + fees + buyer fields, calls sellSingleQtySplit(), and on success
+// closes the modal and notifies the parent so the list reloads.
 //
-// v1.5 limitation: only handles selling the WHOLE row. Raw stacks with
-// quantity > 1 are sold as a single transaction. Splitting (sell 2 of 5)
-// will need a follow-up where we either decrement quantity + insert a new
-// status=sold row, OR adopt a separate singles_sales table.
+// 2026-07-29: raw stacks (quantity > 1) can now be sold PARTIALLY — a
+// quantity selector appears and sellSingleQtySplit() splits the row
+// (source qty drops, sold clone inserted), same semantics as the
+// storefront POS. Selling the full stack still just flips the row.
 // ============================================================================
-
-const CHANNEL_OPTIONS = [
-  { value: 'ebay',       label: 'eBay' },
-  { value: 'whatnot',    label: 'Whatnot · PokeCasino' },
-  { value: 'comc',       label: 'COMC' },
-  { value: 'tcgplayer',  label: 'TCGplayer' },
-  { value: 'in_person',  label: 'In Person' },
-  { value: 'trade_out',  label: 'Trade Out' },
-  { value: 'other',      label: 'Other' }
-]
 
 export default function SellSingleModal({ single, currentUserId, currentUserName, onCancel, onSold, addToast }) {
   const [form, setForm] = useState({
     sale_price_usd: '',
-    sale_channel: 'ebay',
+    // No default channel (Gary 2026-07-29): the cashier must consciously pick
+    // the room/account — a wrong prefilled channel poisons per-room reporting.
+    sale_channel: '',
     sale_date: new Date().toISOString().slice(0, 10),
     sale_fees_usd: '',
     buyer_name: '',
     sale_notes: ''
   })
+  // How many of the stack this sale covers. Defaults to 1 (the store's
+  // 1-by-1 case); the "All" button jumps to the whole stack.
+  const [sellQty, setSellQty] = useState('1')
   const [submitting, setSubmitting] = useState(false)
 
   if (!single) return null
 
   const qty = single.form === 'raw' ? (single.quantity || 1) : 1
+  const sellQtyNum = Math.min(qty, Math.max(1, parseInt(sellQty) || 1))
   const costUsd = single.acquisition_cost_usd != null ? Number(single.acquisition_cost_usd) : null
   const priceNum = parseFloat(form.sale_price_usd) || 0
   const feesNum = parseFloat(form.sale_fees_usd) || 0
   const netUsd = priceNum - feesNum
-  const realizedPl = costUsd != null ? (netUsd - costUsd * qty) : null
+  // Sale price is the TOTAL for the units being sold (unchanged semantics —
+  // it was previously always the whole stack), so P/L costs sellQtyNum units.
+  const realizedPl = costUsd != null ? (netUsd - costUsd * sellQtyNum) : null
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -67,8 +66,15 @@ export default function SellSingleModal({ single, currentUserId, currentUserName
     }
     setSubmitting(true)
     try {
-      const updated = await markSingleAsSold(single.id, {
-        sale_price_usd: parseFloat(form.sale_price_usd),
+      // Cashier types the TOTAL for the units sold (natural at the counter);
+      // the singles table stores sale_price_usd PER UNIT (the convention the
+      // POS split clones + daily summary already use — Codex review 7/29).
+      const totalNum = parseFloat(form.sale_price_usd)
+      // Full precision (no cent-rounding): $10/3 stored as 3.3333… keeps
+      // total×qty ≈ $10.00; rounding to 3.33 would leak a cent per unit.
+      const perUnit = totalNum / sellQtyNum
+      const updated = await sellSingleQtySplit(single.id, sellQtyNum, {
+        sale_price_usd: perUnit,
         sale_channel: form.sale_channel,
         sale_date: form.sale_date,
         sale_fees_usd: form.sale_fees_usd ? parseFloat(form.sale_fees_usd) : null,
@@ -76,18 +82,24 @@ export default function SellSingleModal({ single, currentUserId, currentUserName
         sale_notes: form.sale_notes || null,
         sold_by_id: currentUserId || null
       })
-      // Fire-and-forget Lark notification
+      // Fire-and-forget Lark notification (message shows the TOTAL + ×N)
       notifySinglesLark({
         type: 'single_sold',
         card_name: updated.card_name,
         card_number: updated.card_number,
         set_name: updated.set?.name,
-        sale_price_usd: updated.sale_price_usd,
+        quantity: sellQtyNum,
+        sale_price_usd: totalNum,
         sale_channel: updated.sale_channel,
         buyer_name: updated.buyer_name,
         operator_name: currentUserName,
       })
-      addToast?.('Sale recorded — card moved to sold status', 'success')
+      addToast?.(
+        sellQtyNum < qty
+          ? `Sold ${sellQtyNum} of ${qty} — ${qty - sellQtyNum} remain in inventory`
+          : 'Sale recorded — card moved to sold status',
+        'success'
+      )
       onSold?.(updated)
     } catch (err) {
       console.error('[markSingleAsSold] failed:', err)
@@ -132,9 +144,23 @@ export default function SellSingleModal({ single, currentUserId, currentUserName
           </button>
         </div>
 
-        {/* Identity (read-only) */}
+        {/* Identity (read-only). Title deep-links to the TCGplayer product
+            page (tcg_id = product id) so the seller can check market price
+            while picking channel + price (Gary 2026-07-29). */}
         <div className="bg-vault-darker/60 border border-vault-border rounded-lg p-3 text-xs space-y-1 mb-3">
-          <div className="text-white font-medium">{cardLine}</div>
+          {tcgProductUrl(single.tcg_id) ? (
+            <a
+              href={tcgProductUrl(single.tcg_id)}
+              target="_blank"
+              rel="noreferrer"
+              className="text-white font-medium hover:text-vault-gold hover:underline inline-flex items-center gap-1"
+              title="Open on TCGplayer"
+            >
+              {cardLine} <ExternalLink size={11} className="opacity-60" />
+            </a>
+          ) : (
+            <div className="text-white font-medium">{cardLine}</div>
+          )}
           {setLine && <div className="text-gray-400">{setLine}</div>}
           <div className="text-gray-400">{formLine}</div>
           {costUsd != null && (
@@ -145,10 +171,46 @@ export default function SellSingleModal({ single, currentUserId, currentUserName
           )}
         </div>
 
+        {/* Quantity — only for raw stacks with more than one copy. Sell 1
+            (default), any number up to the stack, or All. Selling fewer than
+            the stack splits the row; the rest stays in inventory. */}
+        {qty > 1 && (
+          <div className="bg-vault-darker/40 border border-vault-border rounded-lg p-3 mb-3">
+            <label className="block text-xs text-gray-400 mb-1">Quantity to sell *</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min="1"
+                max={qty}
+                step="1"
+                value={sellQty}
+                onChange={(e) => setSellQty(e.target.value)}
+                disabled={submitting}
+                className="w-24"
+              />
+              <button
+                type="button"
+                onClick={() => setSellQty(String(qty))}
+                disabled={submitting}
+                className="px-2 py-1 text-xs border border-vault-border rounded text-gray-300 hover:text-white hover:border-vault-gold/40"
+              >
+                All ({qty})
+              </button>
+              <span className="text-xs text-gray-500">
+                {sellQtyNum < qty
+                  ? `${sellQtyNum} of ${qty} — the other ${qty - sellQtyNum} stay in inventory`
+                  : 'whole stack'}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Sale fields */}
         <div className="grid grid-cols-2 gap-3 mb-3">
           <div className="col-span-2 sm:col-span-1">
-            <label className="block text-xs text-gray-400 mb-1">Sale price (USD) *</label>
+            <label className="block text-xs text-gray-400 mb-1">
+              Sale price (USD{sellQtyNum > 1 ? `, total for ${sellQtyNum}` : ''}) *
+            </label>
             <input
               type="number"
               step="0.01"
@@ -170,8 +232,10 @@ export default function SellSingleModal({ single, currentUserId, currentUserName
               onChange={handleChange}
               disabled={submitting}
               required
+              className={!form.sale_channel ? 'border-red-500/50' : ''}
             >
-              {CHANNEL_OPTIONS.map(c => (
+              <option value="">— pick channel —</option>
+              {SINGLES_CHANNEL_OPTIONS.map(c => (
                 <option key={c.value} value={c.value}>{c.label}</option>
               ))}
             </select>
@@ -241,7 +305,7 @@ export default function SellSingleModal({ single, currentUserId, currentUserName
             </div>
             <div className="text-xs opacity-80 mt-0.5">
               Net (after fees): ${netUsd.toFixed(2)}
-              {costUsd != null && ` · Cost: $${(costUsd * qty).toFixed(2)}`}
+              {costUsd != null && ` · Cost: $${(costUsd * sellQtyNum).toFixed(2)}${sellQtyNum > 1 ? ` (${sellQtyNum}×)` : ''}`}
             </div>
           </div>
         )}

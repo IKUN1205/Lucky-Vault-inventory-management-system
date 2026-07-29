@@ -3908,8 +3908,122 @@ const _sellSlabLine = async ({ slab, salePrice, paymentMethodId, cashierId, tran
 // Sell N units of a raw single. Handles the fungible-split case where
 // the source row has more units than we're selling — we don't flip the
 // whole row to sold, we decrement the source and insert a sold clone.
+// Sell `sellQty` of a singles row with correct stack-splitting. Shared by the
+// storefront POS line writer AND the SinglesInventory Sell modal (2026-07-29
+// fix: the modal used to flip the WHOLE row to sold — selling 1 of a 3-stack
+// wiped all 3; its header even documented "v1.5 limitation: whole row only").
+//   - whole-row (qty == stack, or non-raw/graded) → markSingleAsSold as before
+//   - partial → source row qty drops by sellQty; INSERT a status=sold clone
+//     carrying the sale_* fields + parent_single_id, same semantics the POS
+//     split has used since Phase 2.
+// Re-reads the source row by id so a stale UI object can't oversell a stack
+// that shrank since the page loaded.
+export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
+  const { data: src, error: srcErr } = await supabase
+    .from('singles').select('*').eq('id', singleId).single()
+  if (srcErr) throw srcErr
+  if (src.status === 'sold') throw new Error('Row is already sold')
+  const sourceQty = src.quantity || 1
+  const sellQty = Math.max(1, Number(sellQtyRaw) || 1)
+  if (sellQty > sourceQty) {
+    throw new Error(`Only ${sourceQty} available — cannot sell ${sellQty}`)
+  }
+  const isFungibleRaw = src.form === 'raw' && sourceQty > 1
+
+  // Whole-row sale: just flip status. Existing markSingleAsSold handles it.
+  if (!isFungibleRaw || sellQty === sourceQty) {
+    return await markSingleAsSold(singleId, saleData)
+  }
+
+  // Partial sale: split the row — INSERT a clone with qty=sellQty +
+  // status='sold' + sale_* filled, then decrement the source. The clone
+  // keeps the same set / cost / acquisition fields so per-card analytics
+  // line up.
+  // Ordering + concurrency (Codex review 2026-07-29): clone is inserted
+  // FIRST, then the source decrement is a CONDITIONAL update (quantity must
+  // still equal what we read — optimistic lock, so two cashiers selling the
+  // same stack can't both apply). If the decrement matches 0 rows or errors,
+  // the just-inserted clone is deleted (rolling back our own artifact of a
+  // FAILED sale — not a real record, so the never-hard-delete rule doesn't
+  // apply) and we throw. The old order (decrement first) silently LOST
+  // units whenever the insert failed.
+  const remainingQty = sourceQty - sellQty
+
+  const clone = {
+    card_name: src.card_name,
+    card_number: src.card_number,
+    set_id: src.set_id,
+    brand: src.brand,
+    language: src.language,
+    variant: src.variant,
+    form: src.form,
+    condition: src.condition,
+    quantity: sellQty,
+    tcg_id: src.tcg_id,
+    acquisition_cost_usd: src.acquisition_cost_usd,
+    acquisition_cost_native: src.acquisition_cost_native,
+    acquisition_currency: src.acquisition_currency,
+    source_type: src.source_type,
+    source_box_break_id: src.source_box_break_id,
+    source_acquisition_id: src.source_acquisition_id,
+    location_id: src.location_id,
+    acquirer_id: src.acquirer_id,
+    vendor_id: src.vendor_id,
+    date_acquired: src.date_acquired,
+    notes: `Split from ${singleId} (sale of ${sellQty} of ${sourceQty})`,
+    // Sale fields
+    status: 'sold',
+    sale_price_usd: saleData.sale_price_usd ?? null,
+    sale_channel: saleData.sale_channel || null,
+    sale_date: saleData.sale_date,
+    sale_fees_usd: saleData.sale_fees_usd ?? null,
+    sale_price_native: saleData.sale_price_native ?? null,
+    sale_currency: saleData.sale_currency || 'USD',
+    buyer_name: saleData.buyer_name || null,
+    sale_notes: saleData.sale_notes || null,
+    sold_by_id: saleData.sold_by_id || null,
+    payment_method_id: saleData.payment_method_id || null,
+    transaction_id: saleData.transaction_id || null,
+    transaction_type: saleData.transaction_type || null,
+    trade_in_value_usd: saleData.trade_in_value_usd ?? null,
+    net_cash_usd: saleData.net_cash_usd ?? null,
+    parent_single_id: singleId,
+  }
+  const { data: inserted, error: insErr } = await supabase
+    .from('singles')
+    .insert(clone)
+    .select(`*, set:card_sets(id, brand, name, code, language), location:locations(id, name)`)
+    .single()
+  if (insErr) throw insErr
+
+  const { data: updData, error: updErr } = await supabase
+    .from('singles')
+    .update({ quantity: remainingQty })
+    .eq('id', singleId)
+    .eq('quantity', sourceQty)   // optimistic lock — no-op if someone got there first
+    .neq('status', 'sold')
+    .select('id')
+  if (updErr || !updData || updData.length === 0) {
+    await supabase.from('singles').delete().eq('id', inserted.id)
+    throw new Error(
+      updErr?.message ||
+      'Stock changed while selling (sold or recounted by someone else) — reload and try again'
+    )
+  }
+  // The POS split path historically skipped the event log; now both paths
+  // record the split sale (markSingleAsSold logs the whole-row case).
+  logSingleEvent({
+    single_id: inserted.id,
+    event_type: 'sold',
+    summary: `Sold ${sellQty} of ${sourceQty} ${summarizeCard(inserted)} (split; ${remainingQty} remain)`,
+    payload: { sale: saleData, card: inserted, split_from: singleId },
+    acted_by_id: saleData.sold_by_id || null,
+  })
+  return inserted
+}
+
 const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {}, allowStockAdjust = false }) => {
-  let sourceQty = single.quantity || 1
+  const sourceQty = single.quantity || 1
   const sellQty = Math.max(1, Number(quantity) || 1)
 
   if (sellQty > sourceQty) {
@@ -3927,81 +4041,21 @@ const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, c
       .eq('id', single.id)
     if (bumpErr) throw bumpErr
     console.log(`[sell-single] stock auto-corrected: ${single.tcg_id} qty ${sourceQty} → ${sellQty} (cashier-confirmed physical count)`)
-    sourceQty = sellQty
   }
-  const isFungibleRaw = single.form === 'raw' && sourceQty > 1
-
-  // Whole-row sale: just flip status. Existing markSingleAsSold handles it.
-  if (!isFungibleRaw || sellQty === sourceQty) {
-    return await markSingleAsSold(single.id, {
-      sale_price_usd: Number(salePrice) || 0,
-      sale_channel: 'in_person',
-      sale_date: saleDate,
-      sale_fees_usd: null,
-      buyer_name: null,
-      sale_notes: null,
-      sold_by_id: cashierId || null,
-      payment_method_id: paymentMethodId || null,
-      transaction_id: transactionId,
-      transaction_type: txMeta.transactionType || 'sale',
-      trade_in_value_usd: txMeta.tradeInValue ?? null,
-      net_cash_usd: txMeta.netCash ?? null,
-    })
-  }
-
-  // Partial sale: split the row. Source row qty drops by sellQty, and we
-  // INSERT a clone with qty=sellQty + status='sold' + sale_* filled. The
-  // clone keeps the same set / cost / acquisition fields so per-card
-  // analytics line up.
-  const remainingQty = sourceQty - sellQty
-  const { error: updErr } = await supabase
-    .from('singles')
-    .update({ quantity: remainingQty })
-    .eq('id', single.id)
-  if (updErr) throw updErr
-
-  const clone = {
-    card_name: single.card_name,
-    card_number: single.card_number,
-    set_id: single.set_id,
-    brand: single.brand,
-    language: single.language,
-    variant: single.variant,
-    form: single.form,
-    condition: single.condition,
-    quantity: sellQty,
-    tcg_id: single.tcg_id,
-    acquisition_cost_usd: single.acquisition_cost_usd,
-    acquisition_cost_native: single.acquisition_cost_native,
-    acquisition_currency: single.acquisition_currency,
-    source_type: single.source_type,
-    source_box_break_id: single.source_box_break_id,
-    source_acquisition_id: single.source_acquisition_id,
-    location_id: single.location_id,
-    acquirer_id: single.acquirer_id,
-    vendor_id: single.vendor_id,
-    date_acquired: single.date_acquired,
-    notes: `Split from ${single.id} (storefront sale of ${sellQty} of ${sourceQty})`,
-    // Sale fields
-    status: 'sold',
+  return await sellSingleQtySplit(single.id, sellQty, {
     sale_price_usd: Number(salePrice) || 0,
     sale_channel: 'in_person',
     sale_date: saleDate,
+    sale_fees_usd: null,
+    buyer_name: null,
+    sale_notes: null,
     sold_by_id: cashierId || null,
     payment_method_id: paymentMethodId || null,
     transaction_id: transactionId,
     transaction_type: txMeta.transactionType || 'sale',
     trade_in_value_usd: txMeta.tradeInValue ?? null,
     net_cash_usd: txMeta.netCash ?? null,
-    parent_single_id: single.id,
-  }
-  const { data: inserted, error: insErr } = await supabase
-    .from('singles')
-    .insert(clone)
-    .select(`*, set:card_sets(id, brand, name, code, language), location:locations(id, name)`)
-    .single()
-  if (insErr) throw insErr
-  return inserted
+  })
 }
 
 // ----- BUY: store buys items from a customer (cash flows OUT to customer) -----
@@ -4441,7 +4495,7 @@ export const updateStorefrontTransaction = async (transactionId, patch = {}) => 
       .select('id, sale_price, quantity, transaction_type, trade_in_value_usd')
       .eq('transaction_id', transactionId),
     supabase.from('singles')
-      .select('id, sale_price_usd, transaction_type, trade_in_value_usd')
+      .select('id, sale_price_usd, quantity, transaction_type, trade_in_value_usd')
       .eq('transaction_id', transactionId),
     supabase.from('slabs')
       .select('id, sale_price_usd, transaction_type, trade_in_value_usd')
@@ -4462,11 +4516,12 @@ export const updateStorefrontTransaction = async (transactionId, patch = {}) => 
   const currentTradeIn = Number(sampleRow.trade_in_value_usd ?? 0)
 
   // 2. Compute current gross (line totals sum). storefront_sales.sale_price
-  //    is per-line subtotal; singles/slabs.sale_price_usd is per-unit but
-  //    for those rows quantity is always 1.
+  //    is per-line subtotal; singles.sale_price_usd is PER-UNIT (POS split
+  //    clones can carry quantity > 1 — Codex review 2026-07-29), so multiply
+  //    by quantity. slabs are unique items (qty 1).
   const currentGross =
     ssRows.reduce((s, r) => s + (Number(r.sale_price) || 0), 0) +
-    singlesRows.reduce((s, r) => s + (Number(r.sale_price_usd) || 0), 0) +
+    singlesRows.reduce((s, r) => s + (Number(r.sale_price_usd) || 0) * (Number(r.quantity) || 1), 0) +
     slabsRows.reduce((s, r) => s + (Number(r.sale_price_usd) || 0), 0)
 
   // 3. Decide new gross + scale factor. If `total` wasn't in the patch,
@@ -5136,34 +5191,11 @@ const _sellSingleLinePlatform = async ({
       sale_notes: null, payment_method_id: null, transaction_id: null, transaction_type: null,
     }).eq('id', single.id)
   } else {
-    // Fungible split — decrement source qty + insert a sold clone.
-    const remainingQty = sourceQty - sellQty
-    const { error: updErr } = await supabase
-      .from('singles').update({ quantity: remainingQty }).eq('id', single.id)
-    if (updErr) throw updErr
-    const clone = {
-      card_name: single.card_name, card_number: single.card_number,
-      set_id: single.set_id, brand: single.brand, language: single.language,
-      variant: single.variant, form: single.form, condition: single.condition,
-      quantity: sellQty, tcg_id: single.tcg_id,
-      acquisition_cost_usd: single.acquisition_cost_usd,
-      acquisition_cost_native: single.acquisition_cost_native,
-      acquisition_currency: single.acquisition_currency,
-      source_type: single.source_type,
-      source_box_break_id: single.source_box_break_id,
-      source_acquisition_id: single.source_acquisition_id,
-      location_id: single.location_id,
-      acquirer_id: single.acquirer_id, vendor_id: single.vendor_id,
-      date_acquired: single.date_acquired,
-      notes: `Split from ${single.id} (platform sale of ${sellQty} of ${sourceQty})`,
-      status: 'sold',
-      parent_single_id: single.id,
-      ...saleData,
-    }
-    const { data: inserted, error: insErr } = await supabase
-      .from('singles').insert(clone).select().single()
-    if (insErr) throw insErr
-    soldRow = inserted
+    // Fungible split — shared sellSingleQtySplit (Codex review 2026-07-29:
+    // this path used to carry its own decrement-first copy of the split,
+    // with the same lose-units-on-insert-failure ordering bug the modal/POS
+    // path had; now all three run the insert-first + optimistic-lock code).
+    soldRow = await sellSingleQtySplit(single.id, sellQty, saleData)
     rollback = async () => {
       await supabase.from('singles').delete().eq('id', soldRow.id)             // remove the just-created clone
       await supabase.from('singles').update({ quantity: sourceQty }).eq('id', single.id)  // restore source qty

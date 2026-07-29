@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { DollarSign, X, Loader2, TrendingUp, TrendingDown, Trash2 } from 'lucide-react'
 import { markSinglesAsSoldBatch, notifySinglesLark } from '../lib/supabase'
+import { SINGLES_CHANNEL_OPTIONS, tcgProductUrl } from '../lib/saleChannels'
 
 // ============================================================================
 // BulkSellModal — record sales for N queued cards in one go
@@ -17,21 +18,13 @@ import { markSinglesAsSoldBatch, notifySinglesLark } from '../lib/supabase'
 //     the audit log gets one event per card
 // ============================================================================
 
-const CHANNEL_OPTIONS = [
-  { value: 'ebay',       label: 'eBay' },
-  { value: 'whatnot',    label: 'Whatnot · PokeCasino' },
-  { value: 'comc',       label: 'COMC' },
-  { value: 'tcgplayer',  label: 'TCGplayer' },
-  { value: 'in_person',  label: 'In Person' },
-  { value: 'trade_out',  label: 'Trade Out' },
-  { value: 'other',      label: 'Other' },
-]
-
 export default function BulkSellModal({ cards, currentUserId, currentUserName, addToast, onCancel, onSold }) {
   const today = new Date().toISOString().slice(0, 10)
   const [common, setCommon] = useState({
     sale_date: today,
-    sale_channel: 'ebay',
+    // No default channel (Gary 2026-07-29) — must be picked consciously so
+    // per-room reporting stays clean. Per-row overrides still win.
+    sale_channel: '',
     buyer_name: '',
   })
   const [rows, setRows] = useState(() => cards.map(c => ({
@@ -82,25 +75,41 @@ export default function BulkSellModal({ cards, currentUserId, currentUserName, a
     e.preventDefault()
     if (rows.length === 0) return
     if (!allFilled) return addToast?.('Fill in sale price for every row', 'error')
+    // Every row needs an effective channel: its own override, or the common
+    // default. With no prefilled default this is a real gate, not decoration.
+    if (rows.some(r => !(r.sale_channel_override || common.sale_channel))) {
+      return addToast?.('Pick a sale channel (default or per-row)', 'error')
+    }
 
     setSubmitting(true)
     try {
-      const entries = rows.map(r => ({
-        id: r.id,
-        saleData: {
-          sale_price_usd: parseFloat(r.sale_price_usd),
-          sale_fees_usd: r.sale_fees_usd === '' ? null : parseFloat(r.sale_fees_usd),
-          sale_channel: r.sale_channel_override || common.sale_channel,
-          sale_date: common.sale_date,
-          buyer_name: common.buyer_name || null,
-          sale_currency: 'USD',
-          sold_by_id: currentUserId || null,
+      const entries = rows.map(r => {
+        // Input is the TOTAL for the row; singles store sale_price_usd
+        // PER-UNIT (7/29 convention — matches POS clones + daily summary).
+        const rowQty = r.card.form === 'raw' ? (r.card.quantity || 1) : 1
+        return {
+          id: r.id,
+          saleData: {
+            // Full precision — cent-rounding the per-unit share would drift
+            // the reconstructed total (e.g. $10/3 → 3.33 → $9.99).
+            sale_price_usd: parseFloat(r.sale_price_usd) / rowQty,
+            sale_fees_usd: r.sale_fees_usd === '' ? null : parseFloat(r.sale_fees_usd),
+            sale_channel: r.sale_channel_override || common.sale_channel,
+            sale_date: common.sale_date,
+            buyer_name: common.buyer_name || null,
+            sale_currency: 'USD',
+            sold_by_id: currentUserId || null,
+          }
         }
-      }))
+      })
       const result = await markSinglesAsSoldBatch(entries)
       // Fire-and-forget Lark notification with batch summary (only if some succeeded)
       if (result.ok.length > 0) {
-        const totalSale = result.ok.reduce((s, c) => s + (Number(c.sale_price_usd) || 0), 0)
+        // sale_price_usd is per-unit — multiply back by qty for the totals.
+        const totalSale = result.ok.reduce((s, c) => {
+          const q = c.form === 'raw' ? (c.quantity || 1) : 1
+          return s + (Number(c.sale_price_usd) || 0) * q
+        }, 0)
         const totalFees = result.ok.reduce((s, c) => s + (Number(c.sale_fees_usd) || 0), 0)
         const totalCost = result.ok.reduce((s, c) => {
           const qty = c.form === 'raw' ? (c.quantity || 1) : 1
@@ -176,14 +185,16 @@ export default function BulkSellModal({ cards, currentUserId, currentUserName, a
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Default channel</label>
+            <label className="block text-xs text-gray-400 mb-1">Default channel *</label>
             <select
               name="sale_channel"
               value={common.sale_channel}
               onChange={handleCommon}
               disabled={submitting}
+              className={!common.sale_channel ? 'border-red-500/50' : ''}
             >
-              {CHANNEL_OPTIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+              <option value="">— pick channel —</option>
+              {SINGLES_CHANNEL_OPTIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
             </select>
           </div>
           <div>
@@ -229,7 +240,21 @@ export default function BulkSellModal({ cards, currentUserId, currentUserName, a
                 return (
                   <tr key={r.id} className="border-b border-vault-border/50 last:border-0">
                     <td className="px-2 py-2">
-                      <div className="text-white">{c.card_name} <span className="text-gray-500">{c.card_number}</span></div>
+                      <div className="text-white">
+                        {tcgProductUrl(c.tcg_id) ? (
+                          <a
+                            href={tcgProductUrl(c.tcg_id)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="hover:text-vault-gold hover:underline"
+                            title="Open on TCGplayer"
+                          >
+                            {c.card_name} <span className="text-gray-500">{c.card_number}</span>
+                          </a>
+                        ) : (
+                          <>{c.card_name} <span className="text-gray-500">{c.card_number}</span></>
+                        )}
+                      </div>
                       <div className="text-gray-500 text-xs">
                         {c.set?.name || '—'} · {ident}
                       </div>
@@ -272,7 +297,7 @@ export default function BulkSellModal({ cards, currentUserId, currentUserName, a
                         className="text-xs"
                       >
                         <option value="">(use default)</option>
-                        {CHANNEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        {SINGLES_CHANNEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
                     </td>
                     <td className={`px-2 py-2 text-right text-xs ${

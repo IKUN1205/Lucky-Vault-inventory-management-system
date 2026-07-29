@@ -25,13 +25,22 @@ const STATUS_OPTIONS = [
 const GRADING_COMPANY_OPTIONS = ['PSA', 'BGS', 'CGC', 'SGC', 'Other']
 
 const CHANNEL_LABEL = {
-  ebay:      'eBay',
-  whatnot:   'Whatnot',
-  comc:      'COMC',
-  tcgplayer: 'TCGplayer',
-  in_person: 'In Person',
-  trade_out: 'Trade Out',
-  other:     'Other'
+  // current vocabulary (src/lib/saleChannels.js, 2026-07-29)
+  in_person:        'Storefront',
+  PackHeadsTCG:     'TikTok Packheads',
+  RocketsHQ:        'TikTok RocketsHQ',
+  Whatnot:          'Whatnot PokeCasino',
+  PokeAuctionHouse: 'PokeAuctionHouse',
+  SlabbiePatty:     'eBay SlabbiePatty',
+  LuckyVaultUS:     'eBay LuckyVaultUS',
+  shows:            'Card Show',
+  tcgplayer:        'TCGplayer',
+  trade_out:        'Trade Out',
+  other:            'Other',
+  // historical values still present on old sold rows
+  ebay:    'eBay',
+  whatnot: 'Whatnot',
+  comc:    'COMC',
 }
 
 export default function SinglesInventory() {
@@ -77,9 +86,10 @@ export default function SinglesInventory() {
       const qty = s.form === 'raw' ? (s.quantity || 1) : 1
       const cost = s.acquisition_cost_usd != null ? Number(s.acquisition_cost_usd) : null
       if (s.status === 'sold') {
+        // sale_price_usd is PER-UNIT (7/29 convention) — scale by qty.
         const price = s.sale_price_usd != null ? Number(s.sale_price_usd) : null
         const fees = s.sale_fees_usd != null ? Number(s.sale_fees_usd) : 0
-        return (price != null && cost != null) ? (price - fees) - cost * qty : null
+        return (price != null && cost != null) ? (price * qty - fees) - cost * qty : null
       }
       const market = s.current_market_price_usd != null ? Number(s.current_market_price_usd) : null
       return (market != null && cost != null) ? (market - cost) * qty : null
@@ -207,8 +217,9 @@ export default function SinglesInventory() {
         marketRows++
       }
       if (s.status === 'sold' && s.sale_price_usd != null) {
+        // sale_price_usd is PER-UNIT (7/29 convention) — scale by qty.
         const fees = s.sale_fees_usd != null ? Number(s.sale_fees_usd) : 0
-        totalSaleNet += Number(s.sale_price_usd) - fees
+        totalSaleNet += Number(s.sale_price_usd) * qty - fees
         saleRows++
       }
     }
@@ -482,10 +493,14 @@ export default function SinglesInventory() {
                 const unrealized = (costEach != null && marketEach != null)
                   ? (Number(marketEach) - Number(costEach)) * qty
                   : null
-                // Realized P/L = (sale_price - fees) - (cost * qty)
+                // Realized P/L = (sale_price × qty - fees) - (cost × qty).
+                // sale_price_usd is PER-UNIT (7/29 convention — POS split
+                // clones + daily summary). Rows sold via the modal BEFORE
+                // 7/29 stored the stack TOTAL, so their P/L displays high;
+                // display-only, left alone.
                 const salePriceNum = s.sale_price_usd != null ? Number(s.sale_price_usd) : null
                 const feesNum = s.sale_fees_usd != null ? Number(s.sale_fees_usd) : 0
-                const saleNet = salePriceNum != null ? salePriceNum - feesNum : null
+                const saleNet = salePriceNum != null ? salePriceNum * qty - feesNum : null
                 const realized = (saleNet != null && costEach != null)
                   ? saleNet - Number(costEach) * qty
                   : null
@@ -499,7 +514,23 @@ export default function SinglesInventory() {
                   >
                     <td className="px-4 py-3">
                       <div className="font-medium text-white">
-                        {s.card_name} <span className="text-gray-500">{s.card_number}</span>
+                        {/* tcg_id is the TCGplayer product id (it's what the barcode
+                            scan reads), so the title deep-links straight to the
+                            product page — same link the singles sheet carries. */}
+                        {s.tcg_id && /^\d+$/.test(String(s.tcg_id)) ? (
+                          <a
+                            href={`https://www.tcgplayer.com/product/${s.tcg_id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="hover:text-vault-gold hover:underline"
+                            title="Open on TCGplayer"
+                          >
+                            {s.card_name} <span className="text-gray-500">{s.card_number}</span>
+                          </a>
+                        ) : (
+                          <>{s.card_name} <span className="text-gray-500">{s.card_number}</span></>
+                        )}
                       </div>
                       <div className="text-gray-500 text-xs">
                         {s.brand} · {s.language}
@@ -545,7 +576,13 @@ export default function SinglesInventory() {
                         <td className="px-4 py-3 text-right text-green-400">
                           {salePriceNum != null
                             ? <>
-                                ${salePriceNum.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                {/* per-unit × qty = line total (7/29 convention) */}
+                                ${(salePriceNum * qty).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                {qty > 1 && (
+                                  <div className="text-gray-500 text-xs">
+                                    {qty} × ${salePriceNum.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                  </div>
+                                )}
                                 {feesNum > 0 && (
                                   <div className="text-gray-500 text-xs">
                                     fees ${feesNum.toLocaleString(undefined, { maximumFractionDigits: 2 })}

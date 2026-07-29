@@ -41,7 +41,9 @@
 
 ## App(本仓库,Vercel,push=生产)
 - 只在 Gary 说"发"时 push;**所有改动过 Codex review(铁律 7/20)**。
-- **待发批次**:PokeCasino 改名(**发版前该房 app 下拉选不到,开播前必须发**)+ shows 下拉 + 传图 UI + Master/FrontStore 盘点入口 + BreakBox 拆包匹配修复。
+- **待发批次(7/29)**:① 单卡拆卖修复 —— SellSingleModal 原只能整行卖(卖 1 张把 3 张全标 sold);新共享 `sellSingleQtySplit()`(supabase.js,POS `_sellSingleLine` 也走它)+ 弹窗数量选择器 + Lark ×N ② SinglesInventory 标题可点击直达 TCGplayer(tcg_id 即商品号,纯数字才挂链)。build 过,**待 Codex review + Gary 发**。旧批次(PokeCasino 改名等)7028e69 已上线。
+- 设计已定待 Gary 点头开工:Cards Scan 加"来源交易"下拉(trade/buy 关联+trade_in 按市价分摊成本,治单卡无成本病根)+ 重提防双录 + buy 手写行 sealed 关键词提示。7/28 双录 trade 已修(备份 double_trade_backup_0728.json)。
+- 历史疑案待门店确认:7/28 Pikachu ×3 $9、7/24 Elgyem ×2 $15 两笔 in_person 整行多张 sold —— 真打包卖 or 误全卖?误卖则拆回。
 - 房间名是硬编码字符串:改名/加房要全改 StreamCounts/Moved/OnlineOrders/PlatformSales/Returns + api/*(lark-notify/sheet 路由/日报周报)+ inventory-sync 脚本 + lv-finance/weekly_cogs。
 - William 待办 SQL:`scripts/add_inventory_audit_log_2026_07_23.sql` · product_prices · product image column。
 - 产品图:`useProductImages.js` ← lv-slabs.luckyvault.us/kaitori/product_images.json(改磁盘即生效)。

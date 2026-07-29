@@ -1323,7 +1323,8 @@ function buildBulkIntake(body) {
 // 💰 SOLD — Charizard ex 199/197 (Surging Sparks) · $80 via eBay → ebay_user_xyz · by Will
 function buildSingleSold(body) {
   if (!body.card_name) throw new Error('card_name is required')
-  const parts = [`💰 SOLD — ${fmtCardIdent(body)}`]
+  const qty = Number(body.quantity) || 1
+  const parts = [`💰 SOLD — ${fmtCardIdent(body)}${qty > 1 ? ` ×${qty}` : ''}`]
   const sale = fmtUsd(body.sale_price_usd)
   const channel = body.sale_channel || '?'
   let saleSeg = `${sale || 'unknown'} via ${channel}`
