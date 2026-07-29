@@ -71,6 +71,13 @@ export default function SinglesInventory() {
   // `direction` toggles asc/desc. Default: most recently acquired first.
   const [sort, setSort] = useState({ column: 'acquired', direction: 'desc' })
 
+  // Pagination (Gary 2026-07-29: /cards froze rendering EVERY row — 2,500+
+  // in the sold/all views). Filters, sort and the metrics cards still run
+  // over the FULL filtered set; only the rendered table slice is paged.
+  const PAGE_SIZE = 50
+  const [page, setPage] = useState(1)
+  useEffect(() => { setPage(1) }, [filters, sort])
+
   // Extract the comparable value for each column. Returns null for missing
   // values — those sort to the END regardless of direction (sort stability
   // for "unpriced" rows).
@@ -187,6 +194,34 @@ export default function SinglesInventory() {
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [singles, filters, sort])
+
+  // Rendered slice — clamp the page so shrinking filters can't strand you
+  // past the last page.
+  const pageCount = Math.max(1, Math.ceil(filteredSingles.length / PAGE_SIZE))
+  const safePage = Math.min(page, pageCount)
+  const pageRows = useMemo(
+    () => filteredSingles.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [filteredSingles, safePage]
+  )
+
+  const renderPager = (borderClass) => filteredSingles.length > PAGE_SIZE && (
+    <div className={`flex items-center justify-between px-4 py-2 ${borderClass} border-vault-border text-xs text-gray-400`}>
+      <span>
+        {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, filteredSingles.length)} of {filteredSingles.length.toLocaleString()}
+      </span>
+      <div className="flex items-center gap-1">
+        <button type="button" disabled={safePage <= 1} onClick={() => setPage(1)}
+          className="px-2 py-1 border border-vault-border rounded disabled:opacity-40 hover:text-white">«</button>
+        <button type="button" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}
+          className="px-2 py-1 border border-vault-border rounded disabled:opacity-40 hover:text-white">‹ Prev</button>
+        <span className="px-2 text-gray-300">Page {safePage} / {pageCount}</span>
+        <button type="button" disabled={safePage >= pageCount} onClick={() => setPage(safePage + 1)}
+          className="px-2 py-1 border border-vault-border rounded disabled:opacity-40 hover:text-white">Next ›</button>
+        <button type="button" disabled={safePage >= pageCount} onClick={() => setPage(pageCount)}
+          className="px-2 py-1 border border-vault-border rounded disabled:opacity-40 hover:text-white">»</button>
+      </div>
+    </div>
+  )
 
   // Aggregate metrics across the filtered view.
   //
@@ -459,6 +494,7 @@ export default function SinglesInventory() {
         </div>
       ) : (
         <div className="card overflow-x-auto p-0">
+          {renderPager('border-b')}
           <table className="w-full text-sm">
             <thead className="border-b border-vault-border text-gray-400 text-xs uppercase">
               <tr>
@@ -486,7 +522,7 @@ export default function SinglesInventory() {
               </tr>
             </thead>
             <tbody>
-              {filteredSingles.map(s => {
+              {pageRows.map(s => {
                 const qty = s.form === 'raw' ? (s.quantity || 1) : 1
                 const costEach = s.acquisition_cost_usd
                 const marketEach = s.current_market_price_usd
@@ -659,6 +695,7 @@ export default function SinglesInventory() {
               })}
             </tbody>
           </table>
+          {renderPager('border-t')}
         </div>
       )}
 

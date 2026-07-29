@@ -53,6 +53,12 @@ export default function SlabsInventory() {
 
   const [sort, setSort] = useState({ column: 'acquired', direction: 'desc' })
 
+  // Pagination (Gary 2026-07-29: /cards froze rendering every row at once).
+  // Filters/sort/metrics still cover the FULL set; only the table is paged.
+  const PAGE_SIZE = 50
+  const [page, setPage] = useState(1)
+  useEffect(() => { setPage(1) }, [filters, sort])
+
   useEffect(() => {
     loadData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -124,6 +130,32 @@ export default function SlabsInventory() {
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slabs, filters.search, sort])
+
+  const pageCount = Math.max(1, Math.ceil(filteredSlabs.length / PAGE_SIZE))
+  const safePage = Math.min(page, pageCount)
+  const pageRows = useMemo(
+    () => filteredSlabs.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [filteredSlabs, safePage]
+  )
+
+  const renderPager = (borderClass) => filteredSlabs.length > PAGE_SIZE && (
+    <div className={`flex items-center justify-between px-4 py-2 ${borderClass} border-vault-border text-xs text-gray-400`}>
+      <span>
+        {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, filteredSlabs.length)} of {filteredSlabs.length.toLocaleString()}
+      </span>
+      <div className="flex items-center gap-1">
+        <button type="button" disabled={safePage <= 1} onClick={() => setPage(1)}
+          className="px-2 py-1 border border-vault-border rounded disabled:opacity-40 hover:text-white">«</button>
+        <button type="button" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}
+          className="px-2 py-1 border border-vault-border rounded disabled:opacity-40 hover:text-white">‹ Prev</button>
+        <span className="px-2 text-gray-300">Page {safePage} / {pageCount}</span>
+        <button type="button" disabled={safePage >= pageCount} onClick={() => setPage(safePage + 1)}
+          className="px-2 py-1 border border-vault-border rounded disabled:opacity-40 hover:text-white">Next ›</button>
+        <button type="button" disabled={safePage >= pageCount} onClick={() => setPage(pageCount)}
+          className="px-2 py-1 border border-vault-border rounded disabled:opacity-40 hover:text-white">»</button>
+      </div>
+    </div>
+  )
 
   // ---- Summary metrics (filtered view) ----
   const metrics = useMemo(() => {
@@ -273,6 +305,7 @@ export default function SlabsInventory() {
         </div>
       ) : (
         <div className="card overflow-x-auto p-0">
+          {renderPager('border-b')}
           <table className="w-full text-sm">
             <thead className="border-b border-vault-border text-gray-400 text-xs uppercase">
               <tr>
@@ -288,7 +321,7 @@ export default function SlabsInventory() {
               </tr>
             </thead>
             <tbody>
-              {filteredSlabs.map(s => {
+              {pageRows.map(s => {
                 const statusClass = STATUS_BADGE[s.status] || 'badge-secondary'
                 return (
                   <tr key={s.id} className="border-b border-vault-border last:border-0 hover:bg-vault-darker/40">
@@ -338,6 +371,7 @@ export default function SlabsInventory() {
               })}
             </tbody>
           </table>
+          {renderPager('border-t')}
         </div>
       )}
     </div>
