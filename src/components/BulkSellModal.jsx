@@ -259,10 +259,17 @@ export default function BulkSellModal({ cards, currentUserId, currentUserName, a
                         {c.set?.name || '—'} · {ident}
                       </div>
                     </td>
-                    <td className="px-2 py-2 text-right text-vault-gold text-xs">
-                      {totalCost != null
-                        ? `$${totalCost.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                        : '—'}
+                    <td className="px-2 py-2 text-right text-xs">
+                      <div className="text-vault-gold">
+                        {totalCost != null
+                          ? `$${totalCost.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                          : '—'}
+                      </div>
+                      {c.current_market_price_usd != null && (
+                        <div className="text-blue-300">
+                          mkt ${(Number(c.current_market_price_usd) * qty).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </div>
+                      )}
                     </td>
                     <td className="px-2 py-2">
                       <input
