@@ -58,6 +58,24 @@ export default function SinglesScan() {
   // Batch Intake mode accumulates scanned cert#s. User finalises with the
   // "Continue to Bulk Add" button → /singles/bulk-add?certs=...
   const [batchQueue, setBatchQueue] = useState([])
+  // Market-price hints for queue chips (Gary 2026-07-29: scanning showed no
+  // prices). Sell-queue rows already carry current_market_price_usd from the
+  // DB; batch-intake codes get looked up against the singles sheet via the
+  // edge-cached /api/singles-price-detail route. Unknown codes → no price.
+  const [priceMap, setPriceMap] = useState({})
+  useEffect(() => {
+    const missing = batchQueue.filter(c => !(c in priceMap))
+    if (missing.length === 0) return
+    let alive = true
+    missing.forEach(code => {
+      fetch(`/api/singles-price-detail?tcg_id=${encodeURIComponent(code)}`)
+        .then(r => (r.ok ? r.json() : null))
+        .then(d => { if (alive) setPriceMap(prev => ({ ...prev, [code]: d?.found ? d.market : null })) })
+        .catch(() => { if (alive) setPriceMap(prev => ({ ...prev, [code]: null })) })
+    })
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batchQueue])
   // Batch Sell mode accumulates verified-sellable singles (looked up to
   // confirm in_inventory). When user clicks "Continue to Bulk Sell" we
   // open BulkSellModal with the full card data so they don't have to wait
@@ -426,6 +444,11 @@ export default function SinglesScan() {
               >
                 {s.tcg_id || s.cert_number || '?'}
                 <span className="text-gray-400 normal-case">— {s.card_name}</span>
+                {s.current_market_price_usd != null && (
+                  <span className="text-blue-300 normal-case">
+                    ${Number(s.current_market_price_usd).toFixed(2)}
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => setSellQueue(prev => prev.filter((_, idx) => idx !== i))}
@@ -476,6 +499,9 @@ export default function SinglesScan() {
                 className="badge badge-info font-mono text-xs flex items-center gap-1"
               >
                 {c}
+                {priceMap[c] && (
+                  <span className="text-blue-300 normal-case font-sans">{priceMap[c]}</span>
+                )}
                 <button
                   type="button"
                   onClick={() => setBatchQueue(prev => prev.filter((_, idx) => idx !== i))}

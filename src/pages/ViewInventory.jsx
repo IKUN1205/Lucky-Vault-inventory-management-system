@@ -69,6 +69,15 @@ export default function ViewInventory() {
   const toggleSlabs = (loc) => setExpandedSlabs(prev => {
     const next = new Set(prev); next.has(loc) ? next.delete(loc) : next.add(loc); return next
   })
+  // Whole-location collapse (Gary 2026-07-29 "页面分流"): the page used to
+  // render EVERY location's sealed table at once and froze. Locations now
+  // start collapsed to a one-line summary (name + counts + value); the
+  // tables render only when a location is opened. Searching force-expands
+  // so matches stay visible.
+  const [expandedLocs, setExpandedLocs] = useState(new Set())
+  const toggleLoc = (loc) => setExpandedLocs(prev => {
+    const next = new Set(prev); next.has(loc) ? next.delete(loc) : next.add(loc); return next
+  })
 
   // Toggle sort: same column = flip direction; different column = start desc
   // (descending is the more useful default for $ and qty — biggest first).
@@ -518,10 +527,18 @@ export default function ViewInventory() {
         const locSlabs = slabsForLoc(locationName)
         const cardCount = locSingles.length + locSlabs.length
 
+        const locOpen = searching || expandedLocs.has(locationName)
         return (
           <div key={locationName} className="card mb-6">
-            <div className="flex justify-between items-center mb-4">
+            {/* Clickable summary header — the whole location expands/collapses.
+                Collapsed is the default so the page loads light (Gary 7/29). */}
+            <div
+              className={`flex justify-between items-center cursor-pointer select-none -m-2 p-2 rounded-lg hover:bg-vault-darker/40 ${locOpen ? 'mb-4' : ''}`}
+              onClick={() => toggleLoc(locationName)}
+              title={locOpen ? 'Collapse' : 'Expand'}
+            >
               <div className="flex items-center gap-3">
+                {locOpen ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
                 <Package className="text-vault-gold" size={20} />
                 <h2 className="font-display text-lg font-semibold text-white">
                   {locationName}
@@ -538,7 +555,7 @@ export default function ViewInventory() {
               )}
             </div>
 
-            {items.length > 0 && (
+            {locOpen && items.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
@@ -693,15 +710,17 @@ export default function ViewInventory() {
                 staff click to expand when they want to see what cards are
                 physically here. While a search is active they're filtered
                 to matches and force-expanded so the found card is visible. */}
-            <LocationCardsSubSections
-              locationName={locationName}
-              singles={locSingles}
-              slabs={locSlabs}
-              expandedSingles={searching || expandedSingles.has(locationName)}
-              expandedSlabs={searching || expandedSlabs.has(locationName)}
-              onToggleSingles={() => toggleSingles(locationName)}
-              onToggleSlabs={() => toggleSlabs(locationName)}
-            />
+            {locOpen && (
+              <LocationCardsSubSections
+                locationName={locationName}
+                singles={locSingles}
+                slabs={locSlabs}
+                expandedSingles={searching || expandedSingles.has(locationName)}
+                expandedSlabs={searching || expandedSlabs.has(locationName)}
+                onToggleSingles={() => toggleSingles(locationName)}
+                onToggleSlabs={() => toggleSlabs(locationName)}
+              />
+            )}
           </div>
         )
       })}
