@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { DollarSign, X, Loader2, TrendingUp, TrendingDown, ExternalLink } from 'lucide-react'
 import { sellSingleQtySplit, notifySinglesLark } from '../lib/supabase'
 import { SINGLES_CHANNEL_OPTIONS, tcgProductUrl } from '../lib/saleChannels'
@@ -32,6 +32,23 @@ export default function SellSingleModal({ single, currentUserId, currentUserName
   // 1-by-1 case); the "All" button jumps to the whole stack.
   const [sellQty, setSellQty] = useState('1')
   const [submitting, setSubmitting] = useState(false)
+  // Recent-sales text from the boss's singles sheet (col D "Prices") — lives
+  // only on the sheet, fetched via /api/singles-price-detail at open. Null
+  // until loaded / when the card isn't on the sheet; fails silently (the
+  // modal must never block on it).
+  const [sheetDetail, setSheetDetail] = useState(null)
+
+  useEffect(() => {
+    setSheetDetail(null)
+    const tcgId = single?.tcg_id
+    if (!tcgId) return
+    let alive = true
+    fetch(`/api/singles-price-detail?tcg_id=${encodeURIComponent(tcgId)}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (alive && d?.found) setSheetDetail(d) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [single?.id, single?.tcg_id])
 
   if (!single) return null
 
@@ -167,6 +184,24 @@ export default function SellSingleModal({ single, currentUserId, currentUserName
             <div className="text-gray-400">
               Cost basis: <span className="text-vault-gold">${(costUsd * qty).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
               {qty > 1 ? ` (${qty}× $${costUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })})` : ''}
+            </div>
+          )}
+          {/* Market price (DB, sheet-synced) + the sheet's recent-sales text */}
+          {(single.current_market_price_usd != null || sheetDetail?.market) && (
+            <div className="text-gray-400">
+              Market: <span className="text-blue-300">
+                {single.current_market_price_usd != null
+                  ? `$${Number(single.current_market_price_usd).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                  : sheetDetail.market}
+              </span>
+              {qty > 1 && single.current_market_price_usd != null
+                ? ` (×${qty} = $${(Number(single.current_market_price_usd) * qty).toLocaleString(undefined, { maximumFractionDigits: 2 })})`
+                : ''}
+            </div>
+          )}
+          {sheetDetail?.detail && (
+            <div className="text-blue-200/80">
+              {sheetDetail.detail}
             </div>
           )}
         </div>
