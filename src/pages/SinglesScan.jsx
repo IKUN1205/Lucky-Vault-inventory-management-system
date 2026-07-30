@@ -538,8 +538,22 @@ export default function SinglesScan() {
                 className="badge badge-info font-mono text-xs flex items-center gap-1"
                 title={`${s.card_name} ${s.card_number || ''}`}
               >
-                {s.tcg_id || s.cert_number || '?'}
-                <span className="text-gray-400 normal-case">— {s.card_name}</span>
+                {tcgProductUrl(s.tcg_id) ? (
+                  <a
+                    href={tcgProductUrl(s.tcg_id)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hover:text-vault-gold hover:underline"
+                    title="Open on TCGplayer"
+                  >
+                    {s.tcg_id} <span className="text-gray-400 normal-case">— {s.card_name}</span>
+                  </a>
+                ) : (
+                  <>
+                    {s.tcg_id || s.cert_number || '?'}
+                    <span className="text-gray-400 normal-case">— {s.card_name}</span>
+                  </>
+                )}
                 {s.current_market_price_usd != null && (
                   <span className="text-blue-300 normal-case">
                     ${Number(s.current_market_price_usd).toFixed(2)}
@@ -594,7 +608,17 @@ export default function SinglesScan() {
                 key={`${c}-${i}`}
                 className="badge badge-info font-mono text-xs flex items-center gap-1"
               >
-                {c}
+                {tcgProductUrl(c) ? (
+                  <a
+                    href={tcgProductUrl(c)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hover:text-vault-gold hover:underline"
+                    title="Open on TCGplayer"
+                  >
+                    {c}
+                  </a>
+                ) : c}
                 {priceMap[c] && (
                   <span className="text-blue-300 normal-case font-sans">{priceMap[c]}</span>
                 )}
