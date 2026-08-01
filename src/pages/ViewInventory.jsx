@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { fetchInventory, fetchLocations, supabase } from '../lib/supabase'
+import { fetchInventory, fetchLocations, fetchAllPages, supabase } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { LangChip } from '../components/ProductChips'
@@ -125,7 +125,9 @@ export default function ViewInventory() {
 
   // Pull every sellable single + slab once, grouped by location name so each
   // location card below has its own bucket. Sold rows are excluded; deleted
-  // rows are excluded.
+  // rows are excluded. Both fetches page via fetchAllPages: there are 1900+
+  // sellable slabs and 1300+ singles rows, so an unpaged SELECT stops at the
+  // ~1000-row PostgREST cap and every room's card count comes out short.
   const loadCardsByLocation = async () => {
     try {
       const slabCols = (extras) => `
@@ -133,37 +135,55 @@ export default function ViewInventory() {
           ${extras.length ? extras.join(', ') + ', ' : ''}status,
           location:locations(id, name)
         `
-      const slabQuery = (extras) => supabase.from('slabs').select(slabCols(extras))
-        .eq('deleted', false).in('status', ['in_inventory', 'listed'])
-      const [singlesRes, slabsResFirst] = await Promise.all([
+      const slabQuery = (extras) => fetchAllPages(() =>
+        supabase.from('slabs').select(slabCols(extras))
+          .eq('deleted', false).in('status', ['in_inventory', 'listed'])
+          .order('id'))
+      const singlesQuery = () => fetchAllPages(() =>
         supabase.from('singles').select(`
           id, card_name, card_number, condition, quantity, current_market_price_usd,
           tcg_id, status,
           set:card_sets(name),
           location:locations(id, name)
-        `).eq('deleted', false).in('status', ['in_inventory', 'listed']),
+        `).eq('deleted', false).in('status', ['in_inventory', 'listed'])
+          .order('id'))
+      // allSettled (not all): the slab arm may need the missing-column
+      // retries below, and a plain Promise.all would surface the singles
+      // rejection as unhandled while we're mid-retry.
+      const [singlesRes, slabsRes] = await Promise.allSettled([
+        singlesQuery(),
         slabQuery(['sheet_note', 'sheet_bin']),
       ])
       // sheet_note / sheet_bin land via scripts/add_slabs_sheet_note.sql /
       // add_slabs_sheet_bin.sql — until those migrations run, retry with
       // fewer optional columns so the sub-sections still render.
-      let slabsRes = slabsResFirst
-      if (slabsRes.error && /sheet_bin/.test(slabsRes.error.message || '')) {
-        slabsRes = await slabQuery(['sheet_note'])
+      let slabsData
+      if (slabsRes.status === 'fulfilled') {
+        slabsData = slabsRes.value
+      } else {
+        const msg = slabsRes.reason?.message || ''
+        if (/sheet_bin/.test(msg)) {
+          try {
+            slabsData = await slabQuery(['sheet_note'])
+          } catch (e2) {
+            if (!/sheet_note/.test(e2?.message || '')) throw e2
+            slabsData = await slabQuery([])
+          }
+        } else if (/sheet_note/.test(msg)) {
+          slabsData = await slabQuery([])
+        } else {
+          throw slabsRes.reason
+        }
       }
-      if (slabsRes.error && /sheet_note/.test(slabsRes.error.message || '')) {
-        slabsRes = await slabQuery([])
-      }
-      if (singlesRes.error) throw singlesRes.error
-      if (slabsRes.error) throw slabsRes.error
+      if (singlesRes.status === 'rejected') throw singlesRes.reason
       const sg = {}
-      for (const s of singlesRes.data || []) {
+      for (const s of singlesRes.value) {
         const name = s.location?.name || 'Unknown'
         if (!sg[name]) sg[name] = []
         sg[name].push(s)
       }
       const sl = {}
-      for (const s of slabsRes.data || []) {
+      for (const s of slabsData) {
         const name = s.location?.name || 'Unknown'
         if (!sl[name]) sl[name] = []
         sl[name].push(s)

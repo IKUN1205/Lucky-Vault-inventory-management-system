@@ -1061,31 +1061,37 @@ export const createCardSet = async (cardSet) => {
 
 // Fetch singles with joined set / location / acquirer / vendor for the
 // inventory page. Soft-deleted rows are filtered out by default.
+// Paged via fetchAllPages — the table holds 2500+ live rows, so a single
+// SELECT silently truncates at the ~1000-row PostgREST cap and the oldest
+// rows just vanish from /cards. id desc tiebreaks created_at so batch
+// imports (same timestamp) don't skip/duplicate across page boundaries.
 export const fetchSingles = async (filters = {}) => {
-  let query = supabase
-    .from('singles')
-    .select(`
-      *,
-      set:card_sets(id, brand, name, code, language),
-      location:locations(id, name),
-      acquirer:users!singles_acquirer_id_fkey(id, name),
-      vendor:vendors(id, name)
-    `)
-    .or('deleted.is.null,deleted.eq.false')
+  return fetchAllPages(() => {
+    let query = supabase
+      .from('singles')
+      .select(`
+        *,
+        set:card_sets(id, brand, name, code, language),
+        location:locations(id, name),
+        acquirer:users!singles_acquirer_id_fkey(id, name),
+        vendor:vendors(id, name)
+      `)
+      .or('deleted.is.null,deleted.eq.false')
 
-  if (filters.brand) query = query.eq('brand', filters.brand)
-  if (filters.language) query = query.eq('language', filters.language)
-  if (filters.form) query = query.eq('form', filters.form)
-  if (filters.set_id) query = query.eq('set_id', filters.set_id)
-  if (filters.status) query = query.eq('status', filters.status)
-  if (filters.grading_company) query = query.eq('grading_company', filters.grading_company)
-  if (filters.location_id) query = query.eq('location_id', filters.location_id)
-  if (filters.min_market_price != null) query = query.gte('current_market_price_usd', filters.min_market_price)
-  if (filters.max_market_price != null) query = query.lte('current_market_price_usd', filters.max_market_price)
+    if (filters.brand) query = query.eq('brand', filters.brand)
+    if (filters.language) query = query.eq('language', filters.language)
+    if (filters.form) query = query.eq('form', filters.form)
+    if (filters.set_id) query = query.eq('set_id', filters.set_id)
+    if (filters.status) query = query.eq('status', filters.status)
+    if (filters.grading_company) query = query.eq('grading_company', filters.grading_company)
+    if (filters.location_id) query = query.eq('location_id', filters.location_id)
+    if (filters.min_market_price != null) query = query.gte('current_market_price_usd', filters.min_market_price)
+    if (filters.max_market_price != null) query = query.lte('current_market_price_usd', filters.max_market_price)
 
-  const { data, error } = await query.order('created_at', { ascending: false })
-  if (error) throw error
-  return data || []
+    return query
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+  })
 }
 
 // ----- audit log helpers -----
@@ -1745,24 +1751,28 @@ export const fetchSlabsAuditLog = async (filters = {}) => {
 // Soft-deleted rows excluded by default.
 //
 // filters: { status?, grading_company?, search?, deleted? }
+// Paged via fetchAllPages — 2400+ live slabs, same ~1000-row PostgREST
+// truncation as fetchSingles (older slabs silently missing from /slabs).
 export const fetchSlabs = async (filters = {}) => {
-  let q = supabase
-    .from('slabs')
-    .select(`
-      *,
-      acquirer:users!slabs_acquirer_id_fkey(id, name),
-      sold_by:users!slabs_sold_by_id_fkey(id, name)
-    `)
+  return fetchAllPages(() => {
+    let q = supabase
+      .from('slabs')
+      .select(`
+        *,
+        acquirer:users!slabs_acquirer_id_fkey(id, name),
+        sold_by:users!slabs_sold_by_id_fkey(id, name)
+      `)
 
-  if (filters.deleted !== true) {
-    q = q.or('deleted.is.null,deleted.eq.false')
-  }
-  if (filters.status)          q = q.eq('status', filters.status)
-  if (filters.grading_company) q = q.eq('grading_company', filters.grading_company)
+    if (filters.deleted !== true) {
+      q = q.or('deleted.is.null,deleted.eq.false')
+    }
+    if (filters.status)          q = q.eq('status', filters.status)
+    if (filters.grading_company) q = q.eq('grading_company', filters.grading_company)
 
-  const { data, error } = await q.order('created_at', { ascending: false })
-  if (error) throw error
-  return data || []
+    return q
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+  })
 }
 
 // Cert# lookup (the barcode-scanner flow). Returns null when not found.
@@ -3645,8 +3655,13 @@ export const moveSlabToLocation = async ({
 // Inventory wrongly report "X is not at the source location" for any card
 // past row 1000. Page through with .range() until a short page comes back
 // so we always get the FULL stock at a location.
+// buildQuery must return a FRESH builder on every call — postgrest-js
+// builders are mutable, so reusing one across pages would stack duplicate
+// .order() params and stale ranges. Callers must also order by a unique
+// column (or tiebreak on id): paging an unstable sort skips/duplicates
+// rows across page boundaries.
 const PAGE = 1000
-async function _fetchAllPages(buildQuery) {
+export async function fetchAllPages(buildQuery) {
   const out = []
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await buildQuery().range(from, from + PAGE - 1)
@@ -3660,7 +3675,7 @@ async function _fetchAllPages(buildQuery) {
 
 export const fetchSinglesAtLocation = async (locationId) => {
   if (!locationId) return []
-  return _fetchAllPages(() => supabase
+  return fetchAllPages(() => supabase
     .from('singles')
     .select(`
       id, card_name, card_number, condition, quantity, tcg_id, status, form,
@@ -3670,17 +3685,19 @@ export const fetchSinglesAtLocation = async (locationId) => {
     .eq('deleted', false)
     .in('status', ['in_inventory', 'listed'])
     .gt('quantity', 0)
-    .order('card_name'))
+    .order('card_name')
+    .order('id'))
 }
 export const fetchSlabsAtLocation = async (locationId) => {
   if (!locationId) return []
-  return _fetchAllPages(() => supabase
+  return fetchAllPages(() => supabase
     .from('slabs')
     .select('id, item_name, cert_number, grading_company, status, location_id')
     .eq('location_id', locationId)
     .eq('deleted', false)
     .in('status', ['in_inventory', 'listed'])
-    .order('item_name'))
+    .order('item_name')
+    .order('id'))
 }
 
 // ----- Manual search for Storefront POS (no-barcode fallback) -----
