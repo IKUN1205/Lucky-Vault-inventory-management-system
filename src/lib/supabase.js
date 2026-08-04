@@ -1285,14 +1285,12 @@ export const softDeleteSingle = async (id, deletedById, reason = null) => {
 //   - cert_number  → graded slabs (PSA / CGC / BGS / SGC)
 //   - tcg_id       → raw cards (TCGplayer product ID, used by Gary's sheet)
 //
-// So a single OR query is enough; at most one row matches.
-//
-// Returns: the matching row with joined set/location/acquirer/sold_by, or
-// null if no match.
 // Returns ALL matching rows (raw singles can have the same tcg_id in
-// multiple locations after a Transfer splits a stack). Sorted by qty desc
-// then by created_at asc so the "fullest stack" / oldest row sorts first
-// — that's a reasonable default for "which copy to sell" disambiguation.
+// multiple locations after a Transfer splits a stack). Sorted sellable
+// rows first (in_inventory > listed > sold), then qty desc, then
+// created_at asc — a sold row must never shadow a live one, or scans of
+// re-intaken cards report "already sold" while the live row sits in
+// inventory.
 export const fetchSinglesByIdentifier = async (idString) => {
   const trimmed = (idString || '').trim()
   if (!trimmed) return []
@@ -1312,7 +1310,16 @@ export const fetchSinglesByIdentifier = async (idString) => {
     .order('quantity', { ascending: false })
     .order('created_at', { ascending: true })
   if (error) throw error
-  return data || []
+  // Rank sellable rows above sold ones — PostgREST can't CASE-order, so
+  // sort client-side. Without this, a sold whole-stack row (qty>1, pre-7/29
+  // legacy) or an older sold row outranks a live row with the same tcg_id,
+  // and every scan of a re-intaken card reports "already sold" at the
+  // register while the live row sits in inventory (storefront 8/3).
+  const rank = (r) => r.status === 'in_inventory' ? 0 : r.status === 'listed' ? 1 : 2
+  return (data || []).sort((a, b) =>
+    rank(a) - rank(b) ||
+    (Number(b.quantity) || 0) - (Number(a.quantity) || 0) ||
+    String(a.created_at || '').localeCompare(String(b.created_at || '')))
 }
 
 export const fetchSingleByIdentifier = async (idString) => {
@@ -3185,7 +3192,7 @@ const MASTER_NAME = 'Master Inventory'
 //   { kind: 'single',  single }  // current row, status checked downstream
 //   { kind: 'unknown', code }
 //   { kind: 'empty' }
-export const lookupScannedCode = async (code) => {
+export const lookupScannedCode = async (code, { preferLocationId = null } = {}) => {
   const trimmed = String(code || '').trim()
   if (!trimmed) return { kind: 'empty' }
 
@@ -3238,24 +3245,48 @@ export const lookupScannedCode = async (code) => {
     if (slab) return { kind: 'slab', slab }
   }
 
-  // 3. Single TCG ID → singles.tcg_id. Multiple rows can share a tcg_id
-  //    after a partial/fungible sale (we split a qty=2 row into a qty=1
-  //    in_inventory row + a qty=1 sold clone, both non-deleted). Don't
-  //    use maybeSingle() — it would 406 on those. Instead order so the
-  //    sellable row wins (in_inventory > listed > sold), then return
-  //    the first match.
+  // 3. Single TCG ID → singles.tcg_id. Live rows are queried FIRST, in
+  //    isolation: every split-sale leaves a sold clone on the same tcg_id,
+  //    so any single mixed-status query (with any limit) can bury — or
+  //    entirely drop — the live row, and the register then mis-reports
+  //    shelf stock as "already sold" (storefront complaints 7/22–8/3).
+  //    Only when no sellable row exists do we fall back to the remaining
+  //    rows so callers can still surface "last copy sold".
+  //    `preferLocationId` (e.g. Front Store for the POS) outranks
+  //    everything else: with the same tcg_id live in several rooms, the
+  //    scan should resolve to the copy at the counter, not a bigger
+  //    stack in a stream room.
   {
-    const { data: rows, error } = await supabase
-      .from('singles')
-      .select(`
+    const singleCols = `
         *,
         set:card_sets(id, brand, name, code, language),
         location:locations(id, name)
-      `)
+      `
+    const { data: liveRows, error } = await supabase
+      .from('singles')
+      .select(singleCols)
+      .eq('tcg_id', trimmed)
+      .eq('deleted', false)
+      .in('status', ['in_inventory', 'listed'])
+      .gt('quantity', 0)
+      .limit(50)
+    if (error) throw error
+    if (liveRows && liveRows.length > 0) {
+      const atPref = (s) => preferLocationId && s.location_id === preferLocationId ? 0 : 1
+      const rank = (s) => s.status === 'in_inventory' ? 0 : 1
+      const sorted = [...liveRows].sort((a, b) =>
+        atPref(a) - atPref(b) ||
+        rank(a) - rank(b) ||
+        (Number(b.quantity) || 0) - (Number(a.quantity) || 0))
+      return { kind: 'single', single: sorted[0] }
+    }
+    const { data: rows, error: restErr } = await supabase
+      .from('singles')
+      .select(singleCols)
       .eq('tcg_id', trimmed)
       .eq('deleted', false)
       .limit(5)
-    if (error) throw error
+    if (restErr) throw restErr
     if (rows && rows.length > 0) {
       const rank = (s) => s === 'in_inventory' ? 0 : s === 'listed' ? 1 : 2
       const sorted = [...rows].sort((a, b) => rank(a.status) - rank(b.status))

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   fetchPaymentMethods,
   lookupScannedCode,
+  getFrontStoreLocationId,
   submitStorefrontTransaction,
   fetchStorefrontDailySummary,
   updateStorefrontTransaction,
@@ -434,7 +435,13 @@ export default function StorefrontSale() {
     setScanning(true)
     setUnknownCode(null)
     try {
-      const result = await lookupScannedCode(code)
+      // Resolve scans to the Front Store copy first — the same tcg_id can be
+      // live in several rooms, and the register must sell (and decrement) the
+      // copy at the counter, not a bigger stack in a stream room. Cached
+      // after the first call, so this adds no per-scan round-trip.
+      const result = await lookupScannedCode(code, {
+        preferLocationId: await getFrontStoreLocationId(),
+      })
       if (result.kind === 'sealed') {
         addOrIncrementSealed(result)
       } else if (result.kind === 'slab') {
