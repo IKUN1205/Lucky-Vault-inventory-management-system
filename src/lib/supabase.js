@@ -948,6 +948,109 @@ export const fetchStreamCountItems = async (streamCountId) => {
   return data || []
 }
 
+// SKUs in a room whose most recent count still came in ABOVE the books.
+//
+// A count may only decrement (see the POLICY note in StreamCounts.handleSubmit),
+// so once real stock sits above what the books say, nothing clears it except a
+// recorded Move. Two things follow, and both were biting us:
+//
+//   1. every later count re-reports the same surplus as if it were new — the
+//      same Packheads SKUs were announced five sessions running;
+//   2. while a SKU sits above the books its `sold` can only compute to 0, so the
+//      stock walks out of the room and the sale is recorded as zero. Between
+//      08-04 and 08-06 that hid 42 OP-13 blisters leaving Packheads.
+//
+// `streak` is how many consecutive counts have said so — the number that turns
+// "new discrepancy" into "nobody has fixed this since X".
+//
+// A surplus is CLOSED as soon as either is true:
+//   * the books now hold at least what the count physically found, or
+//   * the books have been written at all since that count was submitted.
+//
+// The second rule matters as much as the first. A count is an observation with a
+// timestamp, not a standing claim: once anybody acts on that SKU the observation
+// is spent, and if the surplus is still real the next count says so again.
+// Without it the warning outlives its own fix — Journey Together sat "open +41"
+// for three weeks after Aldo moved exactly those 41 packs out on a properly
+// recorded Transfer, and Ayakashi read "+26" against a count that a newer hand
+// count had already superseded. Warnings that survive being fixed are the ones
+// people stop reading.
+export const fetchOpenSurplus = async (locationId, lookback = 12) => {
+  if (!locationId) return []
+
+  const { data: counts, error: countsErr } = await supabase
+    .from('stream_counts')
+    .select('id, count_time, created_at')
+    .eq('location_id', locationId)
+    .or('deleted.is.null,deleted.eq.false')
+    .order('count_time', { ascending: false })
+    .limit(lookback)
+  if (countsErr) throw countsErr
+  if (!counts || counts.length === 0) return []
+
+  const { data: items, error: itemsErr } = await supabase
+    .from('stream_count_items')
+    .select('stream_count_id, product_id, expected_qty, actual_qty, difference, product:products(*)')
+    .in('stream_count_id', counts.map(c => c.id))
+  if (itemsErr) throw itemsErr
+
+  const countTime = new Map(counts.map(c => [c.id, c.count_time]))
+  // Submit time, not the typed count time: anything that touched the books after
+  // the count was filed supersedes it, and the typed time can be backdated.
+  const filedAt = new Map(counts.map(c => [c.id, c.created_at || c.count_time]))
+  const perProduct = new Map()
+  for (const it of items || []) {
+    if (!perProduct.has(it.product_id)) perProduct.set(it.product_id, [])
+    perProduct.get(it.product_id).push(it)
+  }
+
+  const candidates = []
+  for (const [productId, rows] of perProduct) {
+    rows.sort((a, b) => new Date(countTime.get(b.stream_count_id)) -
+                        new Date(countTime.get(a.stream_count_id)))
+    if (!(rows[0].difference > 0)) continue   // latest count came in at or below book
+    let streak = 0
+    for (const r of rows) {
+      if (!(r.difference > 0)) break
+      streak++
+    }
+    candidates.push({ productId, latest: rows[0], streak,
+                      since: countTime.get(rows[streak - 1].stream_count_id) })
+  }
+  if (candidates.length === 0) return []
+
+  // Where the books stand now for exactly these SKUs, and when they last moved.
+  const { data: live, error: liveErr } = await supabase
+    .from('inventory')
+    .select('product_id, quantity, last_updated')
+    .eq('location_id', locationId)
+    .in('product_id', candidates.map(c => c.productId))
+  if (liveErr) throw liveErr
+  const onBook = new Map((live || []).map(r => [r.product_id, r]))
+
+  const open = []
+  for (const c of candidates) {
+    const row = onBook.get(c.productId)
+    const book = Number(row?.quantity) || 0
+    const stillShort = (Number(c.latest.actual_qty) || 0) - book
+    if (stillShort <= 0) continue           // books have caught up — closed
+    const filed = filedAt.get(c.latest.stream_count_id)
+    if (row?.last_updated && filed && new Date(row.last_updated) > new Date(filed)) {
+      continue                              // acted on since — observation spent
+    }
+    open.push({
+      product_id: c.productId,
+      product: c.latest.product,
+      extra: stillShort,                    // the gap as it stands NOW
+      counted: c.latest.actual_qty,
+      on_book: book,
+      streak: c.streak,
+      since: c.since
+    })
+  }
+  return open.sort((a, b) => (b.extra - a.extra) || (b.streak - a.streak))
+}
+
 export const createUser = async (name) => {
   const { data, error } = await supabase
     .from('users')
@@ -1439,17 +1542,26 @@ export const markSingleAsSold = async (id, saleData) => {
     trade_in_value_usd: saleData.trade_in_value_usd ?? null,
     net_cash_usd: saleData.net_cash_usd ?? null,
   }
-  const { data, error } = await supabase
+  // Conditional on the row still being sellable. Without this, two registers
+  // that both read the row as available each run this update and the second
+  // one OVERWRITES the first sale's transaction_id, price, date and payment
+  // method — a completed sale silently rewritten, which the sale-record rule
+  // forbids outright, and the first payment is left with no item behind it.
+  const { data: rows, error } = await supabase
     .from('singles')
     .update(patch)
     .eq('id', id)
+    .neq('status', 'sold')
     .select(`
       *,
       set:card_sets(id, brand, name, code, language),
       location:locations(id, name)
     `)
-    .single()
   if (error) throw error
+  if (!rows || rows.length === 0) {
+    throw new Error('Someone else sold this card first — reload and re-scan it')
+  }
+  const data = rows[0]
   const priceStr = saleData.sale_price_usd != null
     ? `$${Number(saleData.sale_price_usd).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
     : 'unknown'
@@ -1873,13 +1985,19 @@ export const markSlabAsSold = async (id, saleData) => {
     trade_in_value_usd: saleData.trade_in_value_usd ?? null,
     net_cash_usd: saleData.net_cash_usd ?? null,
   }
-  const { data, error } = await supabase
+  // Same guard as singles: a slab is one physical object, so a second
+  // register must not be able to overwrite the sale that already happened.
+  const { data: rows, error } = await supabase
     .from('slabs')
     .update(patch)
     .eq('id', id)
+    .neq('status', 'sold')
     .select()
-    .single()
   if (error) throw error
+  if (!rows || rows.length === 0) {
+    throw new Error('Someone else sold this slab first — reload and re-scan the cert')
+  }
+  const data = rows[0]
   const priceStr = saleData.sale_price_usd != null
     ? `$${Number(saleData.sale_price_usd).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
     : 'unknown'
@@ -3846,21 +3964,57 @@ const _sellSealedLine = async ({
   locationIds,        // { frontStore: uuid, master: uuid }
   saleDate,
   txMeta = {},        // { transactionType, tradeInValue, tradeInNotes, netCash }
+  allowStockAdjust = false,   // cashier confirmed the box is physically here
 }) => {
   const frontStoreId = locationIds.frontStore
   const masterId = locationIds.master
 
   // Step 1: figure out where the units come from. Prefer Front Store; fall
   // back to Master with an auto-Move; if even Master is short, error out.
-  const frontStock = sourceCandidates.find(s => s.location_id === frontStoreId)?.quantity || 0
+  let frontStock = sourceCandidates.find(s => s.location_id === frontStoreId)?.quantity || 0
   const masterStock = sourceCandidates.find(s => s.location_id === masterId)?.quantity || 0
-  const needFromMaster = Math.max(0, quantity - frontStock)
+  let costUnknown = false
 
   if (frontStock + masterStock < quantity) {
-    throw new Error(
-      `Not enough stock: need ${quantity}, have ${frontStock} at Front Store + ${masterStock} at Master`
+    if (!allowStockAdjust) {
+      throw new Error(
+        `Not enough stock: need ${quantity}, have ${frontStock} at Front Store + ${masterStock} at Master`
+      )
+    }
+    // The cashier is holding the item and the books say we don't have it —
+    // same call as the singles over-scan (directive 2026-06-09, 实物为准).
+    // Write the shortfall onto Front Store BEFORE the sale so the deduction
+    // below stays whole and the room ends at the right number.
+    //
+    // Cost is COPIED from another room's basis for this same product, never
+    // invented: an unpriced unit would quietly report the whole sale as pure
+    // profit. If no room has a cost, it stays null and the sale carries a
+    // zero basis — visibly wrong in the P/L rather than plausibly wrong.
+    const shortfall = quantity - (frontStock + masterStock)
+    const { data: anyCost } = await supabase
+      .from('inventory')
+      .select('avg_cost_basis, quantity')
+      .eq('product_id', product.id)
+      .gt('avg_cost_basis', 0)
+      .order('quantity', { ascending: false })
+      .limit(1)
+    const borrowedCost = anyCost?.[0]?.avg_cost_basis ?? null
+    // updateInventory stores `newAvgCost || 0` on a brand-new row, so a null
+    // here does not stay blank — it becomes a hard $0, and every sale of this
+    // product then reports 100% margin. We cannot leave the column empty and
+    // still sell, so instead the unknown is carried forward and stamped onto
+    // the sale row's notes below, where a person will actually see it.
+    costUnknown = borrowedCost == null
+    await updateInventory(product.id, frontStoreId, +shortfall, borrowedCost)
+    frontStock += shortfall
+    console.warn(
+      `[sell-sealed] stock auto-corrected: ${product.name} Front Store +${shortfall} ` +
+      `(cashier-confirmed physical stock; books had ${frontStock - shortfall} front + ${masterStock} master` +
+      `${borrowedCost == null ? '; NO COST BASIS FOUND — sale will show zero cost' : `; cost $${borrowedCost} copied from another room`})`
     )
   }
+
+  const needFromMaster = Math.max(0, quantity - frontStock)
 
   // Step 2: if we need to pull from Master, do the Move first so the
   // Front Store deduction below is clean. The Move row records the
@@ -3916,9 +4070,49 @@ const _sellSealedLine = async ({
     trade_in_value_usd: txMeta.tradeInValue ?? null,
     net_cash_usd: txMeta.netCash ?? null,
     trade_in_notes: txMeta.tradeInNotes || null,
+    notes: costUnknown
+      ? 'Stock was written in at the register (cashier-confirmed physical count) and no '
+        + 'cost basis existed for this product in any room — cost_basis 0 here is UNKNOWN, '
+        + 'not free. Fix the cost before trusting this line\'s profit.'
+      : null,
   })
 
-  await updateInventory(product.id, frontStoreId, -quantity)
+  // The sale row exists but the goods are not deducted yet. If the deduction
+  // fails, the row above is an artifact of a FAILED sale, not a record of one:
+  // leave it and reconciliation sees money with no stock movement, while the
+  // caller reports the line as failed and the cashier retries — creating a
+  // second sale that the never-delete rule then locks in forever. Same
+  // compensation the split-sale path uses.
+  try {
+    await updateInventory(product.id, frontStoreId, -quantity)
+  } catch (err) {
+    // Void it, do not erase it. Hard-deleting would destroy the only evidence
+    // that money changed hands — worse than the half-account it was meant to
+    // prevent, and against the soft-delete-only rule. Flagging it keeps the
+    // row out of every report (they all filter `deleted`) while leaving the
+    // trail intact, and Supabase returns errors in the result rather than
+    // rejecting, so the outcome MUST be inspected: claiming a rollback that
+    // did not happen gets the sale entered a second time.
+    const { error: voidErr } = await supabase
+      .from('storefront_sales')
+      .update({
+        deleted: true,
+        deleted_at: new Date().toISOString(),
+        notes: `VOIDED: stock deduction failed (${String(err?.message || err).slice(0, 160)}). `
+             + 'No goods left the shelf for this line. Kept for the audit trail.',
+      })
+      .eq('id', sale.id)
+    if (voidErr) {
+      throw new Error(
+        `Stock deduction failed for ${product.name} (${err.message || err}) AND the sale row `
+        + `could not be voided (${voidErr.message}). Sale ${sale.id} is still recorded but the `
+        + `stock was NOT deducted — do not re-enter it, tell a manager.`
+      )
+    }
+    throw new Error(
+      `Stock deduction failed for ${product.name} (${err.message || err}) — the sale line was voided, nothing was recorded`
+    )
+  }
 
   return { sale }
 }
@@ -3966,6 +4160,23 @@ const _sellSlabLine = async ({ slab, salePrice, paymentMethodId, cashierId, tran
 //     split has used since Phase 2.
 // Re-reads the source row by id so a stale UI object can't oversell a stack
 // that shrank since the page loaded.
+// Sell fewer than the row holds → the row must SPLIT, or the copies we did
+// not sell are marked sold along with the one we did.
+//
+// This used to also require `form === 'raw'`, which made a cosmetic field
+// decide whether selling one card destroyed the rest of the stack: a qty-5
+// row that was 'graded' for any reason took the whole-row path, so selling 1
+// flipped all 5 to sold and the other 4 vanished from the shelf — and from
+// the scanner, which only ever finds rows with quantity > 0. Today every row
+// in the table is 'raw' so nothing is hit by it, and both intake screens pin
+// graded rows to quantity 1, but nothing in the database enforces that and
+// editing a stack's form would have armed it silently.
+//
+// Quantity is the only thing that actually matters here: if we are keeping
+// some, split. Whole-row sales (sellQty === sourceQty) are unaffected.
+export const shouldSplitSingleRow = (sourceQty, sellQty) =>
+  (Number(sourceQty) || 1) > 1 && (Number(sellQty) || 1) < (Number(sourceQty) || 1)
+
 export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
   const { data: src, error: srcErr } = await supabase
     .from('singles').select('*').eq('id', singleId).single()
@@ -3976,10 +4187,11 @@ export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
   if (sellQty > sourceQty) {
     throw new Error(`Only ${sourceQty} available — cannot sell ${sellQty}`)
   }
-  const isFungibleRaw = src.form === 'raw' && sourceQty > 1
 
-  // Whole-row sale: just flip status. Existing markSingleAsSold handles it.
-  if (!isFungibleRaw || sellQty === sourceQty) {
+  // Whole-row sale: just flip status. Existing markSingleAsSold handles it —
+  // note it does NOT touch quantity, so the row records "N sold", which is
+  // right only when all N really were sold.
+  if (!shouldSplitSingleRow(sourceQty, sellQty)) {
     return await markSingleAsSold(singleId, saleData)
   }
 
@@ -4006,6 +4218,15 @@ export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
     variant: src.variant,
     form: src.form,
     condition: src.condition,
+    // Grading identity travels with the card. The split path used to be
+    // reachable only for form:'raw' rows, so these were never needed; now that
+    // quantity alone decides, a graded stack can split and the sold copy must
+    // not lose what makes it that card. cert_number is NOT copied: a cert
+    // identifies one specific slab, and a row holding several copies cannot
+    // tell us which one just left — duplicating it would invent that answer.
+    grade: src.grade,
+    grading_company: src.grading_company,
+    photo_url: src.photo_url,
     quantity: sellQty,
     tcg_id: src.tcg_id,
     acquisition_cost_usd: src.acquisition_cost_usd,
@@ -4070,9 +4291,109 @@ export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
   return inserted
 }
 
-const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {}, allowStockAdjust = false }) => {
+// Marker prefix on the recovered row's sale_notes. Text, not a column, because
+// DDL is William's — but a stable prefix keeps these greppable for audit.
+export const COUNTER_RECOVERY_TAG = 'RECOVERED_AT_COUNTER'
+
+// The card is in the cashier's hand but the app's only row for it says sold.
+// The historical sale row is NOT touched — a completed sale is a record, and
+// flipping it back would erase it (卖出铁律 2026-07-23). Instead we book THIS
+// sale as its own row, cloned off the sold one so cost/identity carry over,
+// and stamp where it came from so the pair can be reviewed later: either the
+// earlier sale over-counted, or we genuinely had two copies. Both are worth
+// knowing; neither is worth blocking a paying customer over.
+const _recoverSoldSingle = async (src, sellQty, saleData) => {
+  const clone = {
+    card_name: src.card_name,
+    card_number: src.card_number,
+    set_id: src.set_id,
+    brand: src.brand,
+    language: src.language,
+    variant: src.variant,
+    form: src.form,
+    condition: src.condition,
+    grade: src.grade,
+    grading_company: src.grading_company,
+    // Not the cert: this is a DIFFERENT physical card from the one already
+    // sold, so it cannot carry that card's certificate number.
+    quantity: sellQty,
+    tcg_id: src.tcg_id,
+    // Cost and provenance are deliberately BLANK. Holding the card proves a
+    // copy exists; it does not prove this copy came from the same purchase as
+    // the one already sold. Copying the old row's cost would book the same
+    // acquisition's COGS a second time and quietly overstate margin on both
+    // sales. Unknown stays unknown (不编数据) — the sale_notes below say so.
+    acquisition_cost_usd: null,
+    acquisition_cost_native: null,
+    acquisition_currency: null,
+    source_type: null,
+    source_box_break_id: null,
+    source_acquisition_id: null,
+    location_id: src.location_id,
+    acquirer_id: null,
+    vendor_id: null,
+    date_acquired: null,
+    notes: src.notes,
+    photo_url: src.photo_url,
+    status: 'sold',
+    ...saleData,
+    sale_notes: [
+      `${COUNTER_RECOVERY_TAG}: app showed this sold on ${src.sale_date || 'an unknown date'}`
+      + ` for ${src.sale_price_usd == null ? '?' : '$' + src.sale_price_usd}`
+      + ` (row ${src.id}${src.transaction_id ? `, tx ${src.transaction_id}` : ''}).`
+      + ' Cashier confirmed a physical copy at the counter, so this sale is booked'
+      + ' as its own row and the earlier sale is left untouched.'
+      + ' COST IS UNKNOWN on this row on purpose — this copy cannot be tied to a'
+      + ' purchase, so its profit is overstated until someone assigns a cost.',
+      saleData.sale_notes || '',
+    ].filter(Boolean).join(' '),
+  }
+  const { data, error } = await supabase
+    .from('singles')
+    .insert(clone)
+    .select(`*, set:card_sets(id, brand, name, code, language), location:locations(id, name)`)
+    .single()
+  if (error) throw error
+  logSingleEvent({
+    single_id: data.id,
+    event_type: 'sold',
+    summary: `Sold ${sellQty} ${summarizeCard(data)} — app had it as SOLD, cashier confirmed physical copy (recovered from ${src.id})`,
+    payload: { sale: saleData, card: data, recovered_from: src.id },
+    acted_by_id: saleData.sold_by_id || null,
+  })
+  console.warn(`[sell-single] counter recovery: ${src.tcg_id} was sold ${src.sale_date}, sold again as row ${data.id}`)
+  return data
+}
+
+const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {}, allowStockAdjust = false, allowSoldOverride = false }) => {
   const sourceQty = single.quantity || 1
   const sellQty = Math.max(1, Number(quantity) || 1)
+
+  // Sold-row override. Read the row fresh rather than trusting the cart copy —
+  // the cart may be minutes old and the status is exactly what changed.
+  if (allowSoldOverride) {
+    const { data: fresh, error: freshErr } = await supabase
+      .from('singles').select('*').eq('id', single.id).single()
+    if (freshErr) throw freshErr
+    if (fresh.status === 'sold') {
+      return await _recoverSoldSingle(fresh, sellQty, {
+        sale_price_usd: Number(salePrice) || 0,
+        sale_channel: 'in_person',
+        sale_date: saleDate,
+        sale_fees_usd: null,
+        buyer_name: null,
+        sale_notes: null,
+        sold_by_id: cashierId || null,
+        payment_method_id: paymentMethodId || null,
+        transaction_id: transactionId,
+        transaction_type: txMeta.transactionType || 'sale',
+        trade_in_value_usd: txMeta.tradeInValue ?? null,
+        net_cash_usd: txMeta.netCash ?? null,
+      })
+    }
+    // Not sold after all (someone fixed it, or the cart was stale the other
+    // way) — fall through to the normal path.
+  }
 
   if (sellQty > sourceQty) {
     if (!allowStockAdjust) {
@@ -4262,6 +4583,184 @@ const _sellManualLine = async ({
 // Each row written carries the same transaction_type / trade_in_value_usd /
 // net_cash_usd values for query consistency (so any one row from the
 // transaction tells the full story).
+// Check every sellable line against CURRENT database state before the
+// transaction writes anything.
+//
+// Why this exists (2026-08-07): checkout wrote line-by-line in its own
+// try/catch and kept going, so a cart where half the lines threw
+// "Already sold" still banked the customer's full payment and recorded only
+// the survivors. Five July sales lost $1,081 that way with no error anywhere
+// in the data — the worst was 07-24, $1,228 collected against $294.72 of
+// items, 19 units never deducted. Nothing downstream could see it: the
+// drawer matched, the receipt matched, only item-vs-payment disagreed.
+//
+// The cart is also minutes old by the time Complete is pressed, so this reads
+// fresh rows rather than trusting the scan — a stream room or the other
+// register may have moved the same card in between. That race IS the failure.
+//
+// Returns { blockers, sources }. `blockers` is empty when the cart is safe to
+// write; `fixable` on a blocker names the cart flag that would let that line
+// through, so the UI can offer the override instead of a dead end. `sources`
+// carries the FRESH inventory rows per sealed line key — the caller must hand
+// those to the writer instead of the copy captured at scan time, or the check
+// and the deduction are looking at two different numbers.
+export const preflightStorefrontCart = async (
+  cart,
+  { transactionType = 'sale', frontStoreId = null, masterId = null } = {},
+) => {
+  const blockers = []
+  const sources = {}
+  // A buy CREATES stock — there is nothing to verify against.
+  if (!Array.isArray(cart) || cart.length === 0 || transactionType === 'buy') {
+    return { blockers, sources }
+  }
+
+  const singleLines = cart.filter(l => l.kind === 'single' && l.single?.id)
+  const slabLines   = cart.filter(l => l.kind === 'slab'   && l.slab?.id)
+  const sealedLines = cart.filter(l => l.kind === 'sealed' && l.product?.id)
+
+  // Three round-trips regardless of cart size — this runs on every checkout.
+  const [sRes, kRes, iRes] = await Promise.all([
+    singleLines.length
+      ? supabase.from('singles')
+          .select('id, card_name, status, quantity, deleted, sale_date')
+          .in('id', [...new Set(singleLines.map(l => l.single.id))])
+      : Promise.resolve({ data: [], error: null }),
+    slabLines.length
+      ? supabase.from('slabs')
+          .select('id, item_name, cert_number, status, deleted')
+          .in('id', [...new Set(slabLines.map(l => l.slab.id))])
+      : Promise.resolve({ data: [], error: null }),
+    sealedLines.length
+      // avg_cost_basis is REQUIRED here: these rows are handed to the writer as
+      // sourceCandidates, and the Master→Front auto-Move reads the basis off
+      // them. Selecting only quantity made every auto-Move carry a null cost,
+      // which updateInventory stores as $0 on a new Front Store row — silently
+      // zeroing the cost of ordinary sales, not just overrides.
+      ? supabase.from('inventory')
+          .select('product_id, location_id, quantity, avg_cost_basis')
+          .in('product_id', [...new Set(sealedLines.map(l => l.product.id))])
+      : Promise.resolve({ data: [], error: null }),
+  ])
+  // Fail CLOSED. If we cannot verify, we do not write: a refused checkout is
+  // a retry, a half-written one is money we never find again.
+  const readErr = sRes.error || kRes.error || iRes.error
+  if (readErr) {
+    throw new Error(
+      `Could not check the cart against inventory (${readErr.message}). ` +
+      `Nothing was recorded — try again.`
+    )
+  }
+
+  const singleById = new Map((sRes.data || []).map(r => [r.id, r]))
+  const slabById = new Map((kRes.data || []).map(r => [r.id, r]))
+  const invByProduct = new Map()
+  for (const r of iRes.data || []) {
+    if (!invByProduct.has(r.product_id)) invByProduct.set(r.product_id, [])
+    invByProduct.get(r.product_id).push(r)
+  }
+
+  // Demand is summed PER ID, not per line. Two cart lines can point at the
+  // same card (a stale-cart race can append a second line for an id that was
+  // already there), and checking them one at a time lets each pass on its own
+  // while together they oversell the same stock.
+  const needById = new Map()
+  const addNeed = (id, n) => needById.set(id, (needById.get(id) || 0) + n)
+  for (const l of singleLines) addNeed(l.single.id, Math.max(1, Number(l.quantity) || 1))
+  for (const l of sealedLines) addNeed(l.product.id, Math.max(1, Number(l.quantity) || 1))
+
+  // Summing is not enough on its own: each duplicate line is written
+  // separately and each is handed the SAME pre-write stock snapshot, so with
+  // Front=1 and two qty-1 lines both writers believe Front covers them and the
+  // room is deducted to -1. Reject the duplicate outright — it only arises
+  // from a cart race, and one line with the right quantity is what was meant.
+  const seenLine = new Map()
+  for (const l of cart) {
+    const id = l.single?.id || l.slab?.id || l.product?.id
+    if (!id) continue
+    if (seenLine.has(id)) {
+      blockers.push({
+        key: l.key, kind: l.kind,
+        name: l.single?.card_name || l.slab?.item_name
+              || [l.product?.brand, l.product?.name].filter(Boolean).join(' ') || 'item',
+        reason: 'this item is in the cart on two separate lines — remove one and set the quantity on the other',
+      })
+    }
+    seenLine.set(id, l.key)
+  }
+
+  for (const l of singleLines) {
+    const need = needById.get(l.single.id) || Math.max(1, Number(l.quantity) || 1)
+    const row = singleById.get(l.single.id)
+    const name = row?.card_name || l.single.card_name || 'single'
+    if (!row || row.deleted) {
+      blockers.push({ key: l.key, kind: 'single', name, reason: 'this row no longer exists — re-scan the card' })
+    } else if (row.status === 'sold') {
+      if (!l.sold_override) {
+        blockers.push({
+          key: l.key, kind: 'single', name, fixable: 'sold_override',
+          reason: `the app has this as SOLD on ${row.sale_date || 'an earlier date'}`,
+        })
+      }
+    } else if (row.status !== 'in_inventory' && row.status !== 'listed') {
+      blockers.push({ key: l.key, kind: 'single', name, reason: `status is "${row.status}" — can't sell from the register` })
+    } else if ((Number(row.quantity) || 0) < need && !l.stock_adjust) {
+      blockers.push({
+        key: l.key, kind: 'single', name, fixable: 'stock_adjust',
+        reason: `app shows ${row.quantity || 0} in stock, cart has ${need}`,
+      })
+    }
+  }
+
+  for (const l of slabLines) {
+    const row = slabById.get(l.slab.id)
+    const name = row?.item_name || l.slab.item_name || `slab #${l.slab.cert_number || ''}`
+    // No override for slabs: a slab is a single unique object, so "sold but
+    // it's in my hand" is a return to reverse, not something to re-sell.
+    if (!row || row.deleted) {
+      blockers.push({ key: l.key, kind: 'slab', name, reason: 'this slab no longer exists — re-scan the cert' })
+    } else if (row.status === 'sold') {
+      blockers.push({ key: l.key, kind: 'slab', name, reason: 'already sold — process it as a Return first if it came back' })
+    } else if (row.status !== 'in_inventory' && row.status !== 'listed') {
+      blockers.push({ key: l.key, kind: 'slab', name, reason: `status is "${row.status}" — can't sell from the register` })
+    }
+  }
+
+  for (const l of sealedLines) {
+    const need = needById.get(l.product.id) || Math.max(1, Number(l.quantity) || 1)
+    const name = [l.product.brand, l.product.name].filter(Boolean).join(' ')
+    const rows = invByProduct.get(l.product.id) || []
+    // Hand the writer the rows we just read, so the check and the deduction
+    // are the same numbers. Previously the writer still received the cart's
+    // scan-time copy, so preflight could pass on fresh data while the
+    // deduction ran on stale data.
+    sources[l.key] = rows.map(r => ({
+      location_id: r.location_id,
+      quantity: r.quantity,
+      avg_cost_basis: r.avg_cost_basis ?? null,
+    }))
+    // Count ONLY the rooms the sealed writer can actually draw from — it
+    // sources Front Store first and auto-Moves from Master, and nowhere else.
+    // Counting every room made preflight pass for stock that sits in a stream
+    // room, and the writer then threw "Not enough stock" anyway — the exact
+    // half-committed checkout this gate exists to prevent.
+    const reachable = rows.filter(r =>
+      (frontStoreId && r.location_id === frontStoreId) ||
+      (masterId && r.location_id === masterId))
+    const have = reachable.reduce((s, r) => s + Math.max(0, Number(r.quantity) || 0), 0)
+    if (have < need && !l.stock_adjust) {
+      const elsewhere = rows.reduce((s, r) => s + Math.max(0, Number(r.quantity) || 0), 0) - have
+      blockers.push({
+        key: l.key, kind: 'sealed', name, fixable: 'stock_adjust',
+        reason: `only ${have} reachable (Front Store + Master), cart has ${need}`
+          + (elsewhere > 0 ? ` — ${elsewhere} more sit in stream rooms and must be Moved first` : ''),
+      })
+    }
+  }
+
+  return { blockers, sources }
+}
+
 export const submitStorefrontTransaction = async ({
   cart,             // [{ kind, productId|slabId|singleId, scanned_code, quantity, price, ...meta }, ...]
   paymentMethodId,  // legacy single-method input (back-compat). Either this OR `payments`.
@@ -4370,6 +4869,22 @@ export const submitStorefrontTransaction = async ({
   const masterId = locs.find(l => l.name === MASTER_NAME)?.id
   if (!frontStoreId) throw new Error(`Location "${FRONT_STORE_NAME}" not configured`)
 
+  // ---- Gate: verify the WHOLE cart before writing ANY of it. ----
+  // Everything above this point is reads and arithmetic; the first write is
+  // below. A cart that cannot be sold in full is rejected whole, so the
+  // cashier fixes it with the customer still standing there instead of
+  // discovering days later that the money and the items disagree.
+  const { blockers, sources: freshSources } = await preflightStorefrontCart(
+    cart, { transactionType, frontStoreId, masterId })
+  if (blockers.length > 0) {
+    const err = new Error(
+      `Nothing was recorded. ${blockers.length} item${blockers.length === 1 ? '' : 's'} can't be sold right now:\n` +
+      blockers.map(b => `• ${b.name} — ${b.reason}`).join('\n')
+    )
+    err.blockers = blockers
+    throw err
+  }
+
   // crypto.randomUUID is available in browsers and modern Node; fall back
   // to a less-perfect string if missing (the DB column accepts any UUID).
   const transactionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
@@ -4408,10 +4923,15 @@ export const submitStorefrontTransaction = async ({
               quantity: Number(line.quantity) || 1,
               salePrice: line.price,
               paymentMethodId: rowPaymentMethodId, cashierId, transactionId,
-              sourceCandidates: line.inventory || [],
+              // Rows read by the preflight moments ago, not the copy captured
+              // when the barcode was scanned.
+              sourceCandidates: freshSources[line.key] || line.inventory || [],
               locationIds: { frontStore: frontStoreId, master: masterId },
               saleDate,
               txMeta,
+              // Cashier confirmed the item is physically at the counter even
+              // though the books are short — write the stock in, then sell it.
+              allowStockAdjust: !!line.stock_adjust,
             })
         ok.push({ line, result })
       } else if (line.kind === 'slab') {
@@ -4436,6 +4956,9 @@ export const submitStorefrontTransaction = async ({
           // Cashier confirmed an over-scan in the cart (physical copies
           // beyond app stock) — lets the writer bump qty before selling.
           allowStockAdjust: !!line.stock_adjust,
+          // Cashier confirmed they are holding a card the app calls sold —
+          // book this sale on its own row, leave the old sale alone.
+          allowSoldOverride: !!line.sold_override,
         })
         ok.push({ line, result })
       } else if (line.kind === 'slab_manual' || line.kind === 'single_manual') {
@@ -4466,11 +4989,37 @@ export const submitStorefrontTransaction = async ({
     }
   }
 
+  // Money recorded vs items recorded. With the preflight gate above, a
+  // failure here is an infrastructure fault, not a stock problem — but it
+  // still leaves the drawer holding more than the item rows account for, and
+  // that gap used to be completely invisible. Surface it as a number the
+  // caller must deal with.
+  //
+  // NOT a substitute for atomicity: these writes are still separate round
+  // trips from a browser, so a fault mid-loop leaves a partially-recorded
+  // cart. The preflight removes the common causes and this number makes the
+  // rest loud, but only a single database transaction can make it impossible
+  // — scripts/add_storefront_checkout_rpc_2026_08_09.sql, pending William.
+  const recordedValue = ok.reduce((s, { line }) =>
+    s + (Number(line.quantity ?? 1) || 1) * (Number(line.price) || 0), 0)
+  const shortfall = Math.round((grossValue - recordedValue) * 100) / 100
+  if (shortfall > 0.01) {
+    console.error(
+      `[submitStorefrontTransaction] SHORTFALL on ${transactionId}: ` +
+      `$${grossValue.toFixed(2)} charged, $${recordedValue.toFixed(2)} of items recorded, ` +
+      `$${shortfall.toFixed(2)} unaccounted for across ${failed.length} failed line(s)`)
+  }
+
   // Write the payment-split ledger AFTER at least one line succeeded.
   // We don't want orphan storefront_payments rows pointing at a txn
   // where every line failed. Failures here are non-fatal — the txn
   // itself is already on disk via the line writes; we just lose split
   // attribution. Log loudly so the issue gets noticed.
+  //
+  // The FULL amount is still recorded even on a shortfall, deliberately: the
+  // customer really did hand over that money and it really is in the drawer.
+  // Trimming the ledger to match the items would make the books agree with
+  // each other while disagreeing with reality. The gap is reported instead.
   if (ok.length > 0 && normalizedPayments.length > 0) {
     try {
       const ledgerRows = normalizedPayments.map(p => ({
@@ -4501,6 +5050,10 @@ export const submitStorefrontTransaction = async ({
     net_cash: txMeta.netCash,
     payments: normalizedPayments,
     ok, failed,
+    // Money charged minus value of the items actually written. > 0 means the
+    // drawer holds more than the records explain — the caller MUST show this.
+    recorded_value: Math.round(recordedValue * 100) / 100,
+    shortfall,
   }
 }
 
