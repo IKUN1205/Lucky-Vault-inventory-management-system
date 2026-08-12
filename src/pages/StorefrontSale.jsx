@@ -136,6 +136,10 @@ export default function StorefrontSale() {
   const [submitting, setSubmitting] = useState(false)
   const [cart, setCart] = useState([])
   const [unknownCode, setUnknownCode] = useState(null)
+  // Checkout was refused before writing anything — one entry per bad line.
+  const [blockers, setBlockers] = useState(null)
+  // Checkout wrote, but charged more than it recorded. Stays until dismissed.
+  const [shortfall, setShortfall] = useState(null)
 
   // Transaction type: 'sale' (default), 'trade', or 'buy'.
   //   - sale  : customer pays us. cart total = customer pays.
@@ -286,20 +290,61 @@ export default function StorefrontSale() {
   const addOrIncrementSealed = (lookup) => {
     const { product, inventory } = lookup
     const totalAvailable = inventory.reduce((s, i) => s + (i.quantity || 0), 0)
+    // Same dead-end the singles path had: the box is on the counter but the
+    // books say zero, so the sale simply stops being recorded. Storm Emeralda
+    // is the proof this happens — Master's receipts are 0 yet 68 moved out and
+    // 41 shipped, i.e. stock was hand-added. Ask instead of refusing.
+    let sealedAdjust = false
     if (totalAvailable <= 0) {
-      addToast(`${product.name} — no stock anywhere`, 'error')
+      const ok = confirm(
+        `The app shows 0 "${product.name}" anywhere.\n\n` +
+        `If you are holding it, the sale goes through and Front Store stock is ` +
+        `corrected at checkout.\n\nSell it?`
+      )
+      if (!ok) return
+      sealedAdjust = true
+    }
+    // The confirm below MUST run outside setCart — a confirm inside a state
+    // updater double-fires under StrictMode (same reason noted on the singles
+    // path), so decide first and let the updater be pure.
+    const existing = cart.find(l => l.kind === 'sealed' && l.product.id === product.id)
+    if (existing) {
+      const nextQty = (existing.quantity || 1) + 1
+      let adjust = existing.stock_adjust || sealedAdjust
+      if (!adjust && nextQty > totalAvailable) {
+        const ok = confirm(
+          `App only shows ${totalAvailable} of "${product.name}" in stock, but you scanned another.\n\n` +
+          `Add it anyway? Stock will be corrected to ${nextQty} at checkout.`
+        )
+        if (!ok) return
+        adjust = true
+      }
+      // Increment from `prev`, not from the render-time `nextQty` — the same
+      // race already fixed on the singles path below. Two scans off one render
+      // both compute 2, the second overwrites instead of adding, and a box is
+      // sold without being charged or deducted.
+      setCart(prev => prev.map(l =>
+        (l.kind === 'sealed' && l.product.id === product.id)
+          ? { ...l, quantity: (l.quantity || 1) + 1, stock_adjust: l.stock_adjust || adjust }
+          : l
+      ))
+      addToast(`${product.name} ×${nextQty}${adjust ? ' (stock will be corrected)' : ''}`, adjust ? 'info' : 'success')
       return
     }
     setCart(prev => {
-      const idx = prev.findIndex(l => l.kind === 'sealed' && l.product.id === product.id)
-      if (idx >= 0) {
-        const existing = prev[idx]
-        if ((existing.quantity || 1) + 1 > totalAvailable) {
-          addToast(`Only ${totalAvailable} available — cart already has ${existing.quantity}`, 'error')
-          return prev
-        }
+      // Re-check against the LATEST cart, not the render-time copy read above.
+      // Two scans fired from the same render both see "not in cart" and would
+      // each append, giving one product two lines — which then either
+      // oversells it or gets the whole checkout rejected by the preflight.
+      // The decision (confirm) stays outside; the update itself is idempotent.
+      const i = prev.findIndex(l => l.kind === 'sealed' && l.product.id === product.id)
+      if (i >= 0) {
         const next = [...prev]
-        next[idx] = { ...existing, quantity: (existing.quantity || 1) + 1 }
+        next[i] = {
+          ...next[i],
+          quantity: (next[i].quantity || 1) + 1,
+          stock_adjust: next[i].stock_adjust || sealedAdjust,
+        }
         return next
       }
       return [
@@ -312,6 +357,7 @@ export default function StorefrontSale() {
           quantity: 1,
           our_price: null,   // sealed has no stored reference price
           scanned_code: product.barcode,
+          stock_adjust: sealedAdjust,
         },
       ]
     })
@@ -353,11 +399,26 @@ export default function StorefrontSale() {
   }
 
   const addOrIncrementSingle = (single) => {
+    // "Already sold" used to be a dead end here, and a dead end at the
+    // register does not mean the card doesn't sell — it means the sale
+    // stops being recorded. On 08-05 the storefront reported this five
+    // times in one shift and $360 of cash sales never reached the system.
+    // Same principle as the over-scan confirm below (directive 2026-06-09,
+    // 实物为准): the cashier is holding the card, so the card exists.
+    // Checkout books it as a NEW row and leaves the old sale untouched.
+    let soldOverride = false
     if (single.status === 'sold') {
-      addToast('Already sold', 'error')
-      return
-    }
-    if (single.status !== 'in_inventory' && single.status !== 'listed') {
+      const when = single.sale_date ? ` on ${single.sale_date}` : ''
+      const much = single.sale_price_usd != null ? ` for $${single.sale_price_usd}` : ''
+      const ok = confirm(
+        `The app has "${single.card_name}" as SOLD${when}${much}.\n\n` +
+        `If you are holding the physical card, this sale will be recorded as its own ` +
+        `line and the earlier sale will be left exactly as it is.\n\n` +
+        `Sell it?`
+      )
+      if (!ok) return
+      soldOverride = true
+    } else if (single.status !== 'in_inventory' && single.status !== 'listed') {
       addToast(`Status "${single.status}" — can't sell from here`, 'error')
       return
     }
@@ -373,7 +434,10 @@ export default function StorefrontSale() {
     if (existing) {
       const nextQty = (existing.quantity || 1) + 1
       let stockAdjust = existing.stock_adjust || false
-      if (nextQty > (existing.available || available)) {
+      // A recovered line has no app stock to measure against by definition —
+      // the cashier already confirmed the copies are physically here, so
+      // don't re-ask the "more than we have" question for every extra scan.
+      if (!existing.sold_override && nextQty > (existing.available || available)) {
         const ok = confirm(
           `App only shows ${existing.available || available} in stock for "${single.card_name}", but you scanned another physical copy.\n\n` +
           `Add it anyway? Inventory will be auto-corrected to ${nextQty} at checkout.`
@@ -381,9 +445,12 @@ export default function StorefrontSale() {
         if (!ok) return
         stockAdjust = true
       }
+      // Increment from `prev`, not from the render-time `nextQty`: two scans
+      // fired off the same render otherwise both compute the same number and
+      // the second one overwrites instead of adding, losing a card.
       setCart(prev => prev.map(l =>
         (l.kind === 'single' && l.single.id === single.id)
-          ? { ...l, quantity: nextQty, stock_adjust: stockAdjust }
+          ? { ...l, quantity: (l.quantity || 1) + 1, stock_adjust: l.stock_adjust || stockAdjust }
           : l
       ))
       addToast(`${single.card_name} ×${nextQty}${stockAdjust ? ' (stock will be corrected)' : ''}`, 'success')
@@ -391,18 +458,38 @@ export default function StorefrontSale() {
     }
     const ourPrice = single.current_market_price_usd != null
       ? Number(single.current_market_price_usd) : null
-    setCart(prev => [
-      ...prev,
-      {
-        kind: 'single',
-        key: `single-${single.id}`,
-        single, available,
-        quantity: 1,
-        our_price: ourPrice,
-        scanned_code: single.tcg_id,
-      },
-    ])
-    addToast(`Added: ${single.card_name}`, 'success')
+    setCart(prev => {
+      // Same idempotence as the sealed path: the lookup above ran against the
+      // render-time cart, so a second fast scan must merge here rather than
+      // append a duplicate line for the same card.
+      const i = prev.findIndex(l => l.kind === 'single' && l.single.id === single.id)
+      if (i >= 0) {
+        const next = [...prev]
+        next[i] = {
+          ...next[i],
+          quantity: (next[i].quantity || 1) + 1,
+          sold_override: next[i].sold_override || soldOverride,
+        }
+        return next
+      }
+      return [
+        ...prev,
+        {
+          kind: 'single',
+          key: `single-${single.id}`,
+          single, available,
+          quantity: 1,
+          our_price: ourPrice,
+          scanned_code: single.tcg_id,
+          sold_override: soldOverride,
+        },
+      ]
+    })
+    addToast(
+      soldOverride
+        ? `Added: ${single.card_name} — app had it as sold, booking a new line`
+        : `Added: ${single.card_name}`,
+      soldOverride ? 'info' : 'success')
   }
 
   // ---------- scan handler ----------
@@ -596,6 +683,7 @@ export default function StorefrontSale() {
   const handleSubmit = async () => {
     const validationErr = validateCart()
     if (validationErr) { addToast(validationErr, 'error'); return }
+    setBlockers(null)   // stale reasons from the previous attempt
     setSubmitting(true)
     // Total mode: distribute the single cart total across lines so per-line
     // writers (sealed deduct / slab sold / single sold) can stamp a sensible
@@ -726,9 +814,33 @@ export default function StorefrontSale() {
       if (failed.length > 0) {
         for (const f of failed) addToast(`Line failed: ${f.error}`, 'error')
       }
+      // Charged more than we managed to record. The preflight above makes
+      // this rare (it can only happen on a mid-write fault now), but it is
+      // the exact condition that silently cost $1,081 across five July
+      // sales — so it gets a banner that stays on screen, not a toast that
+      // scrolls away while the next customer is served.
+      if ((result.shortfall || 0) > 0.01) {
+        setShortfall({
+          transaction_id: result.transaction_id,
+          charged: result.gross_value,
+          recorded: result.recorded_value,
+          missing: result.shortfall,
+          failed: failed.map(f => ({
+            name: f.line?.single?.card_name || f.line?.slab?.item_name
+                  || f.line?.product?.name || f.line?.description || 'item',
+            error: f.error,
+          })),
+        })
+      }
     } catch (err) {
       console.error('[StorefrontSale] submit threw:', err)
-      addToast(`Submit failed: ${err.message || err}`, 'error')
+      if (err.blockers?.length) {
+        // Rejected before anything was written — show every reason at once
+        // so the cashier can fix the cart while the customer is still here.
+        setBlockers(err.blockers)
+      } else {
+        addToast(`Submit failed: ${err.message || err}`, 'error')
+      }
     } finally {
       setSubmitting(false)
       setTimeout(() => inputRef.current?.focus(), 0)
@@ -987,6 +1099,71 @@ export default function StorefrontSale() {
               </div>
             </div>
             <button onClick={() => setUnknownCode(null)} className="p-1 text-gray-400 hover:text-white">
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {/* Checkout refused — NOTHING was written. Every reason is listed so
+            the cart can be fixed in one pass while the customer waits. */}
+        {blockers?.length > 0 && (
+          <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/40 rounded-lg flex items-start gap-3">
+            <AlertTriangle size={18} className="text-amber-300 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 text-sm">
+              <div className="text-amber-200 font-semibold">
+                Nothing was recorded — {blockers.length} item{blockers.length === 1 ? '' : 's'} can’t be sold right now.
+              </div>
+              <ul className="mt-1.5 space-y-1 text-xs text-gray-200">
+                {blockers.map((b, i) => (
+                  <li key={b.key || i}>
+                    <span className="text-white">{b.name}</span> — {b.reason}
+                    {b.fixable === 'sold_override' && (
+                      <span className="text-gray-400"> · re-scan the card and confirm the prompt to sell it anyway</span>
+                    )}
+                    {b.fixable === 'stock_adjust' && (
+                      <span className="text-gray-400"> · scan the extra copies and confirm the prompt to correct stock</span>
+                    )}
+                    {b.fixable === 'move_stock' && (
+                      <span className="text-gray-400"> · record a Move into Front Store or Master first — the register can only sell from those two</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <div className="text-[11px] text-gray-400 mt-1.5">
+                Nothing was charged and nothing was deducted. Fix these lines, then press Complete again.
+              </div>
+            </div>
+            <button onClick={() => setBlockers(null)} className="p-1 text-gray-400 hover:text-white">
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {/* Charged more than we recorded. Sticky on purpose — this is the
+            failure that used to be invisible. */}
+        {shortfall && (
+          <div className="mt-3 p-3 bg-red-500/15 border border-red-500/50 rounded-lg flex items-start gap-3">
+            <AlertTriangle size={18} className="text-red-300 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 text-sm">
+              <div className="text-red-200 font-semibold">
+                {fmtUsd(shortfall.missing)} charged but NOT recorded — tell a manager before the next sale.
+              </div>
+              <div className="text-xs text-gray-200 mt-1">
+                Charged {fmtUsd(shortfall.charged)}, recorded {fmtUsd(shortfall.recorded)} of items.
+                {' '}Transaction <code className="bg-vault-darker px-1 rounded text-vault-gold">{shortfall.transaction_id}</code>.
+              </div>
+              {shortfall.failed.length > 0 && (
+                <ul className="mt-1.5 space-y-0.5 text-xs text-gray-300">
+                  {shortfall.failed.map((f, i) => (
+                    <li key={i}><span className="text-white">{f.name}</span> — {f.error}</li>
+                  ))}
+                </ul>
+              )}
+              <div className="text-[11px] text-gray-400 mt-1.5">
+                The money is in the drawer and is recorded. The items above are not — their stock was never deducted.
+              </div>
+            </div>
+            <button onClick={() => setShortfall(null)} className="p-1 text-gray-400 hover:text-white">
               <X size={14} />
             </button>
           </div>
@@ -2297,7 +2474,13 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
       : line.product.name
     title = `${line.product.brand} | ${launchName}`
     sub = `${line.product.category || line.product.type} · ${line.product.language} · UPC ${line.product.barcode}`
-    available = line.available
+    // A confirmed physical count outranks the books, so the qty cap has to
+    // move with it — otherwise the cart silently clamps back to the number
+    // the cashier just told us was wrong.
+    available = line.stock_adjust
+      ? Math.max(line.available || 0, line.quantity || 1)
+      : line.available
+    if (line.stock_adjust) sub += ' · ⚠ stock will be corrected at checkout'
     qtyEditable = true
   } else if (line.kind === 'slab') {
     title = line.slab.item_name
@@ -2311,10 +2494,13 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
     sub = `${line.single.condition || 'raw'}${setLine} · TCG ${line.single.tcg_id}`
     // stock_adjust lines were confirmed-over-scanned (physical copies in
     // hand beyond app stock) — let the qty stay above the app's count.
-    available = line.stock_adjust
+    available = (line.stock_adjust || line.sold_override)
       ? Math.max(line.available || 1, line.quantity || 1)
       : line.available
     if (line.stock_adjust) sub += ' · ⚠ stock will be corrected at checkout'
+    // The cashier confirmed this one past an "already sold" — say so on the
+    // line, so it is obvious in the cart what was overridden and why.
+    if (line.sold_override) sub += ' · ⚠ app had this SOLD — booking a new line, old sale untouched'
     qtyEditable = true
   } else if (line.kind === 'slab_manual') {
     // Buy mode manual entry — only description (cashier-typed) to show.

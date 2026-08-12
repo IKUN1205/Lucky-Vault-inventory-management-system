@@ -240,6 +240,9 @@ export default function JapanShipments() {
           const lineJpy = qty * unitJpy
           larkItems.push({
             name: p ? `${p.brand} | ${launch} | ${p.category || p.type} | ${p.language}` : 'Unknown',
+            // Gary 2026-08-12: the dispatch list shows this, not `name`.
+            // `name` stays for anything else reading the payload.
+            setName: launch,
             quantity: qty,
             lineJpy,
             lineUsd: convertToUSD(lineJpy, 'JPY'),

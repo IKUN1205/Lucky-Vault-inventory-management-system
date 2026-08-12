@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react'
 import {
-  fetchProducts, fetchUsers, fetchVendors, fetchPaymentMethods,
+  fetchProducts, fetchUsers, fetchVendors, fetchPaymentMethods, fetchCostReference,
   createAcquisition, deleteAcquisition, createVendor, createPaymentMethod, convertToUSD, getExchangeRates
 } from '../lib/supabase'
+import {
+  costOutlierLines, unreferencedLines, NOTE_FLAGGED, NOTE_UNVERIFIED,
+} from '../lib/costSanity'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import BarcodeScanner from '../components/BarcodeScanner'
@@ -54,6 +57,10 @@ export default function PurchasedItems() {
   // cost, holds the offending 1-based line numbers so the confirm modal can list
   // them. null = no pending confirmation.
   const [zeroCostConfirm, setZeroCostConfirm] = useState(null)
+  // Cost-sanity guard: holds the lines whose per-unit cost is wildly out of
+  // line with what we already paid for the same product. null = nothing pending.
+  const [costSanityConfirm, setCostSanityConfirm] = useState(null)
+  const [checkingCost, setCheckingCost] = useState(false)
 
   const [header, setHeader] = useState({
     date_purchased: new Date().toLocaleDateString('en-CA'),
@@ -280,11 +287,14 @@ export default function PurchasedItems() {
     return c === '' || (parseFloat(c) || 0) === 0
   }
 
-  // Final submit handler. The zero-cost guard runs BEFORE the existing submit
-  // logic: if any product line is 0/blank cost, block and make the staffer
-  // consciously confirm. "Submit with 0 anyway" re-enters submitPurchases()
-  // so the actual submit path below stays completely UNCHANGED.
-  const handleSubmit = (e) => {
+  // Final submit handler. Two guards run BEFORE the existing submit logic and
+  // both are confirmations, never blocks — a hard stop here just sends people
+  // to edit inventory by hand, which is how untraceable quantities start.
+  //   1. zero/blank cost
+  //   2. per-unit cost far from what we already paid
+  // Either "submit anyway" re-enters submitPurchases() so the real submit path
+  // stays completely UNCHANGED.
+  const handleSubmit = async (e) => {
     e.preventDefault()
     const zeroLines = lineItems
       .map((item, idx) => ({ item, num: idx + 1 }))
@@ -294,14 +304,73 @@ export default function PurchasedItems() {
       setZeroCostConfirm(zeroLines)
       return
     }
-    submitPurchases()
+    await runCostGate(lineItems)
+  }
+
+  // The cost gate, split out so the zero-cost confirm can come back through it
+  // instead of jumping straight to submitPurchases. A batch with one blank
+  // cost used to take every other line in that batch past this check too —
+  // including an FB03-shaped one.
+  const runCostGate = async (items) => {
+    // Fail OPEN: if the reference lookup itself breaks we submit as before. A
+    // purchase must not be lost because a check could not run.
+    let ref = null
+    try {
+      setCheckingCost(true)
+      ref = await fetchCostReference(
+        items.filter(i => i.product_id).map(i => i.product_id))
+    } catch (err) {
+      console.warn('[cost check] skipped:', err?.message || err)
+      submitPurchases(items)
+      return
+    } finally {
+      setCheckingCost(false)
+    }
+
+    const named = (l) => ({
+      ...l,
+      name: getProductLabel(products.find(p => p.id === l.product_id)) || 'this product',
+    })
+    const idOf = (l) => items[l.index]?.id
+    // References are USD; the form takes USD, YEN or RMB. Compare like with
+    // like or every yen line reads as a 150x error.
+    const gateOpts = { toUsd: (n) => convertToUSD(n, header.currency) }
+    const unverified = unreferencedLines(items, ref, gateOpts).map(idOf).filter(Boolean)
+    const bad = costOutlierLines(items, ref, gateOpts).map(named)
+    if (bad.length > 0) {
+      // Hard stop. The only ways past are fixing the number or handing it to
+      // the backend — there is no "I know better" button, because that is the
+      // button that would have let FB03 through.
+      setCostSanityConfirm({
+        lines: bad,
+        flagged: bad.map(idOf).filter(Boolean),
+        unverified,
+        items,
+      })
+      return
+    }
+    // Nothing to judge these against. Record them, mark them, and raise them —
+    // FB03 was a first-ever purchase, so silence here is exactly the hole.
+    submitPurchases(items, { unverified })
   }
 
   // itemsOverride: the zero-cost confirm passes a normalized copy (blank→'0')
   // directly, because setLineItems hasn't flushed yet when we submit — and a
   // blank cost is falsy, so the validItems filter below would silently DROP a
   // line the staffer just explicitly confirmed (Codex blocker 2026-07-13).
-  const submitPurchases = async (itemsOverride) => {
+  // review: { flagged?: lineId[], unverified?: lineId[] } — lines whose cost we
+  // could not trust. They still save; the note carries why, so the row is
+  // findable later instead of merely wrong. Keyed on the line's own id rather
+  // than its position, because validItems below drops lines and positions shift.
+  const submitPurchases = async (itemsOverride, review = {}) => {
+    const flaggedIds = new Set(review.flagged || [])
+    const unverifiedIds = new Set(review.unverified || [])
+    const reviewNote = (item) => {
+      const marks = []
+      if (flaggedIds.has(item.id)) marks.push(`${NOTE_FLAGGED}: unit cost far from what we have paid — sent for backend review`)
+      if (unverifiedIds.has(item.id)) marks.push(`${NOTE_UNVERIFIED}: no prior cost or stock to check this against`)
+      return [item.notes, ...marks].filter(Boolean).join(' | ') || null
+    }
     if (!header.acquirer_id) {
       addToast('Please select an acquirer', 'error')
       return
@@ -349,7 +418,7 @@ export default function PurchasedItems() {
           currency: header.currency,
           cost_usd: costUSD,
           status: 'Purchased',
-          notes: item.notes || null,
+          notes: reviewNote(item),
           // Tracking lives on each acquisition row (header-level concept duplicated
           // per row for query simplicity — the daily AfterShip cron just needs to
           // find rows with tracking_number IS NOT NULL).
@@ -782,7 +851,12 @@ export default function PurchasedItems() {
             </div>
           </div>
 
-          <button type="submit" className="btn btn-primary w-full" disabled={submitting || totalItems === 0}>
+          {/* checkingCost keeps the button dead during the reference lookup.
+              handleSubmit awaits before `submitting` is ever set, so without it
+              a second click during that gap starts a whole second insert and
+              the purchase lands twice under two batch_ids. */}
+          <button type="submit" className="btn btn-primary w-full"
+                  disabled={submitting || checkingCost || totalItems === 0}>
             {submitting ? <div className="spinner w-5 h-5 border-2"></div> : <><Save size={20} /> Log {totalItems} Purchase(s)</>}
           </button>
         </div>
@@ -811,10 +885,99 @@ export default function PurchasedItems() {
             const normalized = lineItems.map(it =>
               it.product_id && isZeroCostLine(it) ? { ...it, cost: '0' } : it)
             setLineItems(normalized)
-            submitPurchases(normalized)
+            // Back through the cost gate, not around it. The confirmed-zero
+            // lines have no cost to judge and drop out on their own; the rest
+            // of the batch still gets checked.
+            runCostGate(normalized)
           }}
         />
       )}
+
+      {costSanityConfirm && (
+        <CostSanityConfirmModal
+          lines={costSanityConfirm.lines}
+          onCancel={() => setCostSanityConfirm(null)}
+          onEscalate={() => {
+            const r = costSanityConfirm
+            setCostSanityConfirm(null)
+            submitPurchases(r.items, { flagged: r.flagged, unverified: r.unverified })
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// CostSanityConfirmModal — per-unit cost is far from what we already paid
+// ============================================================================
+// Shows the arithmetic rather than a verdict. "$2.33 per unit, but we hold 45
+// at $140" lets a staffer see in one glance whether they typed a per-box price
+// into a total, which is the mistake this exists to catch — 38 intakes before
+// 2026-06-24 carry it, and FB03 has sat at 1/60th of its real cost since June.
+//
+// This one BLOCKS. There is no "the cost is right, submit" button, because that
+// is the button a hurried staffer presses and FB03 goes on the books at $2.33
+// anyway. The two ways out are fixing the line, or handing it to the backend.
+//
+// The escalation is not decoration — a gate with no exit gets satisfied by
+// typing whatever number clears it, which is worse than the original mistake
+// because it looks verified. Escalating saves the purchase, marks the row
+// COST_FLAGGED, and makes it our problem instead of a fabricated number.
+function CostSanityConfirmModal({ lines, onCancel, onEscalate }) {
+  const money = (n) => `$${Number(n).toLocaleString(undefined, {
+    minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-gray-800 rounded-lg p-6 max-w-lg w-full border border-yellow-600/50">
+        <h3 className="text-lg font-semibold text-yellow-400 mb-3">
+          Check the cost on {lines.length === 1 ? 'this line' : 'these lines'}
+        </h3>
+        <div className="space-y-3 mb-5">
+          {lines.map((l) => (
+            <div key={l.num} className="bg-gray-900/60 rounded p-3 text-sm">
+              <div className="text-gray-200 font-medium">
+                Line {l.num} — {l.name}
+              </div>
+              <div className="text-gray-300 mt-1">
+                You entered <span className="text-yellow-300">{money(l.unit)}</span> per unit.
+              </div>
+              <div className="text-gray-400">
+                {l.source === 'inventory'
+                  ? `We hold ${l.units} at ${money(l.known)} each.`
+                  : `Last purchase was ${money(l.known)} each${l.lastDate ? ` on ${l.lastDate}` : ''}.`}
+                {' '}That is {l.ratio < 1
+                  ? `${(1 / l.ratio).toFixed(1)}x cheaper`
+                  : `${l.ratio.toFixed(1)}x more`}.
+              </div>
+              {l.ratio < 1 && (
+                <div className="text-gray-500 mt-1">
+                  If this line is a whole-order total, switch it to Total — saving a
+                  per-unit price as a total is what put FB03 on the books at $2.33.
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="text-xs text-gray-500 mb-4">
+          If you cannot resolve it, send it over — the purchase still saves, the
+          cost is marked unverified, and we price it.
+        </div>
+        <div className="flex gap-3 justify-end">
+          <button
+            onClick={onEscalate}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded"
+          >
+            Send to backend for review
+          </button>
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded"
+          >
+            Go back and fix
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
