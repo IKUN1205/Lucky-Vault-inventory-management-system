@@ -319,9 +319,13 @@ export default function StorefrontSale() {
         if (!ok) return
         adjust = true
       }
+      // Increment from `prev`, not from the render-time `nextQty` — the same
+      // race already fixed on the singles path below. Two scans off one render
+      // both compute 2, the second overwrites instead of adding, and a box is
+      // sold without being charged or deducted.
       setCart(prev => prev.map(l =>
         (l.kind === 'sealed' && l.product.id === product.id)
-          ? { ...l, quantity: nextQty, stock_adjust: adjust }
+          ? { ...l, quantity: (l.quantity || 1) + 1, stock_adjust: l.stock_adjust || adjust }
           : l
       ))
       addToast(`${product.name} ×${nextQty}${adjust ? ' (stock will be corrected)' : ''}`, adjust ? 'info' : 'success')
@@ -1118,6 +1122,9 @@ export default function StorefrontSale() {
                     )}
                     {b.fixable === 'stock_adjust' && (
                       <span className="text-gray-400"> · scan the extra copies and confirm the prompt to correct stock</span>
+                    )}
+                    {b.fixable === 'move_stock' && (
+                      <span className="text-gray-400"> · record a Move into Front Store or Master first — the register can only sell from those two</span>
                     )}
                   </li>
                 ))}

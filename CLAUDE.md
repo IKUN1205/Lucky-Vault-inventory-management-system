@@ -1,7 +1,128 @@
-# LV Inventory — 作业手册 brief (2026-08-05)
+# LV Inventory — 作业手册 brief (2026-08-12)
+
+## ✅ 8/12 单卡入库已打通 + 定为常规流程(Gary:"修 并且未来每一次singles录入 都走这个流程")
+- **批次 3eba1cb5cefa 已全部入库**:bump 42 · insert 37 · **79/79 个 tcg_id 现在都有活行,79/79 都有成本**($2,285)。收银台扫得到了。
+- **`singles_intake_batch.py` 现在是每批必跑的一步**,不是补救工具。加了 **`--job` 分阶段幂等台账**(`data/singles_intake_applied.json`)。
+  - **幂等按 job 不按行** —— 一批里本来就会有同一张卡两张,光看行分不出"真的第二张"和"重放"。
+  - **必须分阶段记**:第一次跑 42 个 bump 成功、37 个 insert 全挂,整job台账会让重跑**把 42 个数量加第二遍**(bump 是读-改-写,重放完全无痕)。现在 bump/insert 各自记各自的。
+- **一次跑通踩了三个 400,全是猜列型踩的**:① `quantity` 是**整数列**,传 `2.0` 直接 22P02 ② `card_number` **NOT NULL** ③ `set_id` **NOT NULL**。`send()` 原来把 PostgREST 的错误正文吞了,只报 "HTTP Error 400" —— 已改成把 `message` 带出来(`details` 是整行 dump,会把真正的原因挤掉)。
+- **`card_number` / `variant` 必须照抄 sync 路由的 `parseCardText`**(已 port 成 Python):它是从**卡名文本**里找第一个像号码的 token 切出来的,所以库里才会有 `card_number = 'Arcanine'`。自己发明会让本地建的行和 cron 建的行长得不一样。
+- **`singles.variant` 已被占用**(存 `IR BLK` / `SWSD` / `PR` 这类,951 行),**不能拿 `Printing=Holofoil` 去盖**。印次和来源改写进 `notes` 的可 grep 标记:`PRINTING=` · `PRICE_SRC=` · `JOB=`(照 `RECOVERED_AT_COUNTER` 先例)。
+- **套按需建**(照 sync 路由 5a/5b):本批建了 5 个。套名形状难看(`58/102 (Celebrations Metal Card) - Miscellaneous Cards & Products`)但**那是既有约定**,46 个里 36 个早就是这个样子,这里"修正"会把每个套劈成两个。
+- **bump 原来只写成本不写市价** → 老行挂着 $0 却被按市价 80% 记了成本(85439 实测:成本 $14.51 / 市价 $0.00)。已改成**市价为空才填,有值不覆盖**(小时级 sheet sync 拥有那个数),存量 1 行已修。
+
+## 🔴 8/12 单卡入库这条路是断的(已修,记录病根)
+- **`api/sync-singles-sheet.js` 只插"库里没有的 tcg_id"**(注释原话 "NEW rows (TCG IDs not yet in DB) ARE inserted")。8/11 那批 82 张实体卡 / 79 个 tcg_id 实测:**已有 65 个 → 一个都不插,库里完全没有的只有 14 个**。**同一张卡第二次收进来,Supabase 完全没反应 —— 不插新行也不加数量,sheet 上有、库里没有。**
+- **其中 23 个 tcg_id 只剩 sold 行** —— 卡实实在在收回来了,系统里却只有"已卖出"记录。**扫码扫不到,收银台报 "Already sold"** —— 这是门店那个老毛病的**新来源**(和 5/26-7/14 那批遗留是两回事)。
+- 实证:**Supabase 里 8/11 和 8/12 新建单卡 0 行**,最新一条停在 8/10。货进来了账没动。
+- **本地补库工具 `inventory-sync/singles_intake_batch.py`(dry-run 默认,还没写)**:活行→加数量 · 只剩 sold→**新建活行(sold 行一个字不改)** · 全新→插入(**字段形状直接抄 sync 路由,不自己发明**)。这批算出来:**加数量 42 · 新建 37(只剩sold 23 / 全新 14)· 成本合计 $2,250**。
+- **成本口径:当天市价 × 80%**(Gary 8/12 确认沿用 8/10 定的口径)。**已有成本的行不覆盖** —— 派生数不许盖真实成本;**没市价的不填**。
+- **🔴 3 张"没市价"的查下来根本不是没有价,是价格被丢掉了**:`scripts/_batch4_ingest.py` 的 `parse_csv` 把 CSV 自带的 `TCG Market Price` / `Set Name` 存进 `csv_market` / `csv_set_name`,**然后全程只用来打日志,从不参与定价**(grep 只有两处 print)。market **只认抓 TCGplayer 页面**;抓失败就整行空 —— 而卡名和套号也来自同一次抓取,所以**一失败三样全丢**,套号空了还会把卡误判成 `modern set ()` 走错分支。eBay 成交填的是**另一列**,永远不会顶替 market(85439 拿到 5 笔成交,market 仍是 0)。
+  - 实证三张:`90507 Water Energy EX Emerald` CSV 写着 16.69 · `85439 Fighting Energy` 写着 18.14 · `709972 Chespin-058` 写着 8.39,**而且 CSV 连 `Printing=Holofoil` 都给了** —— 709972 的 TCG Normal 无人挂牌只有 Foil $7.75,我们那条"只认 Normal"的保险在这里**拦错了,因为输入已经写明是闪版,不需要猜**。
+  - **已修**:`csv_fallback_card()` —— 抓不到就用 CSV 自己的 name/set/number/price 建行,标 `price_source=csv_export`。**故意不装成抓取结果**:`recent_sales` 留空(导出给的是价不是成交,假造 comps 会绕过 CHECK EBAY)、`set_abbr` 留空(abbr 映射不全,vintage 只能靠猜 —— 宁可少报也不断言)。TSV 末尾加 `printing` / `price_source` 两列(两个消费方都用 `DictReader`,加尾列看不见)。46 用例,**跑的是真的那份 CSV 不是 fixture**。
+  - **`scripts/backfill_tsv_from_csv.py`** 修已生成的批次:那三行连**卡名都丢了**(表格上就叫 "103/106"),已补回 name/set/price,回读 82 行**零无市价**。顺手修了 `parse_csv` 只剥带斜杠号码的问题(`Chespin -  058 058` → `Chespin 058`)。
+
+## 🔴 单卡价格有多薄 + CHECK EBAY 标记(8/12 上线,Gary:"有一些价格比较少见的 要推荐他们ebay查价 比如说日本的vintage以及high end")
+- **实测所有已完成批次 106 行:3 笔成交 64 行(60%)· 2 笔 9 行 · 1 笔 14 行(13%)· 0 笔 19 行(18%)** —— **我们发出去的价格里三分之一是靠 ≤1 笔成交定的**,而表格上 $515 的卡和 $2 的卡长得一模一样,看不出背后有几笔。**vintage 更极端:25 行里 22 行(88%)只有 ≤1 笔。** Gary 的直觉是对的,而且比他说的更严重。
+- 最贵的两张正好在这一档:**Base Set Charizard $515.63 = 一笔成交定价** · **Erika's Dragonair $387.00 = 零笔**。
+- **`price_confidence.py`(新,纯函数)** + 32 用例。规则:没市价→must(不看金额)· **high end ≥$100 → 一律要人看**(两边加起来 ≤2 笔 = must)· ≥$20 且 ≤1 笔 / vintage 薄 / 日文薄 → should · **<$20 一律闭嘴**。
+  - **两条设计是为了不让它变成墙纸**:① `LOW_VALUE_USD=20` —— $2 的普卡就算零成交也不报,**错的钱比人花的时间少** ② 管线**已经抓到 ≥3 笔 eBay 成交就不再叫人去查 eBay**(vintage/JP 本来就会自动查)。
+  - **但 high end 不吃第二条豁免,顺序是特意排在前面的**:$500 的卡上,自动抓来的 comps 正是我们想让人去质疑的东西,不是跳过的理由。第一版把豁免放前面,Charizard 和 Dragonair **两张都被静默掉了**,是拿真数据跑才发现的。
+- 落点在 **sheet 的 C 列**(团队真正看价的地方):`=HYPERLINK(<eBay sold 搜索>,"$515.63  <- CHECK EBAY (high value)")`,链接带 `LH_Sold=1&LH_Complete=1` 且 **`-psa -bgs -cgc` 排掉评级卡**(和抓取器的 `_GRADED_TOKENS_RX` 看同一批货)。
+  - **坑:标记里绝对不能出现数字,价格必须排在最前面** —— `api/sync-singles-sheet.js:116` 的 `parseDollar` 是 `String(s).match(/[\d.]+/)` **取第一个匹配**,标记里写 "1 comp" 就会把市价读成 1。测试里钉死了这条。
+  - **不新开列**:col I 已被 sync 路由当 Status 写。行仍是 8 列,F 列(`_verify_row` 每次写完校验的那列)不动。
+- `scripts/price_check_report.py` —— 出「这批要复核」清单,可 `--lark` 跟在"labels are ready"那条后面发。**表格标记会留着,但表格要人记得去开;消息才会撞到人。**
+- 实跑 106 行:**标出 12 行(11%),必须复核 3 行,涉及记价 $1,854**。那 3 张 must 正是上面抓价失败的三张(写 `no market price`,**不编数**)。
+- 测试:`scripts/test_price_confidence.py` 32 用例(一大半在验"什么时候必须闭嘴")+ `scripts/test_sheet_row_check.py` 18 用例(**跑真的 `build_sheet_row_tsv`**,钉住 8 列 / F 列单引号 / parseDollar 仍读得出价)。
+
+## 🔴 日本发货报告简写 + 运单看守(8/12,Gary:"日本这个report 也简写 只需要set名字 / tracking 记得加入 可以cron检查")
+- **报告简写已改(app 侧,待 Codex + 发版)**:`api/lark-notify.js` 加 `shortSetName()`,行从 `One Piece | [JP] THE AZURE SEA'S SEVEN (Case) | Booster Box | JP × 1` 变成 `THE AZURE SEA'S SEVEN (Case) × 1`。**`(Case)` 在 set 名里,所以整箱和单盒仍分得开**(同一条消息里 TIME OF BATTLE 的 Case 和非 Case 并存,已验)。`[JP]` 去掉 —— 日本发来的每一行都是 JP,**非 JP 才是意外,所以只去 JP 这一个标**。发送侧 `JapanShipments.jsx` 加 `setName`,`name` 保留;builder 认不到 `setName` 时**回落切第二段**,老 payload 照样短。
+- **缺运单不再静默**:原来 `if (trackingNumber)` 什么都不打,和"这票不需要运单"长得一样。现在明写 `⚠️ Tracking: NOT PROVIDED — nobody can watch this box`。
+- **`inventory-sync/jp_shipment_watch.py`(新,只读)**。实测 28 票:
+  - **🔴 已送达、系统里零收货记录:3 票 / 156 件 / $28,441** —— `875218962982`(78 件 Storm,8/04 送达)· `875140436410`(75 件 Storm,8/01 送达)· `875084488540`(3 件)。**就是那 148 盒 Storm 躺在 LA、Master 记 0、eBay 还在从 Master 发货的实证。**
+  - **判"到没到"必须以入库为准,不以承运商扫描为准**。我第一版只看 `tracking_delivered_at`,报出 **21 票"无到货扫描"**,其中一大半货早就收进 Master 了 —— 17track 对 JP FedEx 号不钉承运商就瞎(见 8/04 那节),**缺扫描说的是我们追踪器的毛病,不是箱子的**。改成"收够了就算 DONE" 之后 21 → **9**。
+  - **两个收货来源分开看**:`acquisitions.quantity_received`(计数器,大面积没人维护)vs **`receipts` 按 `acquisition_id` 的真行**(Intake to Master 写的,缺失才是证据)。两者不一致单独列 —— "账没记" 和 "货没收" 要找的是不同的人。
+  - 运单号填写率实测 **91/91 = 100%**,notes 里藏号的 0 条。**号一直在库里,是报告没印。**
+
+## 🔴 单卡:库存增长值 vs 花的钱(8/12 上线,Gary:"做一个singles 库存增长值 去对比花的钱")
+- `inventory-sync/singles_growth_vs_spend.py`(只读)。近 30 天:**实付 $5,263(其中判定为单卡 $4,030)· 新建单卡 402 行/484 张 · 市价 $13,253 · 有成本的只有 17%**。
+- **🔴 最值钱的一条:实付 / 市价 = 30%,而我们入库成本口径写的是 80% —— 差 2.6 倍。** 如果 30% 接近真实收卡价,那按 80% 记成本会把每张单卡的成本记高、毛利记低。两个数各有噪音(钱可能买的是窗口后才扫的卡、卡可能来自拆盒),**但 2-3 倍的差不是噪音**。**待 Gary 定口径。**
+- **推翻 CLAUDE.md 原来的说法**:买入行不是只有 "Bulk buy: N cards"。`product_type` 确实 246 行全 null,**但 notes 前缀带品类而且点名了卡** —— `BUY: single — Trubbish IR WHT`(122 行)· `BUY: slab`(7)· sealed(4)。所以"花在单卡上的钱"分得出来,不必拿 sealed 的钱去比单卡。
+- **符号约定是查出来的不是猜的**:`buy` 行 **134/134 全负**、`sale` 733 行全正 → 负 = 现金流出;`trade` 两个方向都有(44 负 / 42 正)。**总额只用按 transaction 去重的 `net_cash_usd`**;`sale_price×qty` 只用来做**同一笔交易内部**的品类占比折算(总额用它就是 $151,608 那个错)。
+
+## 🔴 8/12 门店卖出/退货实测(用 app 真代码跑,不是复刻)
+- 方法:`esbuild` 把 `src/lib/supabase.js` 打包成 ESM(`--define:import.meta.env='{}'`,文件里 URL/anon key 有兜底字面量)在 Node 里直接调真函数。**复刻只能证明我理解得对,证明不了代码是对的。**
+- **退货 = 加新库存,不是撤销销售(Gary 8/12 拍板:就这样,没有更好的办法)**。`processReturn` 实测:一张**从没卖过**的卡扫一下就 `qty 1→2`;不核对任何销售记录;`sale untouched`。落点默认 Master,**但 Returns 页有落点下拉框**(我测试时没传才默认的,不是 bug)。
+- **🔴 `preflightStorefrontCart` 原来是 fail-OPEN**:它只校验**认得**的行(`l.single?.id` / `l.slab?.id` / `l.product?.id`),形状不对的行既不产生 blocker 也不产生 source → **购物车通过一道从没看过它的闸门,写入时才崩 = 钱收了货没记**,正是这个函数存在要防的事。我是照 `submitStorefrontTransaction` **自己那行过时的注释**(`productId|slabId|singleId`)传参才掉进去的。**已改:认不出的行 = blocker**;注释也改了。测试 42 passed(原 34 + 新 8,含"正常形状必须照常通过"和"buy 依然豁免")。
+- 测试残留:`returns` 表 3 行,notes 全是 `CLAUDE_SELL_REVERSE_TEST`。**这张表没有软删列**,按硬删禁止留着了 —— **任何退货报表要排掉这个标记**。库存已全部还原并回读。
+
+## 🔴 8/12 门店买入侧:钱和卡两条轨接不上(Gary 决定暂不修)
+- 近 30 天:**buy/trade 119 行 / 60 笔交易,我们付出去 $5,263**(按 transaction_id 去重算 `net_cash_usd`;**别用 `sale_price×qty` 加总,trade 有来有回会重复计,我第一次报的 $151,608 就是这么错的**)。**行里带 product_id 的只有 38/119**。
+- 同期**新建单卡 365 张,有成本的 0 张**。
+- 这是**设计上的两条轨**:`StorefrontSale.jsx` 的 buy 行只有自由文本(`Bulk buy: N cards (pending Cards Scan intake)`),卡的身份留给 Cards Scan 后补。问题是两条轨从来没接上 —— **门店记住了钱,Cards Scan 记住了卡,中间没有任何东西连起来**。
+- CLAUDE.md 里早就设计过的"Cards Scan 加来源交易下拉" —— **Gary 8/12 明确不做**。
+
+# (以下为 8/11 及更早)
 
 本文件每次会话自动加载 = Gary 要的"运行前 brief"。**每次大改动当场更新此文件,版头日期=最后更新**。
 工作区:app 仓库 + `../tiktok` + `LV Agents/inventory-sync`(+ slab-inventory、lv-finance)。老板 = Gary,中文回复,代码/路径英文。**Lark 消息一律英文、段落单换行**(空行被 Slate 转零宽字符 → composer 校验拒发)。
+
+## 🔴 8/10 三件最要紧的(其余细节见下面各节)
+1. **`jp_to_us_shipment` 的 85 行成本是重复计的 = $198,879 = acquisitions 总额的 23%**。发货 ≠ 进货,但这些行每行都带 cost。铁证:7/31 那张运单 75 盒记 **¥28,998**,而 7/30 供应商真实进价 **¥28,999** —— **差 1 日元,是把同一个进价抄了一遍**。连带 `avg_cost_basis` 被最后一张运单覆盖(日本仓 Storm 189 盒记 $162.70,真实均价 $123.79)。**待 Gary 问清这些行是谁建的、为什么带成本,再动。库存数量没受影响(inventory 是另一张表),中毒的只有成本/毛利。**
+2. **singles 有 783 行是 7/28 实物 audit 找不到的货,系统里仍显示在库**(871 件 / 记价 $16,253,793 件挂 Front Store)。VPS 侧当天把 Master sheet 从 1,272 张 full-replace 成 150 张,而 `api/sync-singles-sheet` **只同步价格 + 插新行,从不删行** → sheet 改对了、Supabase 一行没动。**实证:这 783 行 100% 建于 7/28 之前,7/28 之后建的 0 行。** app 读的是 Supabase 不是 sheet,所以收银台仍能扫出来卖。
+3. **门店拆卖修复至今没上线**。`20f1d5b` 在分支 `fix/storefront-checkout-integrity`,**未合并进 main → Vercel 没部署**。`shouldSplitSingleRow`、`sold_override` 在 main 上都不存在。Codex 三轮审完判 SHIP,34+12 用例过。**只差一次 merge。**
+
+## 8/10 定的口径与新上线的东西
+- **价格是动态的(Gary 8/10:"7/30的是当天的价格 是贵的 我们价格会dynamically 变化")**。所以 **"成本 vs 今天市价" 量的是市场漂移,不是买得好不好**,两个问题必须分开叫;判断买入质量只能用**买入当天**的市价。这条反过来证明 buy_requests 里 `market_price/market_ratio` **存快照不实时算** 的设计是对的 —— 不存快照,比值过两周自动变成假的。
+- **日本进货均价(只算 `jp_vendor`,已排除上面那批重复行)**:密封整盒 **1,677 盒 / $202,471 / ¥18,019 一盒($120.73)**;拆封盒 ¥14,767 · In Bag ¥12,480 · 散包 ¥372 · 整箱 ¥220,053。**最近一周 Storm 实际进价 ¥17,999–18,999,今天買取 ¥18,500 → 93–103%,买得很准**;均价被 7/30 那 248 盒(¥29,000–32,000)拉高,那是当天的市场价不是买贵。
+- **slab 成本一律留空(Gary 8/10)** —— 很多评级卡是我们自己送评的,没有成本核算系统,硬填就是编数据。**单卡成本 = 入库当天市价 × 80%**(Gary 8/10 定;之前 TCG×0.8 回填 50 行是同一口径)。
+- **kaitori 映射已钉 16 条 + Storm Emeralda 补了 sheet 行**(POKEMONJapan `A48:B48`)。`ストームエメラルダ` 原本 4 条全 null —— **不是没人钉,是 sheet 上根本没有可钉的目标**,而板子每天都在报价。现验证:`買取 ¥18,500 (Runto 8/10)`,Abyss Eye ¥8,200 / Inferno X ¥20,500 / Mega Dreams ¥13,600 一并接通,匹配行数 44→48。**坑:`resolve()` 里 `if title in ja_map: return ja_map[title]` 在 substring fallback 之前,所以一条显式 null 会主动挡掉本来能匹配上的名字。**
+- **eBay `_is_multi_set` 补了宝可梦日版 M 系列**(`scripts` 外,`inventory-sync/ebay_bin.py`)。Storm 报 $82.99 是"菜单挂单"(`M1S M1L M2 M2A M3 M4 M5 M6` 一条标题堆 8 个套),修完 **$124.97**。**代号必须带 `\b`** —— 单字母 `m` 不加词边界会把 "Team 10" 认成 M10。14 用例。
+- **EN sealed 每日行情已开始存**:`inventory-sync/price_watch.py` → `data/pricing_hist/YYYY-MM-DD.json`,挂在 `master_check_pipeline` **stage1 之后、Codex 之前**(表写不写和市场怎么走是两回事;Codex 挂了那天行情一样真实),整段包在 try 里(**watchdog 不能搞挂它监视的管线**)。同时存 `market`(TCG 原始)和 `value`(我们推导的),不合并。日对比搭在管线原有发送闸门上,不新开 alert。
+- **`master_check_pipeline.stage1_price` 原来是 `print(r.stdout[-2000:])`** —— 7/03 起每天只留表格尾巴约 16 行/170,表头 39 次运行只出现过 1 次,**日志因此永远无法回读成价格序列**。已改 `[-20000:]`。抢救出来的残余单独放 `data/pricing_hist_partial.json`(21 个产品有完整 39 天),**故意不进 `pricing_hist/`** —— 16 行的快照混进 170 行的序列会让每天报出 154 个"新产品",比没有更糟。
+- `kaitori_board_history.json` 加了 `_meta` 时间戳(顶层单独 key,进日期逻辑前先 pop,prune/上一天计算不受影响),记的是数据自己的 `ts` 不是渲染时刻。
+
+## 🔴 lv-singles 服务修复 + 写入器重写(8/11)
+- **`lv-singles.luckyvault.us` 502 的两个真病根,都不是 Gary 关的那三个任务**:① `LV Singles Webapp` 任务的 **WorkingDirectory 是空的**,而它跑 `python -m webapp.main` —— 从 System32 找不到模块,`LastTaskResult=1`,**从 8/06 20:58 起每次都失败** ② **根本没有 singles 的隧道任务**,跑着的 cloudflared 挂的是 `config-slabs.yml`,所以哪怕 webapp 起来了公网还是 502。
+- **这套东西 100% 跑在 Gary 本机**(FastAPI :8080 + AdsPower + Cloudflare 隧道只做转发),**没有 VPS**。`lv-singles.luckyvault.us → localhost:8080`,配置 `~/.cloudflared/config.yml`。
+- 已建两个新任务:**`LV Singles Tunnel`** + **`LV Singles Webapp Fixed`**(登录时启动、失败重试 3 次、WorkingDirectory 设对)。**旧的 `LV Singles Webapp` 删不掉也停不掉 —— 它的 RunLevel 是 `Highest`,改它必须提权;但新建任务不需要提权。** 它一直失败所以无害。
+- **🔴 写入器的 gviz 差一行是会删数据的(8/11 查实)**。`sheet_streamer` 原来用 gviz 定位空行,而 **gviz 会丢掉中间的空行**,行号从此和真实 sheet 对不上。8/11 那批算出的"下一个空行 A777",**真实 777 行上坐着一张 $1,190 的 Mega Gengar ex**;而 `_row_is_empty` 查的是同一个 gviz 视图,**看的是另一行**,所以那道"绝不覆盖已有行"的保险形同虚设。**是粘贴一直失败才挡住了这次覆盖。**
+- 写入原本走 **`pyperclip` + 浏览器合成 Ctrl+V**(`_paste_at`),依赖剪贴板所有权和窗口焦点,**失败时完全静默**。已全部改成 `sheets_api`(服务账号,真实行号,`read_range` 保留空行为 `[]`),**不用浏览器、不用剪贴板、不用焦点**。对外接口 `open/_paste_at/write_row/close/next_row` 一个没变(5 处调用方)。测试 `scratchpad/test_writer.py` **6/6 过**,关键一条:`_row_is_empty(777)` 现在正确返回 False。
+- **坑:`sheets_api.append_rows` 的两个默认值对我们是错的** —— `last_col="I"` 而我们的行是 8 列(A–H),会串列;`max_scan_row=1000` 而 New Singles 已经 860 行,**扫描上限用满时 last_filled 会卡住,下一次 append 直接覆盖真数据**。`sheet_streamer` 里设了 `SCAN_ROWS=20000` 并在触顶时抛错。
+- **8/11 那批的抢救**:79 张 CSV / 82 张实体卡,**查价 79/79 全成功、写 sheet 79/79 全失败**。价格一直在 `data/webapp_<job>.tsv` 里,所以**没有重跑那 26 分钟** —— 新工具 `scripts/push_tsv_to_sheet.py` 直接把 TSV 推进 `A778:H860`,回读 83 行零错,市价合计 $2,812。标签 PDF 82 张本来就生成好了。
+- 坑:**tab 名 `New Singles ` 尾部那个空格是真的**;写成 `New Singles`(无空格)时 **gviz 不报错,而是静默返回 `Master Singles` 的内容**。
+- 群里已发两条(Gary 批的):提交时 "batch received / running / expect a few hours",完成后 "82 cards priced and written / labels are ready"。**"完成"那条只能凭回读的实数发,不能凭 job status —— 8/11 那批 status 是 DONE,而 sheet 上一行都没有。**
+- **端到端验过(job `7d721e740004`,两张自家卡)**:`sheet tab: 'New Singles' → 'New Singles ' (按 gid 反查)` · `next free row A861` · 两张都 `WROTE ✓verified` · 价格对得上参照(Sewaddle 旧 NM $20 → 新 $19.63;Espeon & Deoxys GX 旧 $115 → 新 $112.50)。**同一时刻旧代码瞄准的是 A860,那上面是刚写进去的 Arcanine。** 测试行已清(A861:H863),Supabase 未产生重复。
+- **重写时我自己引入两个回归,是测试抓出来的不是看出来的**:① `import sheets_api` 抢到了 **slab-inventory 那个同名模块**(webapp/main.py 把它加进了 sys.path),会往 slabs 的表写 —— 现在用 `importlib` 按文件路径加载并**校验 SHEET_ID**;② tab 名用了 job 里存的 `New Singles`(少尾部空格),API 直接 `Unable to parse range` —— 现在**用 gid 反查真实 tab 名**。
+- 日志:`run_singles_webapp.bat` / `run_singles_tunnel.bat`(20MB 滚动 + 启停时间戳),任务已指向它们。之前计划任务直接跑 python,stdout 丢失,连"邮件发没发"都查不到。
+- **🔴 两个运维坑(8/11 各踩一次)**:
+  1. **杀进程的过滤条件写成 `-notlike "*slab*"` 挡不住 slabs webapp** —— 它的命令行就是 `python.exe -m webapp.main`,**"slab" 只出现在工作目录里**。我因此把 8081 杀了,`lv-slabs` 502 了一阵。**按端口或 PID 杀,别按命令行关键词。**
+  2. **cloudflared 硬杀重启后,Cloudflare 边缘会有几分钟不往新连接器路由**。症状很好认:`ha_connections 4` 且 `request_errors 0`,但 **`cloudflared_tunnel_total_requests 0`** —— 连接器健康却一个请求都收不到,公网 502。**这时别再重启(我连着重启 4 次反而拖长了),等就行。** metrics 在 `127.0.0.1:20242/metrics`。
+
+## 单卡定价(8/10 大改)
+- **VPS 侧 singles 三个任务 Gary 已全部 Disabled**(`LV_Singles_Daily_Price_Refresh` 5am / `LV_Singles_Webapp` / `LV_Webapp_Watchdog`),查价号 k1bkogcy 已关,隧道还在(公网 502 是预期)。恢复见 `prompts/singles_handoff.md`。**所以从 8/10 起单卡价格 100% 不再更新。**
+- **`market_price_updated_at` 不能当新鲜度用** —— 它只在价格**变了**才盖新戳,价没变的行看起来"15 天没更新"其实是当前价。我拿它得出"每天只刷 30 行"是错的,Gary 纠正后实查:`/api/sync-singles-sheet` **每小时**跑(vercel.json),sheet↔Supabase 价格 **555/557 = 100% 一致**;Master Singles 的刷新日期列(表头写着 `Status`,**H/I 与表头错位,信数据不信表头**)264 行里 262 行 = 当天。
+- 两张 sheet 的分工:**Master Singles 263 行每天刷** · **New Singles 785 行日期停在 6/09–6/12,不在刷新范围** · 另有 **783 张两张都不在**(即上面那批 audit 孤儿)。
+- **`inventory-sync/singles_price_refresh.py`(新,默认 dry-run,还没写过库)**:走 `mpapi.tcgplayer.com/v2/product/<id>/pricepoints`,**纯 HTTP、不开浏览器、不占 AdsPower**(VPS 那套是 AdsPower 抓页面,和本地邮寄追踪抢同一个 k1bkogcy)。783 张 39 秒。三道防线,每道都是被真数据打出来的:
+  1. **优先 Normal**。`marketPrice: null` 只代表**当前没人挂**,不代表没有这个印次 —— 拿闪版价填,$9 的 Clefable 会变成 $122(+1256%)。
+  2. **卡名带 `ex/GX/V/VMAX` 的认闪版**(这类本就无普通版)。印证:Mega Charizard X ex 库里 $786 vs 闪版 $716(-9%)、Umbreon VMAX $292 vs $287(-1%)、Marshadow & Machamp GX $234 vs $233(-0.1%)。
+  3. **0.25x~4x 熔断**(抄 sealed 那条管线的 `0.4x-2.5x guard`)。拦下 `Umbreon ex $1.00 → $1,480.32`(1,480 倍)—— 这种幅度不是涨价,是身份对不上。
+  结果:**可写 591 / 待人工 63 / 只有闪版有价不写 128 / 取不到 1**。
+- **🔴 但还不能写**:591 行里大面积是 **+200~300%,规律太整齐**,不像市场变动。品相解释不成立(1,343 行里只有 4 张卡名带品相标签,`condition` 列全是 NM)。**验证方法(只读):拿 sheet 里那 560 张跑 `--include-sheet`,和 VPS 管线定过的价对照 —— 对得上说明方法没问题、那 783 张确实是旧价;对不上说明我的方法有系统偏差。**
+- 坑:`singles` 的市价列叫 **`current_market_price_usd`**;sheet 的 `Market $` 是**取整**的(`$1,139`/`$491`),整数不代表是人手填的占位符。
+
+## 进货成本闸门(8/12 上线,Gary:"我觉得可以拦截 thats why these is the gate")
+- **app 侧 `feat/intake-cost-sanity` 分支**(未过 Codex):`src/lib/costSanity.js`(纯函数,**测试跑真代码不跑副本**)+ `fetchCostReference()` + `PurchasedItems.jsx` 提交前比对。
+- **超出 1/3 ~ 3 倍 = 硬拦**,弹窗**没有"我知道对的,提交"按钮**。出口两个:改数字,或 **"送后台复核"**(采购照存,行上打 `COST_FLAGGED`)。**没有出路的闸门,结果不是填对,是编一个能过闸的数字** —— 那比原错更糟,因为看起来是核验过的。
+- **"判不了"是独立结果,不是通过**(Gary 戳出来的洞):我第一版"没参照就闭嘴",而 **FB03 在 6/13 正是第一次进货、没有任何参照 —— 会被静默放行**,正是它要抓的那一行。现在打 `COST_UNVERIFIED` 标 + 进待办。标记写进 `acquisitions.notes`(没列可加,照 `RECOVERED_AT_COUNTER` 先例,可 grep)。31 个测试,**一大半在验"什么时候该闭嘴"**(涨价2倍不报/买便宜一半不报/边界值不报/没参照不报)。
+- **服务端复查 `inventory-sync/intake_cost_watch.py`(只读,不用发版)**:对最近进货跑同样判定,**绕开 app 手工建的行也照抓**。**不比 `avg_cost_basis`(刚录的进货已被算进均价,等于自己给自己打分),只比钉价市价**。按买手分流通知(Frank 有 Telegram;Will/JAY/Mario 没有 → 只发 Gary 并写明"没送到本人")。每条只通知一次,**不让告警变成墙纸**。
+- **实测:近 30 天 0 条命中**(6/24 上线的 unit/total 开关确实在起作用);**拉到 100 天抓到 54 条**,证明探测器没坏 —— **"什么都没找到"也可能是探测器坏了,必须验**。
+- **`price_mode` 早在 6/24 就做了**(Gary 8/12 提的"团队只会算每个单独多少钱",默认就是 `unit`,保存时 ×qty)。FB03 是 **6/13** 的单,**早了 11 天**。问题全部集中在 6/24 之前。
+
+## 日本买取日报(8/12 上线,Gary:"通过telegram 给日本团队发 这样美国团队不需要知道")
+- `inventory-sync/kaitori_jp_digest.py` → **点对点发给 Hwa + Gaoyuan,不进任何群**。全量 48 个产品:**套号 + 日文名 + 買取价 + 前日比**,表头写買取店和シュリンク状态。**不发我们的进价**(Gary 8/12 定)。
+- 套号来源两条:`kaitori_set_codes.json` 的规则表(宝可梦)+ **从日文标题的 `【OP-15】` 直接抽**(海贼王,不用一套一条规则去维护)。**已补 `storm emeralda → M6`**(备份 `.bak_0811`)。
+- **坑:日期取自 history、价格取自 `kaitori_prices.json`,两边不同步就会拿一天跟自己比然后报"0 个变动"** —— **"没变动"和"没抓到"长得一模一样**。已加一致性校验,对不上就明说这天数据没抓全。
 
 ## 🚨 数据命脉铁律(Gary LOCKED)
 - **实查实报,永不虚报、不反推**;sleeved pack / booster pack / booster box 三种产品三种价。
@@ -42,6 +163,9 @@
 - 待办:① createProduct 加同 brand+language+type 的近名查重(建前提示"是不是这个?")② AddProduct 提交前剥掉 launch_name 末尾已有的类型词 ③ 存量 19 个合并/改名(**改 SKU 身份会当场改变直播间盘点清单,开播中别动**)。
 
 ## 自动化 crons(全走 run_*.bat:全路径 Python314 + `>> log 2>&1`;vbs 参数整路径一对引号)
+- **🔴 TikTok 的 `quantity` 数的是 listing 不是实物件数,倍数在 `sku_name` 里(8/11 查实)**。实证:OP-13 blister 一行 `sku_name="5 PACKS" / sale_price=114.99` —— 当成 1 件就是 **$137/片**(我们成本才 $17.25–19.50,差 7 倍),按 5 片算是 **$22.94/片**,对得上。**金额一直是对的,件数一直偏低。** 这就是 `tiktok_product_map.units_per_listing` 那一列的用处。
+  - **坑中坑:裸数字的 `sku_name` 是坑位号不是数量**。`$1 Dollar Start Packs` 每个 lot 用坑位号当 sku_name,当成数量后 84 个 listing 变成 **3,570 件 —— 平均 42.5,正好是 1..84 的平均数**,一眼看穿。现在**只认带单位词的**(`5 PACKS`/`3 BOXES`/`10 PCS`),裸数字一律记 1 并计入"未知倍数"计数,**件数只报下限,不猜**。
+- **8/11 新上线 `inventory-sync/tiktok_daily_sales.py`(只读,不写任何销售行)**:三个店的当日成交 vs `platform_sales` 实际入账,差额直接印成 `UNRECORDED: $X`。已挂进 05:40 日巡(`tiktok_sales(lines)`,整段包 try + `--no-tiktok-sales` 可关 —— **报表不能搞挂它监视的管线**)。每日快照存 `data/tiktok_sales_hist/YYYY-MM-DD.json` 攒成序列。首日(8/10)**353 件 / 商品价 $24,422 / 入账 $0**。坑:①`lark_send` 没有 `send()`,函数是 `post_by_name(msg, chat_name)`,而且**发群是对外的,必须显式 `--lark "群名"` 才发** ② 本机**没装 tzdata**,`ZoneInfo` 会假装成功后崩,所以自己按美国 DST 规则算 PT 偏移(写死 −7 到 11 月就错,和 `tracking_delivered_at=now()` 同一类 bug)③ 取价只认 `sale_price`/`original_price`,**取不到就报"N lines with no price",绝不当 0**。
 - 05:40 `daily_inventory_watch`(铁律+负库存+sold 哨兵+TikTok 挂牌审计+群线索;**8/3 加 storefront 对账**:每 tx 收款vs货品(sealed+singles+slabs,trade 按净额)/孤儿款/同品5分钟双录,跨窗口补录不误报,`--no-storefront` 可关;群 @当班播报未开待 Gary 批文案;异常自动 team_alert 到 Inventory In&Out,`--no-team` 可关)→ Telegram Gary
 - 9:00/14:00 Notify_Orders(Shopify→BACKEND CORE)· 周三 9:00 Weekly_Count_Reminder · **17:00 Arrival_Allocator(到货自动分房建议)** · Restock Radar(缺货拉侧,--lark 未开)· Stream_Notes_Digest
 - 周一 7:30 `LV_Manual_Price_Weekly`(manual_price_update.py:TCG 无匹配的 Shopify SKU 按 **130point eBay 成交中位**调价 —— eBay sold 搜索已需登录,130point 免登录;**只自动上调**,下调/±25% 熔断进人工审;查询词 `data/manual_price_queries.json`)
@@ -191,7 +315,15 @@
 - tokens `~/.tiktok/tokens.json` **三店**(PackHeadsTCG / RocketsHQ / VaultTcgAuction);products/search 用 `"ALL"`。
 - **8/5 实测推翻旧结论"95% 是 $1 坑位无 SKU"**(`_sku_coverage_probe2.py`,近 7 天):**每一条订单行都有 product_name,0 条为空**。PackHeads 855 件 / **34 个标题**,约一半是具名产品(OP-13 blister 74、CN jumbo 68、Marvel Masterpieces 51…),另一半是 `$1 START PACKS` / `Dollar Starts` 这类**坑位**;RocketsHQ 195 件 / 6 个标题,大头是 `PACK AUCTIONS!`,具名的只有 ~29 件;VaultTcgAuction 346 件 **100% 坑位**。
 - **结论:API 不能取代盘点,但能吃掉一半**。拍卖坑位的订单永远不知道实物是哪个 SKU(主播在直播里挑),这部分只能靠盘点;具名产品那部分应该自动扣减。
-- **`apply_orders_to_inventory.py` 早就写好了这套**(订单行→movements 到 `Sold - *` 虚拟房→扣库存→`tiktok_applied_lines` 幂等台账,只认 `reviewed=true` 的映射),**但四张表 `tiktok_orders/order_items/product_map/applied_lines` 从没建过(DDL=William),6 个 `Sold - *` 虚拟房至今 0 条 movement**。这是"盘点 expected 永远不含销量"的根因。DDL 已写好:`scripts/add_tiktok_order_sync_2026_08_05.sql`(含 `reviewed` 未审不生效的 CHECK、`units_per_listing` 处理 10-PACK листing、`is_slot` 标记拍卖坑位、补建 `Sold - TikTok Packheads` 房)。
+- **`apply_orders_to_inventory.py` 早就写好了这套**(订单行→movements 到 `Sold - *` 虚拟房→扣库存→`tiktok_applied_lines` 幂等台账,只认 `reviewed=true` 的映射),四张表 `tiktok_orders/order_items/product_map/applied_lines` 至今没建,DDL 在 `scripts/add_tiktok_order_sync_2026_08_05.sql`(含 `reviewed` 未审不生效的 CHECK、`units_per_listing` 处理 10-PACK listing、`is_slot` 标记拍卖坑位、补建 `Sold - TikTok Packheads` 房)。
+- **🔴 但 8/11 实跑 dry-run 推翻了"缺表是唯一阻塞"这个判断**(`scratchpad/tiktok_apply_dryrun.py` + `tiktok_room_truth.py`,只读)。三件事按顺序:
+  1. **`data/product_map_staged.json` 85 条映射 `reviewed` 全是 false** —— 而脚本只认 true。**四张表明天建好,能扣的行数也是 0。** 真正的关键路径是复核那 85 条,不是 DDL。
+  2. **直接补跑历史订单会把同一批货扣两次。** 近 14 天 PackHeads 只有 12 个映射产品有成交,其中 **10 个扣下去会变负**。查实原因不是映射错,是**盘点早就把这些房写到 0 了** —— OP-06 盒 `12→0`(8/04)、OP-10 盒 `7→0`(8/04)、PRB-02 `1→0`(8/07)、OP-04 盒 `6→0`(7/18),形状全一样。**盘点已经在充当销售扣减机制,库存数量其实是对的。** 所以上线必须带一个 **cut-over 时间戳,只认切换之后的订单行**;往前追等于毁真库存。
+  3. **真正缺的是钱不是量。** 那 12 个产品 `platform_sales` **全部 0 条**。
+- **🔴 TikTok 收入黑洞实测(8/11,`scratchpad/tiktok_revenue_gap.py`,近 14 天已排除 CANCELLED)**:PackHeads 1,336 单 / 1,688 件 / 商品价 $110,156 · RocketsHQ 396 单 / 423 件 / $7,603 · VaultTcgAuction 762 单 / 762 件 / $9,656 → **合计 2,873 件 / 商品价 $127,414(含运费税 $141,347)**。同期 `platform_sales` **0 行**;全表 155 行最后一条停在 **7/27**(eBay 111 / TikTok 31 / Shows 13)。**两周 $127,414 卖出去,系统里一分钱收入没有。**
+  - 自查过口径:取价函数的"回落到订单总额"分支 **0 行触发**,不存在多行订单重复计价。两个数差 9–15% 是运费+税,`sale_price` 是纯商品价 —— **报销量用商品价,报客人付了多少用订单总额,别混。**
+  - PackHeads 件数三分:**映射到 SKU 的只有 86 件**、有名字但没映射 843 件(37 个标题)、拍卖坑位 760 件(永远归不到 SKU)。最大的未映射项正是 **OP-13 blister 171 件**、Marvel Masterpieces 91、CN jumbo 68。
+- **`apply_orders_to_inventory.py` 上线前必须补的坑(8/11 读码查出,均未修)**:① 无 cut-over(见上)② `limit=2000`/`5000` 硬截断,踩 PostgREST 分页坑 ③ 扣库存是"读了再写绝对值",**无乐观锁**,并发会丢写 ④ **无负库存下限**,违反铁律1 ⑤ movement+扣库存写完才写台账,中间崩了下次会**重复扣** ⑥ `PH_ROOM` 写死,RocketsHQ / VaultTcgAuction 两个店根本没处理 ⑦ **全程不写 `platform_sales`** —— 就算跑通了,$127k 那个洞照样在。
 
 ## 盘点=销量尺(8/5 Gary:"这个数其实是为了上一个主播数的 就是对应他们的货卖掉了多少")
 - 盘点的本质是**给上一场主播算销量**:`sold = expected − actual`。**expected 一旦错,这把尺子就废了** —— 实物高于账面时 actual 永远 ≥ expected,该 SKU 每场都算出 `sold 0`,货照样往外走。**实测 7/25–8/6 Packheads 因此吞掉 91 件销量 ≈ $2,615 成本**(最干净的病例:OP-13 blister 三个人五次盘点 170→156→150→128,走了 42 片,系统记 0;`scratchpad/swallowed_sales.py`)。
@@ -200,6 +332,17 @@
 - **销案第二条(更重要):盘点后账被动过 = 这次观测作废,直接销案**。盘点是**带时间戳的一次观测,不是长期主张**;只要有人动过那个 SKU,旧观测就过期,真有问题下次盘点会再报。少了这条会出现"修完还在报":① **Journey Together 挂了三周 "+41"**,而 Aldo 7/17 00:24 **规规矩矩记了 Move 把那 41 包搬去 eBay LVUS** —— 账归零完全正确 ② **Ayakashi RocketsHQ "+26"** 是拿 Frank 8/5 **15:28 UTC** 那次去比 Aldo **18:20 UTC** 的更新数(Aldo 晚 3 小时),**写成 29 等于用旧数覆盖新数**。判定用 `created_at`(提交时刻)不用 `count_time`(可回填)。
 - **改完实测(8/6,`scratchpad/verify_open_surplus3.py`)**:**RocketsHQ 归零,一条警告都不剩,且一行库存都没覆盖** —— 两条都是误报。全系统只剩 **Packheads 8 个 / 95 件** + eBay LVUS Battle Styles +2 = **97 件**。Packheads 那批基于 JV 8/6 04:33 的数,脚本 `packheads_baseline.py` dry-run 通过,**写库被 classifier 拦两次,待 Gary 放行**。
 - 已知限制:`fetchInventoryForRoom` 用 `.gt('quantity', 0)`,**账归零的 SKU 会从盘点表消失**。正常卖光/搬走是对的,但万一实物还在就再也数不到。
+- **🔴 8/11「+197 discrepancies / sold 13」拆解(Gary 问"为什么数货还是错误",`scratchpad/count_197.py` + `op16_trail.py`,只读)。三个机制性原因,没有一个是盘点员的错:**
+  1. **最干净的证据 —— 20 件真销量当场被吞**。同一天同一 SKU:**05:47 JV 数到 458 → 12:53 Yaz 数到 438**,7 小时实走 20 件。但 expected 一直是 **270**,两次 actual 都高于 expected → 两次都判"多出" → **该 SKU 对 `sold` 的贡献是 0**。卡片上 `sold=13` 全部来自另外 3 个 SKU(OP-13 blister -10 / Azuki -2 / Blue Archive -1)。
+  2. **多出永不写库 → 差永不销案 → 每场原样重报**:OP-16 packs `05:47 +188 → 12:53 +168`、Uma Musume `+11 → +12`、Epic Seven `+1 → +1`。铁律2 原话"误差偏高只是反复唠叨",现在**这个唠叨已经淹掉真信号**。
+  - **⚠️ 算未销案总量必须带上 R2(盘点后账被动过就作废),否则虚高一倍**。我第一版漏了这条报成 457 件,实际:**粗算 457 / 20 项 → R2 该销案 374 / 14 项 → 真正未销案 197 件 / 9 项,全部在 Packheads、全部来自 8/11 Yaz 那一场**。误报里就有 **OP-13 blister +141**(盘点后 RocketsHQ 有 Move + 2 条进货动过)。`scratchpad/surplus_true.py` 是带全两条规则的版本。
+- **🔴 「多出是不是移库问题」判据(8/11,Gary 问)**:**移库漏记的话货只是记错了房,全系统总数是对的**;总数都不够就是没来路。按这个分,197 件里 —— **移库未记只有 3 项 / 9 件**(Ayakashi +6 有 Master 36+RocketsHQ 23 挂着 · FB03 +2 · Epic Seven +1),**查无来路 6 项 / 188 件(95%)**(OP-16 packs +168 数到 438 而全系统只有 270 · Uma Musume 盒 +12 数到 44 全系统 32 · Marvel Allegiance +4 · Prismatic Clash +2 · Kami's Island +1 · DanDaDan +1)。**结论:基本不是移库问题。**
+- **销案必须分两类走,不能一刀切(8/11 修正我自己的错误提议)**。我先提过"连续 2 场不同的人数到就按较小值写库" —— **那会给 OP-16 凭空造 168 件,就是编数据**。正确做法:
+  - **A 类(总数对、只是房间分错)可以自动销案**:修法是**记一笔 Move** 从有货的房搬到数到货的房,**总数一件不变**,不可能凭空造货。今天只有 9 件,风险接近零。
+  - **B 类(总数不够)永远不自动销案**,但要让它**变老而不是消失**:记首报日期+首报人+累计报了几场,**盘点页面不显示**(盲盘不能泄露 expected),日巡里单独列「欠单据清单」**按挂了多少天排序**。现在二十条混一起、每天长得一模一样,所以没人看。
+  3. **`Sold last session` 只覆盖被数到的 SKU**。这场只数 17 行,而同期 TikTok 一天出 ~120 件 —— 这个数被当成"上一场主播卖了多少"发进群,其实只是这 17 行负差之和。**别把它当销量报表。**
+- **+197 里 168 件(85%)来自一个 SKU:`5080eecb The Time of Battle Booster Pack - …(OP16) Booster Pack`**(正是 8/5 零查重造出来的重复名 SKU)。单据自己就对不上:`8/07 acquisition $152 received 0 (Purchased)` · `8/10 acquisition $1,995 received 210 ($9.50/包)` · `8/10 movement Master→Packheads ×270`(**比收到的多 60**)· **`receipts` 0 行**(从没走过 Intake to Master)· **`box_breaks` 0 行**,而 7/21×24 + 7/31×25 共 **49 个 JP OP-16 盒**进过这个房、现在全系统 0。**进 226 / 搬 270 / 实物 438,中间 168 件追不到单据 —— 不编解释**,只有问房里的人或全房复点能定。
+- **假设已排除**:Kami's Island `+1` **不是**重复 SKU 拆账(该系列 5 个 SKU 里只有 `3a468a57` 有货 328,其余全 0),就是正常小差。全库"名字把类型词写两遍"的 SKU 共 **16 个**,但只有 4 个还有库存(Kami 328 / OP16 270 / Awakened Pulse 12 / DanDaDan 6)。
 
 ## App(本仓库,Vercel,push=生产)
 - 只在 Gary 说"发"时 push;**所有改动过 Codex review(铁律 7/20)**。
@@ -209,7 +352,18 @@
 - 门店对账待办(8/3 群聊考古):Storm Emeralda 8/3 两笔$160(3箱$320,疑多录1箱)+ OP-13 blister 双$20 —— 待门店确认;"Buy 2 destined rivals bundles $110" 未入系统;7/24 19包 Paldean Fates 未扣(系统 Front Store 13 包,下次盘点实点);**每日 storefront 对账模块**(收款vs行/双录/幽灵扣减→群里@当班)方案已提待 Gary 批。盘点 found-extra 写入=过审制:8/3 Packheads 按 Trey count 写入4项多出+Pitch Black -1→0(备份 trey_recon_backup_0803.json)。
 - 历史疑案待门店确认:7/28 Pikachu ×3 $9、7/24 Elgyem ×2 $15 两笔 in_person 整行多张 sold —— 真打包卖 or 误全卖?误卖则拆回。
 - 房间名是硬编码字符串:改名/加房要全改 StreamCounts/Moved/OnlineOrders/PlatformSales/Returns + api/*(lark-notify/sheet 路由/日报周报)+ inventory-sync 脚本 + lv-finance/weekly_cogs。
-- William 待办 SQL:`scripts/add_inventory_audit_log_2026_07_23.sql` · product_prices · product image column。
+- **🔴 没有 William 了(Gary 8/11:"我们以后全面接手了 我们本地跑很多 没有will了")。DDL 现在没有执行路径**,实查:service_role key **只在 Vercel 环境变量里**,本地全仓库+全 `.env` 一份都没有;DB 密码/连接串没有;psycopg / psql / supabase CLI 都没装(npx 有)。**而且 service_role 也建不了表 —— PostgREST 只走表和 RPC,不执行 DDL。** GitHub 有(`IKUN1205/…`,Vercel 从它部署)但那给不了建表能力。项目 ref `dqreqevbjszercgackuc`。
+  - 要打通只需一个一次性凭证,推荐 **supabase.com → Account → Access Tokens → 生成 `sbp_...`**(纯 HTTP Management API,不用装东西);另一条是 Settings → Database 的连接串+密码(要先装 psycopg)。**存进 `inventory-sync/data/` 别贴聊天。**
+- **但 9 张表里真正非 DDL 不可的只有 `inventory_audit_log` 一张**(它要抓的是 app / Vercel 那一侧改库存,本地脚本站在外面看不见)。其余全部可以先本地跑:四张 TikTok 表(订单本来就是 API 拉的、map 本来就是 `build_product_map.py` 生成的、applied_lines 只是幂等台账,真正要写 Supabase 的 `movements`+`inventory` 早就有)· `buy_requests`(Frank 发 Lark→本地汇总→出 % 表)· `product_price_sources`(本地 JSON 按 product_id 索引就治好了按名字钉的病根,消费方 `erp_pricing`/`reprice`/`ebay_bin` 全是本地脚本)· `product_prices`(`price_watch.py`→`data/pricing_hist/` 已经是它的本地版)。**`Sold - TikTok Packheads` 房是 `locations` 插一行,不是 DDL,anon 就能建。**
+  - **代价说清楚**:本地台账成立是因为我们是唯一写方,换来的是 **app 看不见** —— "买入申请在 app 里提交"和"入库时提示无价源"这两个交互最终还是得进库。
+- 原 William 待办 SQL 清单(8/10 全部实查过,9 张表一张都还没建),按影响排:
+  1. `scripts/add_tiktok_order_sync_2026_08_05.sql` → `tiktok_orders` / `tiktok_order_items` / `tiktok_product_map` / `tiktok_applied_lines` + 补建 `Sold - TikTok Packheads` 房。**注意:8/11 已查实缺表不是唯一阻塞,见上面 TikTok 那节的三条。**
+  2. `scripts/add_buy_requests_2026_08_07.sql` → `buy_requests` / `buy_request_lines` / `buy_requests_outstanding`(视图)。`product_id NOT NULL` 就是治门店 buy 行 130/134 没产品那件事。
+  3. `scripts/add_product_price_sources_2026_08_10.sql`(**8/10 新写**)→ `product_price_sources` + `products_needing_price_source` 视图。**按 product_id 不按名字**(7 月给 164 个海贼王产品加前缀,286 条钉价里 90 条当场失效);带 `price_kind`(sale/ask/bid)区分成交价、要价、买取出价。
+  4. `scripts/add_inventory_audit_log_2026_07_23.sql` → `inventory_audit_log`(改库存零留痕)。
+  5. `scripts/product_prices_2026_06_29.sql` → `product_prices`。
+  - **`scripts/add_storefront_checkout_rpc_2026_08_09.sql` 标着 DO NOT RUN YET**(写入部分还是 TODO),别一起给。
+  - 另外 product image column + 存储桶(见 [[product-image-upload]])。
 - 产品图:`useProductImages.js` ← lv-slabs.luckyvault.us/kaitori/product_images.json(改磁盘即生效)。
 
 ## 群里 @ bot(8/7 Gary 问"有时候群里会被 at 你能看到吗")

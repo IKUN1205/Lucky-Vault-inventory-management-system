@@ -1548,10 +1548,30 @@ function buildJpShipmentCanceled(body) {
   return lines.join('\n')
 }
 
+// Gary 2026-08-12: set name only, not the full product string. A dispatch
+// list is read to answer "what is in the box" and every line already shares
+// the brand, the category and the language, so repeating them four times per
+// line buried the one word that differs. `(Case)` lives in the set name, so
+// a case and a plain box are still told apart.
+//
+//   before  One Piece | [JP] THE AZURE SEA'S SEVEN (Case) | Booster Box | JP × 1
+//   after   THE AZURE SEA'S SEVEN (Case) × 1
+function shortSetName(it) {
+  const explicit = (it.setName || '').trim()
+  // Fall back to the pipe-delimited product string a sender may still post:
+  // "brand | launch | category | language" — the launch is the set.
+  const parts = String(it.name || '').split('|').map(s => s.trim()).filter(Boolean)
+  let s = explicit || (parts.length >= 2 ? parts[1] : (parts[0] || 'Unknown'))
+  // Everything in a Japan→US shipment is Japanese; the [JP] tag is noise
+  // here. Any other language tag is kept, because there it IS the surprise.
+  s = s.replace(/^\[JP\]\s*/i, '').trim()
+  return s || 'Unknown'
+}
+
 // 📦🇯🇵→🇺🇸 Japan→US Shipment Dispatched
 // Shipper: Will
 // Date: 2026-05-21
-// • OP-13 Booster Box × 30  cost basis ¥150,000  (≈ $1,005 USD)
+// • OP-13 (Case) × 30  cost basis ¥150,000  (≈ $1,005 USD)
 // Total: 30 units / cost basis ¥150,000 (≈ $1,005 USD)
 // Carrier: Japan Post
 // Tracking: EE123456789JP
@@ -1582,7 +1602,7 @@ function buildJpToUSShipment(body) {
     const costStr = it.lineJpy != null
       ? `  cost basis ¥${Number(it.lineJpy).toLocaleString()}${it.lineUsd != null ? `  (≈ ${fmtUsd(it.lineUsd)})` : ''}`
       : ''
-    lines.push(`• ${it.name || 'Unknown'} × ${it.quantity ?? 0}${costStr}`)
+    lines.push(`• ${shortSetName(it)} × ${it.quantity ?? 0}${costStr}`)
   }
   lines.push('')
   const totals = []
@@ -1590,13 +1610,19 @@ function buildJpToUSShipment(body) {
   if (totalJpy != null) totals.push(`cost basis ¥${Number(totalJpy).toLocaleString()}`)
   if (totalUsd != null) totals.push(`≈ ${fmtUsd(totalUsd)}`)
   if (totals.length) lines.push(`Total: ${totals.join(' / ')}`)
+  lines.push('')
   if (trackingNumber) {
-    lines.push('')
     lines.push(`Carrier: ${carrier || 'Unknown'}`)
     lines.push(`Tracking: ${trackingNumber}`)
     const url = buildTrackingUrl(carrier, trackingNumber)
     if (url) lines.push(`Track: ${url}`)
     lines.push('⏳ US team — pending receive in Intake to Master')
+  } else {
+    // Say it out loud. A dispatch with no tracking used to print nothing at
+    // all here, which reads identically to a shipment that needs no tracking
+    // — and the daily watcher can only chase a box it can see.
+    lines.push('⚠️ Tracking: NOT PROVIDED — nobody can watch this box')
+    lines.push('Add the tracking number in Japan Shipments so it gets tracked.')
   }
   lines.push(`Time: ${nowUtcStamp()}`)
   return lines.join('\n')

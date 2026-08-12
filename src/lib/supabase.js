@@ -48,6 +48,79 @@ export const fetchUsers = async (canLogin = null) => {
   return data || []
 }
 
+// What we already believe a unit of each product costs, so an intake line can
+// be sanity-checked before it lands.
+//
+// The 2026-06-13 FB03 purchase was recorded as "60 units, cost 140" — a per-box
+// price of $140 typed into a whole-line total. Inventory has carried those
+// boxes at $2.33 ever since against a $161 market, which read as a 7,300%
+// margin on the Shopify listing. A sweep of intakes before the per-unit toggle
+// shipped (2026-06-24) found 38 rows with the same signature.
+//
+// Two independent references, because each covers what the other misses:
+//   basis    — the weighted avg_cost_basis across rooms holding stock. Strong
+//              when we already own some, absent for a first-ever purchase.
+//   lastUnit — the unit cost of the most recent completed intake. Works on a
+//              product whose stock has since gone to zero.
+//
+// Deliberately no market lookup here: pinned TCG ids live in a JSON file on a
+// workstation, not in the database, so the browser cannot reach them. Guessing
+// a reference would be worse than having none — a warning nobody can justify
+// just teaches people to click through.
+export const fetchCostReference = async (productIds = []) => {
+  const ids = [...new Set(productIds.filter(Boolean))]
+  if (ids.length === 0) return {}
+
+  const ref = {}
+  // Weighted average across rooms — a room holding 200 units should count for
+  // more than one holding 2.
+  const { data: inv, error: invErr } = await supabase
+    .from('inventory')
+    .select('product_id, quantity, avg_cost_basis')
+    .in('product_id', ids)
+  if (invErr) throw invErr
+  const acc = {}
+  for (const r of inv || []) {
+    const q = Number(r.quantity) || 0
+    const c = r.avg_cost_basis == null ? null : Number(r.avg_cost_basis)
+    if (q <= 0 || c == null || !(c > 0)) continue
+    const a = (acc[r.product_id] ||= { qty: 0, cost: 0 })
+    a.qty += q
+    a.cost += q * c
+  }
+  for (const [pid, a] of Object.entries(acc)) {
+    if (a.qty > 0) ref[pid] = { basis: a.cost / a.qty, units: a.qty }
+  }
+
+  // Most recent intake per product.
+  //
+  // Divide by quantity_PURCHASED: cost_usd is the total for the whole order,
+  // not for the part that has arrived. Using quantity_received inflates the
+  // reference on every partially-received row — the 2026-08-05 CN shipment was
+  // booked at 110 and only 30 shipped, which would have made the unit
+  // reference 3.7x too high and then flagged the next correct intake as
+  // suspiciously cheap.
+  const { data: acq, error: acqErr } = await supabase
+    .from('acquisitions')
+    .select('product_id, cost_usd, quantity_purchased, date_purchased, deleted')
+    .in('product_id', ids)
+    .order('date_purchased', { ascending: false })
+    .limit(2000)
+  if (acqErr) throw acqErr
+  for (const a of acq || []) {
+    if (a.deleted) continue
+    const q = Number(a.quantity_purchased) || 0
+    const c = Number(a.cost_usd) || 0
+    if (q <= 0 || c <= 0) continue
+    const slot = (ref[a.product_id] ||= {})
+    if (slot.lastUnit == null) {
+      slot.lastUnit = c / q
+      slot.lastDate = a.date_purchased
+    }
+  }
+  return ref
+}
+
 export const fetchVendors = async () => {
   const { data, error } = await supabase
     .from('vendors')
@@ -4619,6 +4692,41 @@ export const preflightStorefrontCart = async (
   const slabLines   = cart.filter(l => l.kind === 'slab'   && l.slab?.id)
   const sealedLines = cart.filter(l => l.kind === 'sealed' && l.product?.id)
 
+  // A line this function does not recognise must BLOCK, not slip past.
+  //
+  // The three filters above are the whole of what gets verified. Anything with
+  // an unexpected shape — a new kind, a refactor that flattens `product` to
+  // `productId` — silently contributes no blocker and no source, so the cart
+  // clears a gate that never looked at it and the writer fails afterwards:
+  // payment taken, nothing recorded. That is precisely the outcome this
+  // function exists to prevent, so "I could not check this" has to be a
+  // blocker, exactly like "this is already sold".
+  //
+  // Found 2026-08-12 by calling this with the shape the function's own doc
+  // comment described (`singleId` / `productId`) — every line went unseen and
+  // the checkout sailed through to a TypeError.
+  //
+  // Manual lines are the one shape that legitimately has nothing to check.
+  // `single_manual` / `slab_manual` are free-text lines (StorefrontSale.jsx
+  // adds one for "bulk" in sale/trade mode) that reference no inventory row at
+  // all — `_sellManualLine` writes a sale row and touches no stock. Treating
+  // "no nested record" as the error caught these too and made bulk-singles
+  // sales impossible, so the exemption is by KIND, explicitly: an unknown kind
+  // still blocks.
+  const NO_STOCK_KINDS = new Set(['single_manual', 'slab_manual'])
+  const recognised = new Set([...singleLines, ...slabLines, ...sealedLines])
+  for (const l of cart) {
+    if (recognised.has(l)) continue
+    if (NO_STOCK_KINDS.has(l?.kind)) continue
+    blockers.push({
+      key: l?.key || null,
+      name: l?.name || l?.single?.card_name || l?.product?.name || 'Unknown item',
+      reason: `Cannot verify this ${l?.kind || 'item'} — the line is missing the `
+        + `${l?.kind === 'sealed' ? 'product' : l?.kind === 'slab' ? 'slab' : 'single'} it refers to.`,
+      fixable: 'Remove the line and scan it again.',
+    })
+  }
+
   // Three round-trips regardless of cart size — this runs on every checkout.
   const [sRes, kRes, iRes] = await Promise.all([
     singleLines.length
@@ -4750,8 +4858,14 @@ export const preflightStorefrontCart = async (
     const have = reachable.reduce((s, r) => s + Math.max(0, Number(r.quantity) || 0), 0)
     if (have < need && !l.stock_adjust) {
       const elsewhere = rows.reduce((s, r) => s + Math.max(0, Number(r.quantity) || 0), 0) - have
+      // Which way out actually exists depends on where the stock is.
+      // addOrIncrementSealed only offers the stock-adjust confirm when the
+      // TOTAL across every room is short, so telling a cashier to "scan the
+      // extra copies" while five sit in a stream room sends them at a prompt
+      // that will never appear — the cart would be stuck with no way forward.
       blockers.push({
-        key: l.key, kind: 'sealed', name, fixable: 'stock_adjust',
+        key: l.key, kind: 'sealed', name,
+        fixable: elsewhere > 0 ? 'move_stock' : 'stock_adjust',
         reason: `only ${have} reachable (Front Store + Master), cart has ${need}`
           + (elsewhere > 0 ? ` — ${elsewhere} more sit in stream rooms and must be Moved first` : ''),
       })
@@ -4762,7 +4876,12 @@ export const preflightStorefrontCart = async (
 }
 
 export const submitStorefrontTransaction = async ({
-  cart,             // [{ kind, productId|slabId|singleId, scanned_code, quantity, price, ...meta }, ...]
+  // Lines carry the NESTED record, not a bare id — `product` / `slab` /
+  // `single`, matching what StorefrontSale.jsx builds and what
+  // preflightStorefrontCart reads. This comment used to say productId|slabId|
+  // singleId, which is a shape nothing here understands; following it produced
+  // a checkout that passed preflight unchecked and then failed mid-write.
+  cart,             // [{ kind, key, product|slab|single, scanned_code, quantity, price, ...meta }, ...]
   paymentMethodId,  // legacy single-method input (back-compat). Either this OR `payments`.
   payments,         // NEW: [{ payment_method_id, amount }] for split payments. 1 or 2 entries.
   cashierId,
