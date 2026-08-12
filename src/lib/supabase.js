@@ -218,6 +218,54 @@ export const createReceipt = async (receipt) => {
   return data
 }
 
+// Reverse a receipt without destroying it.
+//
+// `receipts` has no `deleted` column and there is no DDL path to add one, so
+// the delete rule is honoured the only way the schema allows: the row stays,
+// its quantity goes to 0, and the note says why. Everything that consumes
+// receipts sums `quantity_received` (the Japan shipment watcher decides
+// whether a delivered box was ever taken into Master from exactly that sum),
+// so a zeroed row is correctly inert while remaining visible as evidence.
+//
+// Hard-deleting it instead would leave the acquisition looking as though the
+// receive never happened, which is the same shape as the storefront's
+// compensating hard-delete Codex rejected on 2026-08-09: the money moved, the
+// record of it did not.
+export const voidReceipt = async (receiptId, reason) => {
+  const { data: existing, error: readErr } = await supabase
+    .from('receipts')
+    .select('id, quantity_received, notes')
+    .eq('id', receiptId)
+    .single()
+  if (readErr) throw readErr
+  const stamp = `VOIDED ${new Date().toISOString().slice(0, 10)}: `
+    + `${reason || 'reversed'} (was ${existing?.quantity_received ?? '?'})`
+  const { data, error } = await supabase
+    .from('receipts')
+    .update({
+      quantity_received: 0,
+      notes: [existing?.notes, stamp].filter(Boolean).join(' · ').slice(0, 1000),
+    })
+    .eq('id', receiptId)
+    .select()
+  if (error) throw error
+  if (!data || data.length === 0) throw new Error('receipt not found — nothing was voided')
+  return data[0]
+}
+
+// Current stock of one product in one room. Used by the intake undo to check
+// the units are still where it is about to take them from.
+export const fetchInventoryRow = async (productId, locationId) => {
+  const { data, error } = await supabase
+    .from('inventory')
+    .select('product_id, location_id, quantity, avg_cost_basis')
+    .eq('product_id', productId)
+    .eq('location_id', locationId)
+    .maybeSingle()
+  if (error) throw error
+  return data || null
+}
+
 export const createMovement = async (movement) => {
   const { data, error } = await supabase
     .from('movements')
