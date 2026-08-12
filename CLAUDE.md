@@ -19,6 +19,15 @@
 - `jp_shipment_watch.py` 认这个标记,归入「已结清」不再报。看守从 3 票降到 **1 票**(7/31 的 3 件、$0,你没点名,要清说一声)。
 - **真实数字只能靠实物盘一次 Master 的 Storm 定。** 单据这条路已经走到头了。
 
+## 🔴「库存没成本就触发全面 search」——探测器要,全自动匹配不行(8/12,Gary 提议)
+- **实测在库无成本:60 行 / 397 件**(在库行共 272,22% 没有成本)。这个探测器该有,条件客观。
+- **但自动匹配跨不过分销商缩写这道坎,我拿真数据试过**:GTS 写 `23 MRV ALG INF TRILOGY 12/16/6`,我们叫 `2023 Upper Deck Marvel Allegiance The Infinity Trilogy`。**token 重叠 1/8,分数 0.125**,任何阈值都会漏;Rarity Collection / Celebrations / Destined Rivals / Mega Symphonia 一并漏掉。**这不是字符串距离问题。**
+- **更危险的是它会给自信的错答案**:`DBS FW-10 BB [FB10] 24ct` 被猜成 `Pokemon Ball 10 Booster Box`(BB→booster box、10→Ball 10)。**编出来的成本比空着更糟——空的看得出是缺,编的看起来像核验过。**
+- **该做的是把人的判断压成一次点选,而且一次管永久**:`gts_map_queue.py` 按金额排未映射 SKU、展开缩写、给候选产品,人 `--set` 确认。**一次映射同时补两个洞**:GTS commit 不再跳过该 SKU + 该产品不再是无成本行。
+- **机械安全的部分才自动做**:`--inherit-w2`。GTS 对同一产品的二仓发另一个 SKU(`PKU10425` / `PKU10425W2`,描述只多一个 W2)。**要求 SKU 前缀和描述两条都对上**才继承 —— 已写 2 条 / $5,382,**第 3 条 `PKU10422W2` 被描述校验拦下**(base 写 `6ct`、W2 没写),这正是它该做的。
+- 剩余 **61 个 SKU / $78,158 要人判**,但**前 12 个占 71%** —— 工作量是一小时级,不是项目级。
+- **搜索要搜证据,不要搜数字。** 优先级:**GTS 发票行(实付)> 同产品进货记录 > 同产品别房间 `avg_cost_basis` > 市价推导(派生,必须标明)**。`cost_recovery_probe.py` 按这个顺序给每一行归类;**查无可查的 49 行 / 339 件就留空**。
+
 ## 🔴 GTS 入账 $65,048 从没进过系统 —— 病根比"SKU 没进 map"深一层(8/12,Gary:"这个 gts 也有")
 - **`run_gts_ingest.cmd` 自己写着**:"Commit to receivables is a separate explicit step: `python gts_ingest.py --commit INVxxxxxxx`"。**定时任务只做抓取 + 缓存 + 播报,入账要人手一张张跑。**
 - 实测:**系统上线(2026-05-01,acquisitions 第一行)之后缓存了 20 张发票,acquisitions 里找得到发票号的只有 2 张**。排掉 Azuki/Weiss 那两张(成本已入库存、故意没插 acquisitions),**还剩 16 张 / $65,048 既没入账也不是有意跳过**。最大三张:`INV01150557 $13,754` · `INV01154080 $12,654` · `INV01136166 $10,166`。
