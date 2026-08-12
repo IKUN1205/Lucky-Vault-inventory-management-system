@@ -5,7 +5,8 @@ import {
   fetchLocations,
   fetchProducts,
   createReceipt,
-  deleteReceipt,
+  voidReceipt,
+  fetchInventoryRow,
   updateAcquisitionStatus,
   updateInventory,
   convertToUSD,
@@ -105,6 +106,81 @@ export default function IntakeToMaster() {
   // pendingAllocations: [{ key, product, productId, qtyReceived, suggestion, done }]
   const [pendingAllocations, setPendingAllocations] = useState([])
   const [allocatorOpen, setAllocatorOpen] = useState(false)
+  // Last receive, kept so it can still be undone after the toast is gone.
+  // A toast action lasts 8s; staff notice a wrong receive minutes later
+  // (2026-08-05: a receive against a shipment that hadn't physically arrived
+  // could only be reversed by hand, because the undo below was never wired up).
+  // { label, undo, at, acqId }
+  const [lastReceive, setLastReceive] = useState(null)
+  const [undoing, setUndoing] = useState(false)
+
+  // Receive notifications are batched into one message per session.
+  //
+  // Gary 2026-08-12: nine notifications from one sitting, six lines each. They
+  // were all correct — a single shipment is several acquisition rows (tracking
+  // 875535947181 was eight, including Mega Symphonia as a 1 and a 6) and the
+  // message fired per row, so the two lines actually worth reading were buried.
+  //
+  // Batching trades immediacy for legibility, and it must not trade away
+  // delivery: a queue that only flushes on a timer loses everything if the tab
+  // closes, where the old code lost at most one message. So the flush also runs
+  // on unmount and on pagehide via sendBeacon, which browsers still deliver
+  // while the page is going away.
+  const pendingNotify = useRef([])
+  const notifyTimer = useRef(null)
+  const NOTIFY_IDLE_MS = 45000
+
+  const flushNotify = (viaBeacon = false) => {
+    const receipts = pendingNotify.current
+    if (!receipts.length) return
+    pendingNotify.current = []
+    if (notifyTimer.current) { clearTimeout(notifyTimer.current); notifyTimer.current = null }
+    const payload = JSON.stringify({
+      type: 'receive_digest',
+      receiver: user?.name || null,
+      receipts,
+      // Deliveries that landed but were never taken in. Computed from what the
+      // page already has, so it costs nothing and puts the thing people keep
+      // missing right under what they just did.
+      outstanding: outstandingRef.current,
+    })
+    try {
+      if (viaBeacon && navigator.sendBeacon) {
+        // sendBeacon returns false when the browser refuses to queue it (size
+        // caps, or beacons disabled). The queue is already emptied by then, so
+        // ignoring the result drops the whole session's digest silently —
+        // StreamCounts.jsx checks this same return for the same reason.
+        const queued = navigator.sendBeacon(
+          '/api/lark-notify', new Blob([payload], { type: 'application/json' }))
+        if (queued) return
+        console.warn('[lark-notify] beacon refused — falling back to keepalive fetch')
+      }
+      fetch('/api/lark-notify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true,
+      }).catch(err => console.error('[lark-notify] digest failed (receipts still saved):', err))
+    } catch (err) {
+      console.error('[lark-notify] digest send threw:', err)
+    }
+  }
+
+  const scheduleNotifyFlush = () => {
+    if (notifyTimer.current) clearTimeout(notifyTimer.current)
+    notifyTimer.current = setTimeout(() => flushNotify(false), NOTIFY_IDLE_MS)
+  }
+
+  // Kept in a ref so flushNotify — which also runs from a pagehide handler —
+  // never reads a stale render's copy.
+  const outstandingRef = useRef([])
+
+  useEffect(() => {
+    const onHide = () => flushNotify(true)
+    window.addEventListener('pagehide', onHide)
+    return () => {
+      window.removeEventListener('pagehide', onHide)
+      flushNotify(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     loadData()
@@ -123,6 +199,25 @@ export default function IntakeToMaster() {
       // buildBatchGroups), so fully-received history doesn't clutter the page.
       setAllAcquisitions(acqData)
       setProducts(prodData)
+
+      // Deliveries the carrier has already dropped that are still not booked
+      // into Master. On 2026-08-12 two Storm Emeralda shipments delivered on
+      // 08-01 and 08-04 — 148 boxes, ~$28k — sat at zero received while newer
+      // arrivals were being taken in around them, and Master was showing 0 of
+      // that product while eBay orders shipped from it. Nothing surfaced it,
+      // so it rides out on the intake digest.
+      outstandingRef.current = (acqData || [])
+        .filter(a => !a.deleted && a.tracking_delivered_at
+          && (Number(a.quantity_received) || 0) < (Number(a.quantity_purchased) || 0))
+        .map(a => ({
+          setName: extractLaunchName(a.product?.name, a.product?.category),
+          name: a.product?.name || 'Unknown',
+          remaining: (Number(a.quantity_purchased) || 0) - (Number(a.quantity_received) || 0),
+          totalOrdered: Number(a.quantity_purchased) || 0,
+          trackingNumber: a.tracking_number || null,
+          deliveredAt: a.tracking_delivered_at,
+        }))
+        .sort((x, y) => y.remaining - x.remaining)
 
       // Find master inventory location
       const master = locData.find(l => l.name === 'Master Inventory')
@@ -210,47 +305,100 @@ export default function IntakeToMaster() {
       const costPerUnit = acquisition.cost_usd / acquisition.quantity_purchased
       await updateInventory(productId, masterId, qty, costPerUnit)
 
-      // Fire-and-forget Lark notification — never roll back the receipt if Lark is down.
+      // Queue for the session digest rather than firing one message per row.
+      // Never roll back the receipt if Lark is down.
       try {
         const product = acquisition.product || {}
-        const launchName = extractLaunchName(product.name, product.category)
-        const productLabel = `${product.brand || 'Unknown'} | ${launchName} | ${product.category || ''} (${product.language || '—'})`
-        const unit = (product.category || '').toLowerCase().includes('pack') ? 'packs' : 'boxes'
-        fetch('/api/lark-notify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'receive',
-            productLabel,
-            acquirer: acquisition.acquirer?.name || null,
-            thisBatch: qty,
-            totalReceived,
-            totalOrdered: acquisition.quantity_purchased,
-            status: newStatus,
-            unit
-          })
-        }).catch(err => {
-          console.error('[lark-notify] receive request failed (receipt still saved):', err)
+        pendingNotify.current.push({
+          // Identifies this queued line so an undo can pull it back out —
+          // announcing a receive that was reversed 30 seconds ago is worse
+          // than announcing nothing, because nothing follows to correct it.
+          _receiptId: receipt?.id || null,
+          setName: extractLaunchName(product.name, product.category),
+          name: `${product.brand || 'Unknown'} | ${extractLaunchName(product.name, product.category)} | ${product.category || ''} (${product.language || '—'})`,
+          acquirer: acquisition.acquirer?.name || null,
+          thisBatch: qty,
+          totalReceived,
+          totalOrdered: acquisition.quantity_purchased,
+          status: newStatus,
+          trackingNumber: acquisition.tracking_number || null,
         })
+        scheduleNotifyFlush()
       } catch (err) {
-        console.error('[lark-notify] failed to build receive payload:', err)
+        console.error('[lark-notify] failed to queue receive:', err)
       }
 
       const undo = async () => {
+        // Single-shot. The steps below are not a transaction, so a second
+        // click after a mid-way failure would deduct the same units again —
+        // the offer is withdrawn before anything is touched and never
+        // reinstated, except on the pre-flight refusals that write nothing.
+        setUndoing(true)
         try {
-          // Reverse inventory delta
+          // The units have to still be in Master. Smart Allocator moves a
+          // receive out to the stream rooms right after it lands, and the
+          // undo only ever knew how to take them back out of Master — so
+          // undoing an allocated receive drove Master negative while the
+          // rooms kept the stock. Read the room, don't assume it.
+          const row = await fetchInventoryRow(productId, masterId)
+          const inMaster = Number(row?.quantity) || 0
+          if (inMaster < qty) {
+            addToast(
+              `Can't undo — Master holds ${inMaster} of these, not ${qty}. `
+              + `They were already allocated out. Reverse the Move first, then undo.`,
+              'error')
+            setUndoing(false)
+            return
+          }
+          setLastReceive(null)
+          // Pull it out of the digest queue before touching anything. If it
+          // was already sent this is a no-op and the group saw a receive that
+          // really did happen at the time.
+          if (receipt?.id) {
+            pendingNotify.current = pendingNotify.current.filter(p => p._receiptId !== receipt.id)
+          }
+
           await updateInventory(productId, masterId, -qty)
-          // Restore acquisition's prior status + qty_received
-          await updateAcquisitionStatus(acqId, prevStatus, prevReceived)
-          // Hard-delete the receipt row
-          if (receipt?.id) await deleteReceipt(receipt.id)
-          addToast('Undone — receipt reverted', 'info')
+          // From here a failure leaves a real inconsistency, so say exactly
+          // which half survived instead of a generic "undo failed".
+          try {
+            await updateAcquisitionStatus(acqId, prevStatus, prevReceived)
+            if (receipt?.id) await voidReceipt(receipt.id, `intake undo of ${qty} units`)
+          } catch (tailErr) {
+            console.error('Undo half-completed:', tailErr)
+            addToast(
+              `Stock was taken back out of Master, but the acquisition still `
+              + `shows it as received. Fix the acquisition by hand — do NOT press undo again.`,
+              'error')
+            loadData()
+            return
+          }
+          addToast('Undone — stock returned and the receipt voided', 'info')
           loadData()
         } catch (err) {
           console.error('Undo failed:', err)
-          addToast('Undo failed — check console', 'error')
+          addToast(`Undo failed: ${err.message || err}. Nothing was changed.`, 'error')
+          // The inventory call is the first write; if it threw, nothing
+          // moved, so it is safe to offer the button again.
+          setLastReceive(prev => prev || {
+            acqId, at: Date.now(),
+            label: `${qty} × ${acquisition.product?.name || 'item'}`,
+            undo,
+          })
+        } finally {
+          setUndoing(false)
         }
       }
+
+      // Keep it reversible after the toast expires. Replacing the previous
+      // entry is deliberate: only the most recent receive is offered, so an
+      // undo can never reverse a receive that a later one already built on.
+      setLastReceive({
+        acqId,
+        at: Date.now(),
+        label: `${qty} × ${acquisition.product?.name || 'item'}`,
+        undo,
+      })
 
       const product = acquisition.product || {}
       const auto = shouldAutoAllocate(product.category, qty)
@@ -264,7 +412,9 @@ export default function IntakeToMaster() {
           const suggestion = await computeAllocationSuggestion({ productId, qtyAvailable: qty })
           setPendingAllocations(prev => [
             ...prev,
-            { key: `pa-${acqId}-${Date.now()}`, product, productId, qtyReceived: qty, suggestion, done: false },
+            // acqId is carried as its own field: it is a UUID, so it cannot be
+            // parsed back out of `key` by splitting on '-'.
+            { key: `pa-${acqId}-${Date.now()}`, acqId, product, productId, qtyReceived: qty, suggestion, done: false },
           ])
           if (opts.openModal) setAllocatorOpen(true)
         } catch (err) {
@@ -318,6 +468,47 @@ export default function IntakeToMaster() {
         </h1>
         <p className="text-gray-400 mt-1">Receive purchased items into Master Inventory</p>
       </div>
+
+      {/* Undo the last receive — stays until it's used or another receive
+          replaces it, so a mistake caught minutes later is still fixable. */}
+      {lastReceive && (
+        <div className="mb-4 card !py-3 border-amber-500/30 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm text-white">
+              Received <span className="text-vault-gold">{lastReceive.label}</span> into Master
+            </div>
+            <div className="text-xs text-gray-500 mt-0.5">
+              Wrong order, or the shipment hasn't actually arrived? Undo puts the stock,
+              the order status and the receipt back exactly as they were.
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              className="btn btn-secondary !py-1.5 !px-3 text-sm"
+              disabled={undoing}
+              onClick={async () => {
+                if (undoing) return
+                if (!window.confirm(`Undo receiving ${lastReceive.label} into Master?`)) return
+                setUndoing(true)
+                try {
+                  await lastReceive.undo()
+                } finally {
+                  setUndoing(false)
+                }
+              }}
+            >
+              {undoing ? 'Undoing…' : 'Undo receive'}
+            </button>
+            <button
+              className="text-gray-500 hover:text-gray-300 text-sm px-2"
+              title="Dismiss"
+              onClick={() => setLastReceive(null)}
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
 
       <Instructions>
         <div className="space-y-3 text-gray-300">
@@ -424,7 +615,18 @@ export default function IntakeToMaster() {
           items={pendingAllocations.filter(p => !p.done)}
           onClose={() => setAllocatorOpen(false)}
           onItemDone={(key) => {
+            const allocatedAcqId =
+              (pendingAllocations.find(p => p.key === key) || {}).acqId || null
             setPendingAllocations(prev => prev.map(p => p.key === key ? { ...p, done: true } : p))
+            // Once these goods have been moved out of Master, undo can no
+            // longer put them back — it only knew how to deduct from Master,
+            // so it would drive that room negative and leave the stream rooms
+            // holding stock nobody ordered. Withdraw the offer for THIS
+            // receive only: clearing it unconditionally also killed a
+            // perfectly good undo for a different receive still sitting in
+            // Master. The undo re-checks Master itself as the real guard.
+            setLastReceive(prev =>
+              (prev && allocatedAcqId && prev.acqId === allocatedAcqId) ? null : prev)
           }}
           onAllDone={() => {
             setAllocatorOpen(false)

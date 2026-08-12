@@ -104,7 +104,7 @@ export default async function handler(req, res) {
   if (type === 'purchased') {
     return handlePurchased(body, res)
   }
-  if (type === 'receive') {
+  if (type === 'receive' || type === 'receive_digest') {
     return handleReceive(body, res)
   }
 
@@ -666,16 +666,34 @@ function buildStreamCountDetailed(body) {
     const skuLabel = soldItems.length === 1 ? 'SKU' : 'SKUs'
     lines.push(`📤 Sold during previous session: ${Number(totalSold) || 0} units / ${soldItems.length} ${skuLabel}`)
     for (const item of soldItems) {
-      lines.push(`  • ${item.name || 'Unknown'} × ${item.quantity || 0}`)
+      // "at least" where the books were already short: sold = expected - actual,
+      // and a wrong expected can only understate it. "?" where we could not
+      // find out which of the two this is — that is not the same as exact.
+      const qty = item.unverified ? `× ${item.quantity || 0} (unverified)`
+        : item.atLeast ? `≥ ${item.quantity || 0}`
+        : `× ${item.quantity || 0}`
+      lines.push(`  • ${item.name || 'Unknown'} ${qty}`)
+    }
+    if (soldItems.some(i => i.atLeast)) {
+      lines.push(`   ≥ = the books were already short on that SKU, so the real number can only be higher.`)
+    }
+    if (soldItems.some(i => i.unverified)) {
+      lines.push(`   unverified = we could not check the books for this room, so none of these are confirmed.`)
     }
   }
 
   if (discrepancyItems.length > 0) {
     lines.push('')
     lines.push(`⚠️ Found beyond system: +${Number(totalDiscrepancies) || 0} units — NOT added to inventory`)
-    lines.push(`   A count can't add stock. Record a Move (source → this room, e.g. Master →) to account for these:`)
+    // The consequence, stated plainly. Staff read "+N found" as cosmetic; what
+    // it actually means is that this SKU's sales are unmeasurable until the
+    // Move is recorded, and the goods keep leaving in the meantime.
+    lines.push(`   Sales for these SKUs are UNKNOWN this session, not zero — a count can only measure`)
+    lines.push(`   sales when the books are right. Record a Move (source → this room, e.g. Master →):`)
     for (const item of discrepancyItems) {
-      lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}`)
+      const streak = Number(item.streak) || 1
+      const nag = streak > 1 ? `  ← reported ${streak} counts in a row, still unresolved` : ''
+      lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}${nag}`)
     }
   }
 
@@ -787,6 +805,71 @@ function buildMessage(body) {
       lines.push(`Total received: ${totalReceived} / ${totalOrdered}  ✅ complete`)
     }
     if (status) lines.push(`Status: ${status}`)
+    lines.push(`Time: ${nowUtcStamp()}`)
+    return lines.join('\n')
+  }
+
+  // One message for a whole intake session instead of one per acquisition row.
+  //
+  // Gary 2026-08-12: nine notifications landed from a single session, six lines
+  // each. They were all correct — the density comes from a shipment being
+  // recorded as several acquisition rows for the same product (tracking
+  // 875535947181 was eight rows, two of them Mega Symphonia as 1 and as 6), and
+  // the old message fired once per row.
+  //
+  // Grouped by tracking, because that is the unit a person can act on: a box
+  // either has everything out of it or it does not. The lines that need someone
+  // are pulled to the top — a fully-received shipment is one line, and what is
+  // still owed is the part worth reading.
+  if (type === 'receive_digest') {
+    const { receipts = [], receiver, outstanding = [] } = body
+    if (!Array.isArray(receipts) || receipts.length === 0) {
+      throw new Error('receive_digest: missing receipts')
+    }
+    const byTracking = new Map()
+    for (const r of receipts) {
+      const k = (r.trackingNumber || '').trim() || 'no tracking'
+      if (!byTracking.has(k)) byTracking.set(k, [])
+      byTracking.get(k).push(r)
+    }
+    const totalUnits = receipts.reduce((s, r) => s + (Number(r.thisBatch) || 0), 0)
+    const lines = []
+    lines.push(`📥 Intake — ${totalUnits} units across ${receipts.length} line${receipts.length === 1 ? '' : 's'}`)
+    if (receiver) lines.push(`Received by: ${receiver}`)
+
+    for (const [tracking, rows] of byTracking) {
+      const units = rows.reduce((s, r) => s + (Number(r.thisBatch) || 0), 0)
+      lines.push('')
+      lines.push(`${tracking} — ${units} units`)
+      // Same set-name-only treatment as the dispatch report: on an intake list
+      // the brand and category repeat on every line and the set is the part
+      // that differs.
+      for (const r of rows) {
+        const owed = Math.max((Number(r.totalOrdered) || 0) - (Number(r.totalReceived) || 0), 0)
+        lines.push(`  • ${shortSetName(r)} × ${r.thisBatch}`
+          + (owed > 0 ? `  — ${owed} of ${r.totalOrdered} still owed` : ''))
+      }
+    }
+
+    // What is still sitting undelivered-into-Master. This is the reason the
+    // digest exists: on the day it was written, two Storm Emeralda shipments
+    // delivered on 08-01 and 08-04 were still at zero received while newer
+    // arrivals were being booked in around them.
+    if (outstanding.length > 0) {
+      lines.push('')
+      lines.push(`⚠️ Still not taken in from earlier deliveries:`)
+      for (const o of outstanding.slice(0, 8)) {
+        // Built as parts rather than nested ternaries: the previous form
+        // emitted a stray ')' whenever a delivery date arrived without a
+        // tracking number.
+        const meta = [o.trackingNumber, o.deliveredAt && `delivered ${String(o.deliveredAt).slice(0, 10)}`]
+          .filter(Boolean).join(', ')
+        lines.push(`  • ${shortSetName(o)} — ${o.remaining} of ${o.totalOrdered}`
+          + (meta ? ` (${meta})` : ''))
+      }
+      if (outstanding.length > 8) lines.push(`  ... and ${outstanding.length - 8} more`)
+    }
+    lines.push('')
     lines.push(`Time: ${nowUtcStamp()}`)
     return lines.join('\n')
   }

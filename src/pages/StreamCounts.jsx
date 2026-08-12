@@ -9,7 +9,8 @@ import {
   createUser,
   updateInventory,
   fetchStreamCounts,
-  fetchStreamCountItems
+  fetchStreamCountItems,
+  fetchOpenSurplus
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
@@ -39,6 +40,50 @@ const extractLaunchName = (fullName, category) => {
 
 // BrandChip + LangChip now live in ../components/ProductChips (shared with ViewInventory
 // so the inventory list and the counting UI distinguish EN/JP/CN identically).
+
+// `total_sold` is expected − actual, which is only a sales figure when
+// `expected` was right. The report says so on screen and in Lark, but that
+// qualifier used to live nowhere else: reopen the count tomorrow, or read
+// `total_sold` from any report, and it is a bare number again that reads as
+// measured fact.
+//
+// stream_count_items has no column to hold it (product_id, expected, actual,
+// difference — that is the whole table) and there is no DDL path right now, so
+// it goes into stream_counts.notes as a greppable marker, the same way
+// RECOVERED_AT_COUNTER and COST_FLAGGED carry state the schema has no room
+// for. Anything reading total_sold can find out what it is made of.
+//
+//   SOLD_MEASURE=unverified              — the surplus lookup failed outright
+//   SOLD_MEASURE=at_least:<pid>,<pid>    — those SKUs' sold figures are floors
+export const MAX_COUNT_NOTES = 1000
+// A product_id is a 36-char uuid plus a comma, so the list has to be capped by
+// COUNT and not by a trailing slice: slicing the whole string at 1000 cuts the
+// 27th id in half and turns a machine-readable marker into a corrupt one.
+const MAX_MARKED_IDS = 20
+
+export const buildCountNotes = (freeText, items, carried, unknown) => {
+  const marks = []
+  if (unknown) {
+    marks.push('SOLD_MEASURE=unverified (open-surplus lookup failed — sold figures not confirmed)')
+  } else {
+    const floors = items
+      .filter(i => i.difference < 0 && carried?.[i.product_id])
+      .map(i => i.product_id)
+    if (floors.length) {
+      const shown = floors.slice(0, MAX_MARKED_IDS)
+      marks.push(`SOLD_MEASURE=at_least:${shown.join(',')}`
+        + (floors.length > shown.length ? ` +${floors.length - shown.length}_more` : ''))
+    }
+  }
+  const user = (freeText || '').trim()
+  if (!marks.length) return user.slice(0, MAX_COUNT_NOTES) || null
+  // Truncate the free text, never the marker: the marker is the part something
+  // else has to parse.
+  const marker = marks.join(' · ')
+  const room = MAX_COUNT_NOTES - marker.length - 1
+  const tail = room > 0 ? user.slice(0, room) : ''
+  return [marker, tail].filter(Boolean).join('\n')
+}
 
 // Blind-count "is this box actually counted?" — the ONE predicate shared by the
 // M/N progress display and the blank-row list in handleSubmitCount's confirm,
@@ -73,6 +118,15 @@ export default function StreamCounts() {
   const [users, setUsers] = useState([])
   const [inventory, setInventory] = useState([])
   const [recentCounts, setRecentCounts] = useState([])
+  // Surplus this room was already carrying BEFORE this count, keyed by product.
+  // Loaded with the room's inventory and deliberately never rendered on the
+  // counting screen — the count is blind, and showing it would leak how far off
+  // the books are. It is used only to qualify the sold figures afterwards.
+  const [carriedSurplus, setCarriedSurplus] = useState({})
+  // Set when the surplus lookup failed. Kept separate from an empty map:
+  // "this room was carrying nothing" and "we could not find out" produce the
+  // same {} and must not produce the same report.
+  const [surplusUnknown, setSurplusUnknown] = useState(false)
   
   // UI State
   const [loading, setLoading] = useState(true)
@@ -173,6 +227,25 @@ export default function StreamCounts() {
       })
       setCounts(initialCounts)
       setCountNotes('') // fresh notes for each new count session
+
+      // What this room was already counting above the books. Best-effort: a
+      // failure here must never block a count, it only costs us the qualifier
+      // on the sold numbers.
+      try {
+        const open = await fetchOpenSurplus(locationId)
+        const map = {}
+        open.forEach(o => { map[o.product_id] = o })
+        setCarriedSurplus(map)
+        setSurplusUnknown(false)
+      } catch (surplusErr) {
+        // Never blocks the count — but it must not be silently downgraded to
+        // "no surplus" either. Falling back to {} marked every sold figure
+        // `exact`, i.e. a failed lookup manufactured certainty about numbers
+        // it knew nothing about. Unknown is its own answer.
+        console.warn('[open-surplus] lookup failed — sold figures will be reported as unverified:', surplusErr)
+        setCarriedSurplus({})
+        setSurplusUnknown(true)
+      }
     } catch (error) {
       console.error('Error loading inventory:', error)
       addToast('Failed to load inventory', 'error')
@@ -396,7 +469,7 @@ export default function StreamCounts() {
         // stream_counts; createStreamCount inserts the object as-is. Capped at
         // 1000 chars (matches the textarea maxLength) so a stray giant paste
         // can't bloat rows or the Lark webhook (Codex 2026-07-01).
-        notes: countNotes.trim().slice(0, 1000) || null
+        notes: buildCountNotes(countNotes, items, carriedSurplus, surplusUnknown)
       })
       
       // Add stream_count_id to items and insert. If the items insert fails, roll
@@ -444,6 +517,12 @@ export default function StreamCounts() {
       }
 
       // Build report
+      // Qualify every sold figure by how trustworthy the expected it came from
+      // was. `sold` is expected - actual, so it is only a fact when expected was
+      // a fact. A SKU the room was ALREADY counting above the books had a wrong
+      // expected, and the surplus can hide an arbitrary amount of real selling
+      // underneath it — reporting a bare number there is how 42 OP-13 blisters
+      // left Packheads booked as zero sales (2026-08-05).
       const soldItems = items
         .filter(i => i.difference < 0)
         .map(i => {
@@ -452,19 +531,33 @@ export default function StreamCounts() {
             product: inv?.product,
             expected: i.expected_qty,
             actual: i.actual_qty,
-            sold: Math.abs(i.difference)
+            sold: Math.abs(i.difference),
+            // 'at_least': the books were already short, so this is a floor.
+            // 'unverified': the lookup that decides between the two failed, so
+            // we do not know which this is. Calling it 'exact' would be an
+            // assertion made out of an outage.
+            measure: surplusUnknown
+              ? 'unverified'
+              : (carriedSurplus[i.product_id] ? 'at_least' : 'exact')
           }
         })
-      
+
+      // Still above the books after this count. Sales for these SKUs are not
+      // zero — they are UNKNOWN, and stay unknown until a Move accounts for the
+      // surplus. `streak` says how many counts in a row have reported it, which
+      // is what turns "new discrepancy" into "nobody has fixed this since X".
       const discrepancyItems = items
         .filter(i => i.difference > 0)
         .map(i => {
           const inv = inventory.find(inv => inv.product_id === i.product_id)
+          const carried = carriedSurplus[i.product_id]
           return {
             product: inv?.product,
             expected: i.expected_qty,
             actual: i.actual_qty,
-            extra: i.difference
+            extra: i.difference,
+            streak: (carried?.streak || 0) + 1,
+            since: carried?.since || null
           }
         })
       
@@ -566,11 +659,14 @@ export default function StreamCounts() {
 
         const soldForLark = soldItems.map(i => ({
           name: formatProductName(i.product),
-          quantity: i.sold
+          quantity: i.sold,
+          atLeast: i.measure === 'at_least',
+          unverified: i.measure === 'unverified'
         }))
         const discrepancyForLark = discrepancyItems.map(i => ({
           name: formatProductName(i.product),
-          extra: i.extra
+          extra: i.extra,
+          streak: i.streak
         }))
 
         fetch('/api/lark-notify', {
@@ -1187,12 +1283,29 @@ export default function StreamCounts() {
                           <td className="text-white">{item.product?.name}</td>
                           <td className="text-right text-gray-400">{item.expected}</td>
                           <td className="text-right text-gray-400">{item.actual}</td>
-                          <td className="text-right text-green-400 font-medium">{item.sold}</td>
+                          <td className="text-right text-green-400 font-medium">
+                            {item.measure === 'at_least' ? `≥ ${item.sold}`
+                              : item.measure === 'unverified' ? `${item.sold} ?` : item.sold}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
+                {report.sold_items.some(i => i.measure === 'at_least') && (
+                  <p className="text-xs text-green-400/80 mt-2">
+                    <b>≥</b> — this room was already counting that SKU above the books, so
+                    "Was" understates what was on the shelf and the real number sold can only
+                    be higher.
+                  </p>
+                )}
+                {report.sold_items.some(i => i.measure === 'unverified') && (
+                  <p className="text-xs text-amber-400/80 mt-2">
+                    <b>?</b> — we could not check whether this room was already above the
+                    books, so none of these figures are confirmed. Treat them as unverified,
+                    not exact.
+                  </p>
+                )}
               </div>
             )}
             
@@ -1211,6 +1324,7 @@ export default function StreamCounts() {
                         <th className="text-right text-amber-400">Expected</th>
                         <th className="text-right text-amber-400">Counted</th>
                         <th className="text-right text-amber-400">Extra</th>
+                        <th className="text-right text-amber-400">Unresolved for</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1220,6 +1334,11 @@ export default function StreamCounts() {
                           <td className="text-right text-gray-400">{item.expected}</td>
                           <td className="text-right text-gray-400">{item.actual}</td>
                           <td className="text-right text-amber-400 font-medium">+{item.extra}</td>
+                          <td className="text-right text-amber-400/80">
+                            {item.streak > 1
+                              ? `${item.streak} counts in a row`
+                              : 'first time'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1229,6 +1348,11 @@ export default function StreamCounts() {
                   ⚠️ These were <b>NOT</b> added to inventory — a count can't add stock. They
                   arrived without a transfer. Record a <b>Move</b> (source → this room, e.g.
                   Master → {report.location_name || 'this room'}) so they're properly accounted for.
+                </p>
+                <p className="text-xs text-amber-400/80 mt-1">
+                  Until then, <b>sales for these SKUs are unknown, not zero</b>. A count measures
+                  sales as expected − counted, which only works when expected is right — so stock
+                  can keep leaving these SKUs and every session will report 0 sold.
                 </p>
               </div>
             )}
