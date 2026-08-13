@@ -54,6 +54,14 @@
 - 另加 `BOOKED_ELSEWHERE = {INV01198587, INV01192197}` 守卫 —— Azuki / Weiss 那两张的成本是**故意直接进库存不插 acquisitions** 的,commit 会把它悄悄反悔掉。`--force` 可越过。
 - **Gary 8/12 拍板:老的一律不入账,那 $54,416 不补,OP-16 的 $13,753 也不改。** 已用 `CUTOVER` 钉死(见上)。**映射照样留着 —— 它管的是往后**:同一批 SKU 再来,自动入账。
 
+### 🔴 邮箱查实:GTS 从来没往我们信箱发过发票(8/12,Gary:"邮件里面的数字是最直接的")
+- **道理是对的**:门户是一个可变页面,只能知道"我看的那一刻它长什么样";邮件是带时间戳、不会变的记录。今天那个 bug 本质就是拿轮询去测事件。**但对 GTS 这条线不成立。**
+- 实搜 `help@luckyvault.us`(IMAP,**只读 EXAMINE + BODY.PEEK,不标已读、不碰 lv-inbound-mail 的 cursor**):缓存里最近 8 张发票号 **全部 0 命中**;`INV011` / `INV012` 前缀在 **All Mail · Spam · Trash · Sent 四个地方全是 0**;`from:gts` = 0。**唯一一条 `gtsdistribution` 是 2023 年 Gary 自己发出去的询价。**
+- **139 封"GTS Distribution"全是 UPS 的到货通知**(GTS 是发货方,名字跟着运单走),不是 GTS 发的。
+- **GTS 门户的登录名是纯用户名不是邮箱**,所以推不出他们档案里留的是哪个地址。**待问 Gary:GTS 发票发到哪个邮箱?**转发到 help@ 或单开一个别名,这条路立刻就通 —— IMAP 那套 plumbing 现成的。
+- **✅ 但邮箱里有一个我们没用的信号:到货。** 最近 10 个 GTS 运单号 **7 个在邮箱里找得到**,带 `Your Packages Have Been Delivered` + 时间戳。**这比我们现在用的强** —— 17track 对不钉承运商的号会瞎、fedex.com 对我们已废、`_classify` 出过假 Delivered、`tracking_delivered_at` 还曾被写成 now()。**承运商推给我们的一封信,比我们去问它十次都准。**
+- 探针坑(自己踩的):① 通用 IMAP `SEARCH` 在 21k 封里两分钟不返回,**Gmail 要用 `X-GM-RAW`** 走它自己的索引 ② `X-GM-RAW` 的参数里**不能有嵌套双引号**,否则整条命令 `Could not parse` ③ **批量 FETCH 的响应是按序号不是 UID 编号的**(`123 (UID 456 BODY[...`),我拿第一个数字当 UID,结果每封正文都取错了人 —— eBay 的标题配了 ULINE 的正文 ④ `[Gmail]` 是 `\Noselect`,**SELECT 失败会把会话打回 AUTH 状态**,后面所有 SEARCH 直接非法退出,要判 SELECT 的返回值不能靠 try/except。
+
 ### 📕 积压封存(8/12,Gary:"货过去的就不管了 我们新开始")
 - `gts_three_way.py --close-open` → 当前 10 张 / $54,899 写进 state 的 `closed`(带日期),**不再报警,`--all` 仍看得到**。已验三步:封存后报警清单空 → 摘掉 `INV01131265` 立刻重报 1 张 $6,494(**探测器没被关掉**)→ 还原后归零。
 - **但"过去"是对货说的,不是对发票说的。** 我试着按"货还在不在架上"切这 $54,899,切不动:**认得出的只有 $8,127,$46,310 认不出**,因为那些 SKU 正是没映射的那批。而且**我的模糊匹配当场编了一个错答案**:`PU ME04 Chaos Rising ETB` → `Celebrations Pokemon Center Elite Trainer Box`(靠 pokemon/elite/trainer/box 四个词凑过阈值)。**五条"在架上"里错一条**,又一次证明这一步必须人点。
