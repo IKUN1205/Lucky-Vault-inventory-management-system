@@ -1,5 +1,13 @@
 # LV Inventory — 作业手册 brief (2026-08-13)
 
+## 🔴 8/13 singles 停摆 + "66 张只打出 7 张"(Gary:"singles 又down了 而且labels generate 少了 你看看storefront 群聊")
+- **群里 Sully 8/13 10:30 的原话**:"We have 66 labels we're trying to print from list but it's only letting us print 7" + "Website is also down for singles";12:17 又追 "still down"。**我 12:22 把服务拉起来,时间对得上。**
+- **服务这条**:`out/webapp.log` 里 `==== webapp start Wed 08/12 9:29:00 ====` 之后一个 `^C` —— **进程被 Ctrl+C 干掉,从 8/12 09:29 死到 8/13 12:22**。而且当时 **cloudflared 一个进程都没有**,两条隧道(singles + slabs)全断,`LV Slabs Webapp` 还活着但公网不通。三个任务全部 `result=3221225786`(被终止)。已 `Start-ScheduledTask` 拉起 `LV Singles Webapp Fixed` / `LV Singles Tunnel` / `LV Slabs Tunnel`,**按任务名启动,没按命令行关键词杀进程**(上次那么干误杀了 8081)。验证:三个 URL 全部回 **401 而不是 502** —— 401 是登录门,说明 app 起来了、隧道在路由;两个连接器 `ha_connections=4`。
+- **🔴 标签这条根本不是"生成少了"**:job **`44afa07bd512`(8/11 14:14,n_rows=66)** 的日志结尾写着 **`resolved: 6/66 · failed: 60`**,而**这 60 条全是同一句** `resolve_card ERR: Page.goto: Target page, context or browser has been closed`。**浏览器在第 7 张就死了,后面 60 张一张都没查过 —— 而 job 状态是 `DONE`,PDF 只有 6,742 字节(82 张那个是 65,837)。**
+- **和今天查到的其他毛病是同一类:失败装成了结果。** 店里看到"只让打 7 个",以为系统只认出 7 张卡;实际是抓取器死了,系统告诉他做完了。
+- **已修 `scripts/_batch4_ingest.py`**:加 `BrowserGone` + `_BROWSER_DEAD` 正则,**命中就 `break` 中止整批**(不是继续制造 60 条一样的错误),摘要照常打印、TSV 照常 flush(已解析的几张是真的,不能丢),**最后抛异常让 job 报 FAILED 而不是 DONE**。用 job 日志里的真实错误串验过:**真错误 → 中止;超时 / DNS / 页面没价 → 仍按单卡失败继续**(一张卡超时是那张卡的问题,浏览器关了是我们的问题)。
+- **⚠️ 待办**:那 66 张要重跑,但**已解析的 7 张已经流进 sheet 了**(`sheet_streamer` 是逐行写的),整批重跑会写重复。重跑前要先把那 7 张排掉。
+
 ## 📌 8/13 当前库存实数(Gary:"过去的就不用砍了 从今天开始对齐 你帮我看看现在库存还有多少")
 - **能按成本说的只有美国密封品:7,362 件 / $127,589**。按房:Master 2,892/$39,011 · Packheads 823/$35,334 · eBay SlabbiePatty 1,465/$24,256 · Front Store 532/$10,750 · RocketsHQ 417/$9,877 · PokeAuctionHouse 826/$4,453 · PokeCasino 154/$2,831 · eBay LVUS 253/$1,077。
 - **日本 sealed 用他们自己的账:465 件 ≈ ¥1,913,935 ≈ $12,015**。**我们的表写 2,727 件 / $90,486 —— 虚高 7.5 倍,不要用**,那个房间从来没有一条进出记录。**光这一项,账上就多挂了约 $78,000。**
