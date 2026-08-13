@@ -12,7 +12,14 @@
 - **🔴 日本对账定为从 8/13 起对齐,之前的 $163,842 缺口不追**(Gary 决定)。理由和 GTS 那次一样:**没有痕迹的历史补不回来,补了就是编**。往后按日本 `出库表(lv)` 对 `jp_to_us_shipment`。
 - **范围收紧(Gary 8/13:"日本sheet内部的话其实无所谓 我们不用管他们内部 我们只要负责美国的帐 / 我们先focus on sealed")**:日本的 直播/订单/调货 三个内部出库口**不归我们管**,我们只对"发到美国 → 有没有入我们的账"这一段。单卡/评级卡先放一边。
 
-### 🔴 130point 抓取器已坏,而且是"返回错数"不是"返回空"(8/13 查实,周一定时任务还在跑)
+### ✅ 130point 已修好并验证(8/13,Gary:"修 130points")
+- **三个 bug,第一个是病根**:① **`/sales/` 现在重定向到首页,结果在 SPA 的 `/search` 路由上** —— 老代码在首页打字、睡 12 秒、然后读**首页**的正文 ② **固定 sleep 分不出"还在 Searching..."和"搜完了没结果"** ③ **`Best Offer Accepted` 行会印两个价(挂牌价 → 成交价),老代码取"后面第一个 $" 取到的是挂牌价**,把每一笔议价成交都记高了。另外页面里混着 `$98.40 AUD` 这种非美元行,老代码照收。
+- **改法**:去 `https://130point.com/`(不是 `/sales/`)→ 打字回车 → **等到 `Searching...` 消失且出现 `Sold (N)` 计数器**(最多 60 秒)→ **等不到就抛 `Point130Broken`,绝不返回 0 笔**("没成交"和"页面没加载"是同一个空列表,只有一个有意义)→ 只认 `^\$X USD$` 行 → `Best Offer` 取**最后一个**美元价、其余取第一个。
+- **两个方向都验了**:`Gem Vol.5 盒 → $41.25 / 10 笔`(坏版本报 **$11,922**,真实约 $30–36)· `charizard base set → $1,197.50 / 10 笔` · **胡编的查询 → 0 笔**。
+- **修之前它已经在生产里跑**:`data/manual_price.log` 8/10 两次把 `Gem Vol.4 $36.00` 提议改成 **$10,397.50 / $11,247.00**,**唯一挡住的是 ±25% 熔断**;其余品全是 `0 clean comps, held` —— 这个周一任务实际上已经完全不工作。
+- **教训**:「"什么都没找到"也可能是探测器坏了,必须验」。我第一轮 10 个品全 0 笔,差点写成"这些品没有成交数据" —— **是跑了一个已知有数据的对照查询才发现是抓取器的问题。**
+
+### 🔴(已修,记录病根)130point 抓取器曾经返回错数而不是空
 - `manual_price_update.sold_median` 打开 `https://130point.com/sales/`,**现在被重定向到首页** —— 实测结束时 `page.url == https://130point.com/`,页面文字是 `Log in / Find your next grail / Recent / Saved`。脚本在拿落地页的文本行去匹配随机 `$` 金额。
 - **后果比返回空更糟**:大部分查询报 **0 笔**(看起来像"这个品没成交"),少数报**一个自信的错数**。对照实测:`Gem Vol.5 booster box → 中位 $11,922.50 / 10 笔`(真实约 $30);`charizard base set → 0 笔`(这个不可能没成交)。
 - **生产日志 `data/manual_price.log`(8/10)**:`🧊 Gem Vol.4 Booster Box $36.00 -> $10,397.50 (sold-med $9,902, 10 comps) FROZEN >±25%`,下一轮 `-> $11,247.00`。**一个 $36 的盒差点被挂成一万美元,唯一挡住它的是那道 ±25% 熔断。** 其余品全是 `only 0 clean comps, held` —— **这个周一任务实际上已经完全不工作了。**
@@ -22,8 +29,17 @@
 ### 🔴 给无成本行查价的实测结果(8/13,Gary:"通过 tcgplayer ebay 或者 130points 查价格")
 - **TCGplayer(`erp_pricing.price_product`)**:**钉了 id 能直接用的只有 5 个品 / 7 件 / $1,641**;模糊匹配到 11 个品 / 47 件(**按 7/24 铁律只能当钉价候选,不许写成本**);**28 个品 / 264 件根本没有 TCG 线**,包括最大的三个(Rarity Collection 119 · First Partner S3 30 · Costco Mini Tins 26)。
 - **eBay BIN**:已给 27 个品加了查询词(`data/ebay_bin_queries.json`,备份 `.bak_0813`)。**过滤器是对的,查询词太宽** —— `yugioh rarity collection quarter century` 返回 55 条**全是单卡**($1.39–$6.29),`floor 40` + `form "booster box"` 正确地全挡了。**每个品都要单独收紧查询词**,那是查询词文件自己 readme 写明的人工活。
-- **130point**:见上,抓取器坏了,这条路暂时不通。
-- **口径提醒**:这三个源给的都是**市价**,不是我们实付。要写进 `avg_cost_basis` 必须先定折扣口径(单卡是 8/10 定的"市价×80%",sealed 没有定过)。
+- **130point(修好之后重跑)**:**6 个品 / 173 件 / 成交中位合计市值 $18,251**,每个都是 10 笔样本 ——
+  ```
+  Rarity Collection Quarter Century 盒   119 × $105.00  = $12,495
+  Costco Prismatic Evolutions Mini Tins   26 × $168.78  =  $4,388
+  2023 UD Marvel Allegiance Trilogy        4 × $135.41  =    $542
+  Nivel Arena Epic Seven 盒               11 × $31.50   =    $346
+  Prismatic Evolutions Poster Collection   7 × $43.00   =    $301
+  Monkey D Luffy Starter Deck              6 × $29.80   =    $179
+  ```
+  还有 4 个品 / 46 件查不到(`First Partner S3` 30 · `YGO Chaos Origins` 6 · `Zoro Starter Deck` 6 · `Dinosaur's Rage` 4)—— **查询词还要再收紧,不是没有数据**。
+- **🔴 口径提醒**:这三个源给的都是**市价**,不是我们实付。**要写进 `avg_cost_basis` 必须 Gary 先定折扣口径** —— 单卡是 8/10 定的"市价×80%",**sealed 从来没定过**。在定之前这 $18,251 只能当参考,不许写库。
 
 ### ✅ 8/13 补了 12 行成本(Gary:"我以为我们修正了 你确定吗")
 - **他问得对 —— 之前没修。** 8/12 只做到了分类:`cost_recovery_probe` 把无成本行归了类,`gts_map_queue` 映射了 15 个 SKU,**但映射 SKU 不写成本** —— 成本要 commit 发票才落地,而 `CUTOVER` 又把老发票挡住了。**那 62 行原封不动。**
