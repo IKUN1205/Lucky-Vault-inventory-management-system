@@ -8,6 +8,14 @@
 - **已修 `scripts/_batch4_ingest.py`**:加 `BrowserGone` + `_BROWSER_DEAD` 正则,**命中就 `break` 中止整批**(不是继续制造 60 条一样的错误),摘要照常打印、TSV 照常 flush(已解析的几张是真的,不能丢),**最后抛异常让 job 报 FAILED 而不是 DONE**。用 job 日志里的真实错误串验过:**真错误 → 中止;超时 / DNS / 页面没价 → 仍按单卡失败继续**(一张卡超时是那张卡的问题,浏览器关了是我们的问题)。
 - **⚠️ 待办**:那 66 张要重跑,但**已解析的 7 张已经流进 sheet 了**(`sheet_streamer` 是逐行写的),整批重跑会写重复。重跑前要先把那 7 张排掉。
 
+## ✅ 单卡加"成交记录"链接(8/13,Gary:"不用在labels上 我们在系统里面显示 就行 就是类似于slabs的状况 我们把sales 的link 贴上去";**已写完,未过 review 未发版**)
+- **不做标签**(Gary 8/13 明确否掉)。**照 slabs 的先例做在 app 里** —— `SellSlabModal` / `SlabsInventory` 早就有 `slabCertUrl` + `ebaySearchUrl`,单卡这边只有 TCGplayer 链接。
+- **🔴 130point 不能做链接,这是硬事实**:它的搜索状态**从不进 URL**(8/13 实测:输入查询回车后地址栏就是 `https://130point.com/search`,`?q=` 和 `?search=` 都被剥掉、结果为空)。所以标签也好、系统也好,**没有任何 130point 链接可以贴**。
+- **落点改成 eBay 成交**:新 `ebaySoldUrl(name, number, setName)`(`src/lib/saleChannels.js`),`LH_Sold=1&LH_Complete=1&_sop=13` + **`-psa -bgs -cgc` 排掉评级卡**(和抓取器看同一批货)。**镜像 `lv-singles-erp/price_confidence.ebay_sold_url`**,让团队看到的结果集和管线推理的一致。
+- **顺手改掉一条过时注释**:原来的 `ebaySearchUrl` 注释写"sold 过滤要登录所以只链普通搜索"。**普通搜索显示的是别人的要价,判 vintage 恰恰不能看要价** —— 8/12 实测 25 行 vintage 里 22 行(88%)背后只有 ≤1 笔成交。登录一次换真成交,值。两个函数都留着,用途注释分开写。
+- 落在两处:`SellSingleModal`(定价那一刻)和 `SinglesInventory` 列表行(`sold comps` 链接,`stopPropagation` 免得点链接把行也点开)。
+- **`name` 为空一律返回 null** —— 否则查询只剩 `-psa -bgs -cgc`,会打开 eBay 整个目录。**一个自信地打开错东西的链接比没有链接更糟。** `scratchpad/ebay_sold_url_test.mjs` **15 用例**(跑真函数),一半在验这个和"两个 eBay 函数不许混"。`npx vite build` 通过。
+
 ## 📌 8/13 当前库存实数(Gary:"过去的就不用砍了 从今天开始对齐 你帮我看看现在库存还有多少")
 - **能按成本说的只有美国密封品:7,362 件 / $127,589**。按房:Master 2,892/$39,011 · Packheads 823/$35,334 · eBay SlabbiePatty 1,465/$24,256 · Front Store 532/$10,750 · RocketsHQ 417/$9,877 · PokeAuctionHouse 826/$4,453 · PokeCasino 154/$2,831 · eBay LVUS 253/$1,077。
 - **日本 sealed 用他们自己的账:465 件 ≈ ¥1,913,935 ≈ $12,015**。**我们的表写 2,727 件 / $90,486 —— 虚高 7.5 倍,不要用**,那个房间从来没有一条进出记录。**光这一项,账上就多挂了约 $78,000。**
