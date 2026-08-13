@@ -2,17 +2,31 @@
 
 ## 🔴 8/13 singles 停摆 + "66 张只打出 7 张"(Gary:"singles 又down了 而且labels generate 少了 你看看storefront 群聊")
 - **群里 Sully 8/13 10:30 的原话**:"We have 66 labels we're trying to print from list but it's only letting us print 7" + "Website is also down for singles";12:17 又追 "still down"。**我 12:22 把服务拉起来,时间对得上。**
-- **服务这条**:`out/webapp.log` 里 `==== webapp start Wed 08/12 9:29:00 ====` 之后一个 `^C` —— **进程被 Ctrl+C 干掉,从 8/12 09:29 死到 8/13 12:22**。而且当时 **cloudflared 一个进程都没有**,两条隧道(singles + slabs)全断,`LV Slabs Webapp` 还活着但公网不通。三个任务全部 `result=3221225786`(被终止)。已 `Start-ScheduledTask` 拉起 `LV Singles Webapp Fixed` / `LV Singles Tunnel` / `LV Slabs Tunnel`,**按任务名启动,没按命令行关键词杀进程**(上次那么干误杀了 8081)。验证:三个 URL 全部回 **401 而不是 502** —— 401 是登录门,说明 app 起来了、隧道在路由;两个连接器 `ha_connections=4`。
+- **服务这条**:`out/webapp.log` 里 `==== webapp start Wed 08/12 9:29:00 ====` 之后一个 `^C` —— **进程被 Ctrl+C 干掉,从 8/12 09:29 死到 8/13 12:22**。而且当时 **cloudflared 一个进程都没有**,两条隧道(singles + slabs)全断,`LV Slabs Webapp` 还活着但公网不通。三个任务全部 `result=3221225786`(被终止)。已 `Start-ScheduledTask` 拉起 `LV Singles Webapp Fixed` / `LV Singles Tunnel` / `LV Slabs Tunnel`,**按任务名启动,没按命令行关键词杀进程**(上次那么干误杀了 8081)。验证:三个 URL 全部回 **401 而不是 502** —— 401 是登录门,说明 app 起来了、隧道在路由。**⚠️ 但这个验证不够,当天晚些时候证明它漏掉了真病根**:我只证明了**我这条路**通,而当时 `lv-singles` 上还挂着 VPS 的第二个连接器,团队被分到那边就是 host error(见上一节)。**"我这边能打开"不能证明服务是好的。**
 - **🔴 标签这条根本不是"生成少了"**:job **`44afa07bd512`(8/11 14:14,n_rows=66)** 的日志结尾写着 **`resolved: 6/66 · failed: 60`**,而**这 60 条全是同一句** `resolve_card ERR: Page.goto: Target page, context or browser has been closed`。**浏览器在第 7 张就死了,后面 60 张一张都没查过 —— 而 job 状态是 `DONE`,PDF 只有 6,742 字节(82 张那个是 65,837)。**
 - **和今天查到的其他毛病是同一类:失败装成了结果。** 店里看到"只让打 7 个",以为系统只认出 7 张卡;实际是抓取器死了,系统告诉他做完了。
 - **已修 `scripts/_batch4_ingest.py`**:加 `BrowserGone` + `_BROWSER_DEAD` 正则,**命中就 `break` 中止整批**(不是继续制造 60 条一样的错误),摘要照常打印、TSV 照常 flush(已解析的几张是真的,不能丢),**最后抛异常让 job 报 FAILED 而不是 DONE**。用 job 日志里的真实错误串验过:**真错误 → 中止;超时 / DNS / 页面没价 → 仍按单卡失败继续**(一张卡超时是那张卡的问题,浏览器关了是我们的问题)。
 - **⚠️ 待办**:那 66 张要重跑,但**已解析的 7 张已经流进 sheet 了**(`sheet_streamer` 是逐行写的),整批重跑会写重复。重跑前要先把那 7 张排掉。
 
-## 🔴 8/13 "系统还是打不开" = 登不进去,不是服务挂了(Gary:"团队说 你可以确认吗 / 你修复一下")
-- **实测结论:服务是好的,团队进不来。** 12:22 重启后到现在,外部请求 **10 次 401、1 次 200,而那唯一一次 200 是我自己的测试**。请求打到 app 了、隧道也通 —— **是密码没过**。
-- 验证方式很重要:**用 Python 直连公网会被 Cloudflare 挡(error 1010「按浏览器签名封禁」)**,那是挡我不是挡他们。**带上正常浏览器 UA 再测**,不带密码 401、带密码 **200 页面正常打开** —— 所以密码本身、隧道、app 全都没问题。**我第一次拿裸 urllib 测出 403 就差点报成"Cloudflare 在拦",那是测法的问题。**
-- 排掉的假设:`WWW-Authenticate: Basic` **在**(本地和公网都有),所以浏览器会弹框;`.env` 里的 `WEB_PASSWORD`(13 位)**是有效的**(带它就 200)。
-- **我修不了的那半**:我不知道他们输的是什么。密码在 `lv-singles-erp/.env` 的 `WEB_PASSWORD`,账号 `lvteam`,**要人给他们**。
+## 🔴 8/13 "host error" 真因:一条隧道上挂着两个连接器,一半流量打到 VPS 的空机器(已修并验证,Gary:"直接换成我们这边的隧道可以吗")
+- **`cloudflared tunnel list` 一眼就看得出来**:`lv-singles` 的连接是 `1xiad02, 1xiad05, 1xiad12, 1xiad17, 2xlax01, 2xlax09` —— **8 条**;而正常的 `lv-slabs` 只有 4 条。**一个 cloudflared 建 4 条 HA 连接,8 条 = 两个连接器。**
+  ```
+  CONNECTOR                             CREATED               ORIGIN IP        EDGE
+  a1f52b5c-285c-4a3b-b38d-b7e7199d5f73  2026-08-04 10:13 UTC  172.252.168.89   iad02/05/12/17   ← VPS
+  02eb6db7-96cd-4096-99a8-2cee430f45c6  2026-08-13 19:22 UTC  12.127.38.18     lax01/lax09      ← 本机
+  ```
+- **VPS 那条隧道从 8/04 就连着,而 VPS 上的 singles webapp 8/10 被停了** —— 隧道留着、app 关掉。**Cloudflare 把请求交给它挑中的任意一个连接器,挑到 iad 就打在一台什么都没监听的机器上,返回 host error;挑到 lax 就正常。** 同一个网址,有人能开有人开不了,刷新一下可能又好了。
+- **`prompts/vps_smoke_test.md` 早就写明了会这样**:"Do not start the cloudflared tunnel on VPS yet (would conflict with Gary's local tunnel **sharing the same tunnel ID**). Wait for explicit go." 隧道起来了,而停 app 的时候没人想起来隧道还连着。
+- **🔴 我上一条结论是错的,病根不是密码。** 我把 webapp 日志里的"外部请求 401"当成团队在试密码 —— **`12.127.38.18` 就是这台机器自己的出口 IP**(我走公网绕一圈回来测,记的就是它)。全日志按 IP 统计:`12.127.38.18` 24 条(**全是我**)· `127.0.0.1` 12 条(**也是我**)· `54.251.7.248` / `13.251.10.225` 共 3 条(**AWS 新加坡,扫描机器人**)。**团队一条都没有,连一个 401 都没有 —— 他们的请求根本没到过这台机器。** 判"谁在打我的服务"之前,先查本机出口 IP。
+- **✅ 修法:换一条只有本机有凭证的隧道**(Gary 批)。新建 `lv-singles-local` = `bf506712-78bd-41de-ac4c-c01c2d483e74`,`config.yml` 指过去(`run_singles_tunnel.bat` 读的就是它,bat 和任务都不用改),CNAME 用 `tunnel route dns -f` 重指。**VPS 那个 cloudflared 还连着旧隧道,但没有任何域名指向它 —— 它再也抢不走流量,VPS 重启也一样。** 旧配置留在 `config.yml.bak_0813`,回滚 = 还原它 + `tunnel route dns -f lv-singles lv-singles.luckyvault.us`。
+- **顺序是为了不停机排的**:① 改 config.yml(**不影响已跑的进程,配置是启动时读的**)② 用新配置**另起一个临时 cloudflared**,等它连上 ③ **这时才切 DNS** —— 切过去的目标已经是连好的 ④ 停任务 + **按 PID 杀**旧连接器(49572)⑤ 起任务让它用新配置接管 ⑥ 撤临时进程。**全程公网可用。** 每一步都确认过 slabs 的 19604 / 8081 的 7808 没被碰。
+- **验收不是"隧道连上了",是"外面带密码能进到应用页"**:不带密码 401 · 带密码 **200,标题 `Submit batch · LV Singles`,上传表单在** · `/health` 连打 8 次全 200 · `tunnel info` 只剩 1 个连接器,源 IP 是本机。
+- **教训**:`tunnel list` 的连接数是个免费的健康指标 —— **不是 4 的倍数、或者 edge 跨了两个地区,就说明有第二个连接器**。这个故障形态最恶心的地方是它**部分工作**,所以"我这边能打开"根本不能证明什么。
+
+## 🔴 8/13 "系统还是打不开" 的两个附带修复(Gary:"团队说 你可以确认吗 / 你修复一下")
+- **时间线分两段,不是一件事**:8/12 09:29 → 8/13 12:22 是**进程被 Ctrl+C 干掉的全停**;12:22 → 22:33 是**上面那个双连接器,约一半请求 host error**。两段都是真的,先后发生。
+- 验证方式很重要:**用 Python 裸 urllib 直连公网会被 Cloudflare 挡(error 1010「按浏览器签名封禁」)**,那是挡我不是挡他们。**必须带正常浏览器 UA 再测**。我第一次拿裸 urllib 测出 403 就差点报成"Cloudflare 在拦团队"。
+- `.env` 里的 `WEB_PASSWORD`(13 位)**是有效的**(带它就 200);`WWW-Authenticate: Basic` 本地公网都在,所以浏览器会弹框。**密码这条至今没有任何证据说它错过** —— 团队根本没走到那一步。
 - **✅ 修了让这件事一再发生的两个东西**(`webapp/main.py`,已重启生效):
   1. **新增 `/health`,不需要密码**。"服务挂了"和"我登不进去"从外面看长得一模一样 —— 都是打不开的网页 —— 而这两件事要找的人不同。今天就是因为分不开,白等了一天。现在一键可判:`/health` 打得开就说明服务活着。
   2. **401 改成人看得懂的页面**。原来浏览器密码试完就渲染 `{"detail":"Not authenticated"}`,店里读成"网站坏了"。现在写明账号是 `lvteam`、服务在运行、**没弹框就开无痕窗口**(Basic 认证存过一次错密码就一直重发、再也不问)。
