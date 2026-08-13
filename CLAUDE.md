@@ -54,7 +54,23 @@
 - 另加 `BOOKED_ELSEWHERE = {INV01198587, INV01192197}` 守卫 —— Azuki / Weiss 那两张的成本是**故意直接进库存不插 acquisitions** 的,commit 会把它悄悄反悔掉。`--force` 可越过。
 - **Gary 8/12 拍板:老的一律不入账,那 $54,416 不补,OP-16 的 $13,753 也不改。** 已用 `CUTOVER` 钉死(见上)。**映射照样留着 —— 它管的是往后**:同一批 SKU 再来,自动入账。
 
-### 🔴 邮箱查实:GTS 从来没往我们信箱发过发票(8/12,Gary:"邮件里面的数字是最直接的")
+### ✅ GTS 的真渠道找到了:Frank 和业务员的邮件线程(8/12 上线,Gary:"mrvault的邮件里面有 / 读")
+- **`inventory-sync/gts_mail_watch.py`(新,只读,绝不写库)**。读 **mrvault@luckyvault.us** —— **凭证不用新加**:`lv-singles-erp/.env` 里那个 Gmail 应用密码本来只用来发信,**应用密码是账号级的,同一个就能读 IMAP**(只读 EXAMINE + BODY.PEEK)。故意不复制进 `inventory-sync/data/`,免得多一份要轮换的密钥。
+- **GTS 不发结构化发票邮件**(`INV01xxxxxx` 和去掉前缀的纯数字,两个信箱四个文件夹全搜过,0 命中)。**但他们发的这个更有用** —— 8/12 当天:
+  ```
+  Mike Cardoza (GTS) → Franklin:
+    "if you'd like 40 pok destined rivals ETBs $71 per, please send $2,849.50"
+  Franklin → Mike: "Yes will send asap"
+  ```
+  **品名 · 数量 · 单价 · 要打的金额,全在纯文本里,而且在钱动之前。** 40 × $71 = $2,840,差的 **$9.50 正是 handling fee**(和发票上那个数一样)。
+- **邮件跑在门户前面 0–5 天,已用真数据验**:60 天 7 条打款指令 / 约 $29,465,**3 条能被发票精确凑出**(`$13,286.25 = INV01176454 + INV01177509 + INV01179028`,分毫不差)。**一次打款覆盖多张发票** —— 我第一版按 1 对 1 测,得出"7 中 1",那是拿一对一的尺子量一对多的事,数字是真的但没有意义。
+- **凑不出的那条最说明问题**:8/12 那笔 $2,849.50 **根本还没有发票** —— Frank 今天才说要打。**这不是漏检,这就是论点本身。**
+- **只读,绝不建 acquisitions**:`40 pok destined rivals ETBs` 是分销商简写,而今天已经证明简写匹配会给自信的错答案(Dragon Ball 被猜成 Pokemon、Chaos Rising 被猜成 Celebrations)。**金额和单价是无歧义的,报出来;认产品这一步留给人。**
+- **顺带白捡一个**:Mike 偶尔在邮件里把 SKU 和全名写在一起 —— `BJP2855305 / DRAGON BALL SUPER TCG: FUSION WORLD STORY BOOSTER 01 (20CT)` —— **正是映射队列推不出来的那个展开**,工具会把 map 里没有的挑出来。
+- 噪音过滤按主题(Flash Sale / Stock List / Orders Due / New Product / Last Call…),**正向信号锚在 `send $X` 这句打款指令上**。19 个用例,**跑的是从信箱里抄出来的真文本**,其中一条专门验"促销群发里全是数量和金额,但没有 `send $` 就不许当订单"。
+- 已挂进 `run_gts_ingest.cmd`。
+
+### 🔴 邮箱查实:GTS 从来没往 help@ 发过发票(8/12)
 - **道理是对的**:门户是一个可变页面,只能知道"我看的那一刻它长什么样";邮件是带时间戳、不会变的记录。今天那个 bug 本质就是拿轮询去测事件。**但对 GTS 这条线不成立。**
 - 实搜 `help@luckyvault.us`(IMAP,**只读 EXAMINE + BODY.PEEK,不标已读、不碰 lv-inbound-mail 的 cursor**):缓存里最近 8 张发票号 **全部 0 命中**;`INV011` / `INV012` 前缀在 **All Mail · Spam · Trash · Sent 四个地方全是 0**;`from:gts` = 0。**唯一一条 `gtsdistribution` 是 2023 年 Gary 自己发出去的询价。**
 - **139 封"GTS Distribution"全是 UPS 的到货通知**(GTS 是发货方,名字跟着运单走),不是 GTS 发的。
