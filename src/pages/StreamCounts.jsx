@@ -10,7 +10,8 @@ import {
   updateInventory,
   fetchStreamCounts,
   fetchStreamCountItems,
-  fetchOpenSurplus
+  fetchOpenSurplus,
+  fetchStockElsewhere
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
@@ -546,18 +547,41 @@ export default function StreamCounts() {
       // zero — they are UNKNOWN, and stay unknown until a Move accounts for the
       // surplus. `streak` says how many counts in a row have reported it, which
       // is what turns "new discrepancy" into "nobody has fixed this since X".
+      // Where else the company holds these SKUs. A surplus the rest of the
+      // system can cover is a filing error — a Move closes it and the total
+      // never changes. One it cannot cover has no source at all, and no amount
+      // of moving stock will produce it. Looked up here rather than at load
+      // time because it is only needed for the handful that came up over, and
+      // a SKU can go surplus for the first time in this very count.
+      let elsewhereMap = null
+      try {
+        elsewhereMap = await fetchStockElsewhere(
+          items.filter(i => i.difference > 0).map(i => i.product_id),
+          form.location_id
+        )
+      } catch (elsewhereErr) {
+        // Leave it null. Reporting "no source anywhere" because a query failed
+        // would send people to recount a room over an outage.
+        console.warn('[open-surplus] elsewhere lookup failed — surplus will be reported unclassified:', elsewhereErr)
+      }
+
       const discrepancyItems = items
         .filter(i => i.difference > 0)
         .map(i => {
           const inv = inventory.find(inv => inv.product_id === i.product_id)
           const carried = carriedSurplus[i.product_id]
+          const other = elsewhereMap ? (elsewhereMap.get(i.product_id) || { units: 0, sources: [] }) : null
           return {
             product: inv?.product,
             expected: i.expected_qty,
             actual: i.actual_qty,
             extra: i.difference,
             streak: (carried?.streak || 0) + 1,
-            since: carried?.since || null
+            since: carried?.since || null,
+            // null = we could not check, which is neither "fixable" nor "no source"
+            elsewhere: other ? other.units : null,
+            sources: other ? other.sources.slice(0, 3) : [],
+            fixable: other ? other.units >= i.difference : null
           }
         })
       
@@ -666,7 +690,11 @@ export default function StreamCounts() {
         const discrepancyForLark = discrepancyItems.map(i => ({
           name: formatProductName(i.product),
           extra: i.extra,
-          streak: i.streak
+          streak: i.streak,
+          since: i.since,
+          fixable: i.fixable,
+          elsewhere: i.elsewhere,
+          sources: i.sources
         }))
 
         fetch('/api/lark-notify', {
@@ -1314,7 +1342,7 @@ export default function StreamCounts() {
               <div className="mb-6">
                 <h3 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
                   <AlertTriangle size={20} className="text-amber-400" />
-                  Found beyond system — needs transfer-in
+                  Found beyond system
                 </h3>
                 <div className="bg-amber-400/10 rounded-lg border border-amber-400/30 overflow-hidden">
                   <table>
@@ -1324,6 +1352,7 @@ export default function StreamCounts() {
                         <th className="text-right text-amber-400">Expected</th>
                         <th className="text-right text-amber-400">Counted</th>
                         <th className="text-right text-amber-400">Extra</th>
+                        <th className="text-amber-400">What to do</th>
                         <th className="text-right text-amber-400">Unresolved for</th>
                       </tr>
                     </thead>
@@ -1334,6 +1363,25 @@ export default function StreamCounts() {
                           <td className="text-right text-gray-400">{item.expected}</td>
                           <td className="text-right text-gray-400">{item.actual}</td>
                           <td className="text-right text-amber-400 font-medium">+{item.extra}</td>
+                          {/* "Record a Move" is only an instruction where there is
+                              somewhere to move stock FROM. Printing it against a SKU
+                              the company holds nowhere else is why one of these has
+                              now been reported eleven counts running. */}
+                          <td className="text-xs">
+                            {item.fixable === true ? (
+                              <span className="text-emerald-300">
+                                Move in from {(item.sources || []).map(s => `${s.name} (${s.qty})`).join(', ') || 'another room'}
+                              </span>
+                            ) : item.fixable === false ? (
+                              <span className="text-amber-300">
+                                No source anywhere — needs a physical recount, do not adjust stock
+                              </span>
+                            ) : (
+                              <span className="text-gray-400">
+                                Could not check other rooms — unresolved
+                              </span>
+                            )}
+                          </td>
                           <td className="text-right text-amber-400/80">
                             {item.streak > 1
                               ? `${item.streak} counts in a row`
@@ -1345,9 +1393,11 @@ export default function StreamCounts() {
                   </table>
                 </div>
                 <p className="text-xs text-amber-400/80 mt-2">
-                  ⚠️ These were <b>NOT</b> added to inventory — a count can't add stock. They
-                  arrived without a transfer. Record a <b>Move</b> (source → this room, e.g.
-                  Master → {report.location_name || 'this room'}) so they're properly accounted for.
+                  ⚠️ These were <b>NOT</b> added to inventory — a count can't add stock.
+                  Where the goods exist in another room, recording a <b>Move</b> into{' '}
+                  {report.location_name || 'this room'} fixes the books and the company total
+                  doesn't change. Where they don't, no Move can source them — that needs a
+                  physical recount or the people in the room.
                 </p>
                 <p className="text-xs text-amber-400/80 mt-1">
                   Until then, <b>sales for these SKUs are unknown, not zero</b>. A count measures

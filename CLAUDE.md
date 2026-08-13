@@ -453,6 +453,17 @@
   - PackHeads 件数三分:**映射到 SKU 的只有 86 件**、有名字但没映射 843 件(37 个标题)、拍卖坑位 760 件(永远归不到 SKU)。最大的未映射项正是 **OP-13 blister 171 件**、Marvel Masterpieces 91、CN jumbo 68。
 - **`apply_orders_to_inventory.py` 上线前必须补的坑(8/11 读码查出,均未修)**:① 无 cut-over(见上)② `limit=2000`/`5000` 硬截断,踩 PostgREST 分页坑 ③ 扣库存是"读了再写绝对值",**无乐观锁**,并发会丢写 ④ **无负库存下限**,违反铁律1 ⑤ movement+扣库存写完才写台账,中间崩了下次会**重复扣** ⑥ `PH_ROOM` 写死,RocketsHQ / VaultTcgAuction 两个店根本没处理 ⑦ **全程不写 `platform_sales`** —— 就算跑通了,$127k 那个洞照样在。
 
+## ✅ 8/12 多出分两类走(已写完,**未过 review 未发版**;Gary 问"这个怎么解决")
+- **病根不是盘点员,是那条指令根本执行不了。** 原来八条多出印同一句 `Record a Move`,每场原样重印;`DB Masters Prismatic Clash` 已经连报 **11 场**。查下来它全公司只有 2 件,而 2 件**全部就在被盘的那个房间里** —— **没有任何房间可以搬给它**。一条被无视 11 次的指令不是没人看,是做不到。
+- **判据是"这个房间之外还有没有货",不是"全系统够不够"**(我第一版就写错了,OP-16 那 270 件全在本房)。实测 8/12 那 97 件:**A 类 9 件(房外有货)· B 类 12 件(GTS 有发票没收货)· C 类 76 件(查无来路)** —— 和 8/11 那次形状一致,A 类永远只有个位数。
+- **新 `fetchStockElsewhere(productIds, excludeLocationId)`**(`supabase.js`):返回每个 SKU 在**别的房间**的件数和来源房名。**提交时才查**,不在加载时 —— 只有多出的那几个要用,而且一个 SKU 可能这一场才第一次多出。
+- **查询失败 = 第三种状态,不许归进任何一类**(照 `fetchOpenSurplus` 那次的先例:降级成空 map 会让所有销量被标 `exact`,拿一次故障制造确定性)。失败时 `fixable: null` → 消息明写 `Could not check other rooms … treat as unresolved, not as fixable`。
+- **消息拆两块**(`api/lark-notify.js` 抽出 `appendSurplus()`):可修的**点名来源房间和件数**(`← Master Inventory has 36, RocketsHQ has 23`),一眼就能照做;查无来路的**不再要求 Move**,改印 `Do NOT adjust stock` + **连报几场 + 挂了多少天**,按年龄排。
+- **上限里有一条特意的例外**:查无来路的只印 4 条,**但最大的那条永远不会被挤掉** —— 8/12 的 OP-16 是 +67 / +97(70%),为了给一条 +1 腾位置而把它省掉,比不印这张表更糟。省略的部分必须报数(`… and N more, +M units`),不能看起来像"就这些"。
+- 屏幕上那张表加了 **What to do** 列,同一套判定;标题从 `needs transfer-in` 改掉 —— 对搬不动的那些,那是同一句错指令。
+- `scratchpad/surplus_split_test.mjs` **21 用例**(跑真的 `appendSurplus`,用 8/12 那张卡的真数据),含"查不到别房时两块都不许说"、"最大的不会被上限挤掉"、"缺 since 不许印 NaN"。`npx vite build` 通过。
+- **还没做的**:B 类(有发票缺收货)在 app 里看不到 —— GTS 发票是本地数据。那条留在 `inventory-sync` 侧。
+
 ## 盘点=销量尺(8/5 Gary:"这个数其实是为了上一个主播数的 就是对应他们的货卖掉了多少")
 - 盘点的本质是**给上一场主播算销量**:`sold = expected − actual`。**expected 一旦错,这把尺子就废了** —— 实物高于账面时 actual 永远 ≥ expected,该 SKU 每场都算出 `sold 0`,货照样往外走。**实测 7/25–8/6 Packheads 因此吞掉 91 件销量 ≈ $2,615 成本**(最干净的病例:OP-13 blister 三个人五次盘点 170→156→150→128,走了 42 片,系统记 0;`scratchpad/swallowed_sales.py`)。
 - **8/5 已上线修法(未 push,待 Codex)**:`fetchOpenSurplus(locationId)` 读近 12 次盘点算出"仍高于账面"的 SKU + **连续几场没解决(streak)**;StreamCounts 提交时,**之前就有多出的 SKU 销量标 `≥`(下限,不是精确值)**,本次仍多出的 SKU 在报表和 Lark 里明说 **"sales UNKNOWN this session, not zero"** 并带 "reported N counts in a row"。**盘点页面本身不显示任何多出信息**(盲盘不能泄露 expected)。实测 streak 正确:OP-13=5、FB03=5。

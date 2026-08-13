@@ -682,23 +682,107 @@ function buildStreamCountDetailed(body) {
     }
   }
 
-  if (discrepancyItems.length > 0) {
+  appendSurplus(lines, discrepancyItems, totalDiscrepancies)
+  appendCounterNote(lines, body)
+  return lines.join('\n')
+}
+
+// How long an unresolved surplus has been open, in whole days.
+function daysOpen(since) {
+  if (!since) return null
+  const t = Date.parse(since)
+  if (Number.isNaN(t)) return null
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000))
+}
+
+const MAX_UNSOURCED_SHOWN = 4
+
+/**
+ * Surplus, split by whether anything can actually be done about it.
+ *
+ * The old block printed one list with the same instruction against every line
+ * — "record a Move" — and repeated it verbatim every session. By 2026-08-12
+ * one SKU had carried that same line for 11 counts running. An instruction
+ * that has been ignored eleven times is not being ignored; it is impossible to
+ * follow, because for most of these there is no room to move stock FROM. The
+ * whole company held 2 units of the Prismatic Clash and all 2 were already in
+ * the room being counted.
+ *
+ * So the two cases get separated. Where stock exists elsewhere, name the room
+ * and the quantity, because that turns the instruction into something a person
+ * can carry out in thirty seconds. Where it does not, say so plainly, stop
+ * asking for a Move that cannot be made, and show age instead — these need a
+ * physical recount or the people in the room, and age is what makes them
+ * escalate instead of blend in.
+ */
+export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies) {
+  if (!discrepancyItems.length) return lines
+
+  lines.push('')
+  lines.push(`⚠️ Found beyond system: +${Number(totalDiscrepancies) || 0} units — NOT added to inventory`)
+  // Staff read "+N found" as cosmetic. What it means is that this SKU's sales
+  // cannot be measured until the books are right, and goods keep leaving.
+  lines.push(`   Sales for these SKUs are UNKNOWN this session, not zero — a count can only`)
+  lines.push(`   measure sales when the books are right.`)
+
+  const fixable = discrepancyItems.filter(i => i.fixable === true)
+  const unsourced = discrepancyItems.filter(i => i.fixable === false)
+  const unchecked = discrepancyItems.filter(i => i.fixable !== true && i.fixable !== false)
+
+  if (fixable.length > 0) {
     lines.push('')
-    lines.push(`⚠️ Found beyond system: +${Number(totalDiscrepancies) || 0} units — NOT added to inventory`)
-    // The consequence, stated plainly. Staff read "+N found" as cosmetic; what
-    // it actually means is that this SKU's sales are unmeasurable until the
-    // Move is recorded, and the goods keep leaving in the meantime.
-    lines.push(`   Sales for these SKUs are UNKNOWN this session, not zero — a count can only measure`)
-    lines.push(`   sales when the books are right. Record a Move (source → this room, e.g. Master →):`)
-    for (const item of discrepancyItems) {
-      const streak = Number(item.streak) || 1
-      const nag = streak > 1 ? `  ← reported ${streak} counts in a row, still unresolved` : ''
-      lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}${nag}`)
+    lines.push(`✅ Fixable now — the stock exists in another room. Record a Move into this room;`)
+    lines.push(`   the company total does not change:`)
+    for (const item of fixable) {
+      const from = (item.sources || []).map(s => `${s.name} has ${s.qty}`).join(', ')
+      lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}${from ? `  ← ${from}` : ''}`)
     }
   }
 
-  appendCounterNote(lines, body)
-  return lines.join('\n')
+  if (unsourced.length > 0) {
+    lines.push('')
+    lines.push(`❓ No source anywhere — the whole company holds less than was counted, so there is`)
+    lines.push(`   no room to move these from. Do NOT adjust stock. Needs a physical recount or`)
+    lines.push(`   the people in the room:`)
+    // Oldest first: the point of showing these is that some have been open for
+    // weeks, and sorting by size buries exactly those. But the cap must never
+    // hide the biggest — on 2026-08-12 one SKU was +67 of the +97, and a list
+    // that leaves it out to make room for a +1 is worse than no list.
+    const byAge = (a, b) => (daysOpen(b.since) ?? -1) - (daysOpen(a.since) ?? -1)
+    const sorted = [...unsourced].sort(byAge)
+    const shown = sorted.slice(0, MAX_UNSOURCED_SHOWN)
+    const biggest = unsourced.reduce((m, i) =>
+      (Number(i.extra) || 0) > (Number(m.extra) || 0) ? i : m, unsourced[0])
+    if (!shown.includes(biggest)) {
+      shown[shown.length - 1] = biggest
+      shown.sort(byAge)
+    }
+    const hidden = sorted.filter(i => !shown.includes(i))
+    for (const item of shown) {
+      const age = daysOpen(item.since)
+      const streak = Number(item.streak) || 1
+      const bits = []
+      if (streak > 1) bits.push(`${streak} counts running`)
+      if (age !== null && age > 0) bits.push(`open ${age}d`)
+      if (Number.isFinite(item.elsewhere)) bits.push(`system holds ${item.elsewhere} elsewhere`)
+      lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}${bits.length ? `  (${bits.join(', ')})` : ''}`)
+    }
+    if (hidden.length > 0) {
+      const restUnits = hidden.reduce((n, i) => n + (Number(i.extra) || 0), 0)
+      // Never let the cap read as "that was all of them".
+      lines.push(`  … and ${hidden.length} more, +${restUnits} units. Full list on the count report.`)
+    }
+  }
+
+  if (unchecked.length > 0) {
+    lines.push('')
+    lines.push(`⚠️ Could not check other rooms for ${unchecked.length} SKU(s), so these are unclassified —`)
+    lines.push(`   treat as unresolved, not as fixable:`)
+    for (const item of unchecked) {
+      lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}`)
+    }
+  }
+  return lines
 }
 
 function buildMessage(body) {

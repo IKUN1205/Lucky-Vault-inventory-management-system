@@ -1172,6 +1172,47 @@ export const fetchOpenSurplus = async (locationId, lookback = 12) => {
   return open.sort((a, b) => (b.extra - a.extra) || (b.streak - a.streak))
 }
 
+/**
+ * Stock for these products in every room EXCEPT this one.
+ *
+ * This is what separates the two kinds of surplus, and they need opposite
+ * handling. If the goods exist somewhere else, the system total is right and
+ * only the room is wrong: recording a Move fixes the books and cannot invent
+ * anything, because the total never changes. If they do not exist anywhere,
+ * the count found more than the company owns on paper — no Move can source it,
+ * and 铁律1 forbids writing it in. Measured 2026-08-12: 9 units of the first
+ * kind against 88 of the second, which is why they cannot share one message.
+ *
+ * Returns a Map. A product missing from the Map means the lookup ran and found
+ * nothing; a null return means the lookup FAILED. The caller must not conflate
+ * them — the last time a failed lookup here degraded to an empty result, every
+ * sold figure got stamped 'exact' on the strength of an outage.
+ */
+export const fetchStockElsewhere = async (productIds, excludeLocationId) => {
+  const ids = [...new Set((productIds || []).filter(Boolean))]
+  if (ids.length === 0) return new Map()
+
+  const { data, error } = await supabase
+    .from('inventory')
+    .select('product_id, quantity, location:locations(name)')
+    .in('product_id', ids)
+    .neq('location_id', excludeLocationId)
+    .gt('quantity', 0)
+  if (error) throw error
+
+  const out = new Map()
+  for (const row of data || []) {
+    const qty = Number(row.quantity) || 0
+    if (qty <= 0) continue
+    if (!out.has(row.product_id)) out.set(row.product_id, { units: 0, sources: [] })
+    const entry = out.get(row.product_id)
+    entry.units += qty
+    entry.sources.push({ name: row.location?.name || 'Unknown room', qty })
+  }
+  for (const entry of out.values()) entry.sources.sort((a, b) => b.qty - a.qty)
+  return out
+}
+
 export const createUser = async (name) => {
   const { data, error } = await supabase
     .from('users')
