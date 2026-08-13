@@ -29,16 +29,22 @@
 ### 🔴 给无成本行查价的实测结果(8/13,Gary:"通过 tcgplayer ebay 或者 130points 查价格")
 - **TCGplayer(`erp_pricing.price_product`)**:**钉了 id 能直接用的只有 5 个品 / 7 件 / $1,641**;模糊匹配到 11 个品 / 47 件(**按 7/24 铁律只能当钉价候选,不许写成本**);**28 个品 / 264 件根本没有 TCG 线**,包括最大的三个(Rarity Collection 119 · First Partner S3 30 · Costco Mini Tins 26)。
 - **eBay BIN**:已给 27 个品加了查询词(`data/ebay_bin_queries.json`,备份 `.bak_0813`)。**过滤器是对的,查询词太宽** —— `yugioh rarity collection quarter century` 返回 55 条**全是单卡**($1.39–$6.29),`floor 40` + `form "booster box"` 正确地全挡了。**每个品都要单独收紧查询词**,那是查询词文件自己 readme 写明的人工活。
-- **130point(修好之后重跑)**:**6 个品 / 173 件 / 成交中位合计市值 $18,251**,每个都是 10 笔样本 ——
+- **130point(修好之后重跑)**:
   ```
-  Rarity Collection Quarter Century 盒   119 × $105.00  = $12,495
-  Costco Prismatic Evolutions Mini Tins   26 × $168.78  =  $4,388
-  2023 UD Marvel Allegiance Trilogy        4 × $135.41  =    $542
-  Nivel Arena Epic Seven 盒               11 × $31.50   =    $346
-  Prismatic Evolutions Poster Collection   7 × $43.00   =    $301
-  Monkey D Luffy Starter Deck              6 × $29.80   =    $179
+  Costco Prismatic Evolutions Mini Tins   26 × $168.78  =  $4,388   (10 笔)
+  2023 UD Marvel Allegiance Trilogy        4 × $135.41  =    $542   (10 笔)
+  Prismatic Evolutions Poster Collection   7 × $43.00   =    $301   (10 笔)
+  Monkey D Luffy Starter Deck              6 × $29.80   =    $179   (10 笔)
   ```
-  还有 4 个品 / 46 件查不到(`First Partner S3` 30 · `YGO Chaos Origins` 6 · `Zoro Starter Deck` 6 · `Dinosaur's Rage` 4)—— **查询词还要再收紧,不是没有数据**。
+  查不到的:`First Partner S3` 30 · `YGO Chaos Origins` 6 · `Zoro Starter Deck` 6 · `Dinosaur's Rage` 4 —— 查询词还要收紧。
+
+### 🔴 我报错过一次:Rarity Collection 是日版不是英版(Gary 8/13 当场纠正)
+- 我用 `yugioh rarity collection booster box sealed` 查到 **$105 × 119 = $12,495** 并写进了简报。**Gary:「rarity collection 是日文的 不是英文」。查下来他是对的,那个 $105 是英版 RA 系列盒的价。**
+- **库里有两个一模一样的名字**:`0414c498 [EN] ppb=None 库存 0 成本 $40` · **`95108ef2 [JP] ppb=15 库存 119 成本 $0`**(日版一盒 15 包,对得上)。**119 盒全在 JP 那个上。** 又是加产品零查重造的重名。
+- **手册里早写着「钉前必验:名称+语言三对齐,已四次抓到 EN/JP 错配」—— 这是第五次,而且是我犯的。以后查价前先读 `products.language`。**
+- 重查日版:**130point 英文和日文两种写法都是 `Sold(0)`**(页面正常加载、有计数器,所以是真没数据不是抓取器坏);TCG 无严格匹配;eBay BIN 被单卡淹没。**公开源查不到这个品。**
+- **而且它在系统里没有任何来路**:acquisitions 无 · 日本 `入库表` 1,353 行 0 命中 · GTS 56 张发票 0 命中 · `movements` 0 条。**119 盒出现在 Master,零单据** —— 和 Storm 那个收货缺口同一形状(被盘点过 39 次)。
+- **✅ 最后是 Gary 直接给的数:日版 $40/盒。** 已写 `95108ef2` Master 行 **119 × $40.00 = $4,760**,备份 `rarity_jp_cost_backup.json`,乐观锁("仍无成本"才写)+ 回读通过。**这个数任何引擎都产不出来,只有买的人知道。**
 - **🔴 口径提醒**:这三个源给的都是**市价**,不是我们实付。**要写进 `avg_cost_basis` 必须 Gary 先定折扣口径** —— 单卡是 8/10 定的"市价×80%",**sealed 从来没定过**。在定之前这 $18,251 只能当参考,不许写库。
 
 ### ✅ 8/13 补了 12 行成本(Gary:"我以为我们修正了 你确定吗")
