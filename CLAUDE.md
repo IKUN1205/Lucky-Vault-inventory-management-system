@@ -33,6 +33,26 @@
   3. **`exc.headers` 原样透传** —— 弄丢 `WWW-Authenticate` 会让浏览器永远不弹框,把"密码错"变成真的打不开。六项端到端验过,本地公网一致。
 - **重启要按 PID 杀,不能靠 `Stop-ScheduledTask`** —— 任务停了但 .bat 起的 python 子进程还活着(实测 PID 没变、`/health` 仍 404)。杀之前先分别取 8080 / 8081 的 PID 并比对,**8081 是 slabs,绝对不能碰**(上次按命令行关键词杀误伤过)。
 
+## 🔴 8/13 晚:团队自己交的 49 张又死在第 30 张 —— 查出 `_reconnect` 从来就没救回来过(已修并验证)
+- 隧道修好后**团队自己登进去了**:下走 60 张的标签、又交了一批 49 张(job `bca2c792e6ab`)。**跑到第 30 张浏览器又死了。**
+- **今天早上那道闸门起作用了**:`🔴 ABORTED: browser died at card 30 of 49 … 19 cards unchecked` + `=== JOB FAILED ===`。对比 8/11:那次报 **DONE**、6KB 的 PDF、60 条一模一样的假失败。**失败不再伪装成结果。**
+- **🔴 但顺着查出 `_reconnect` 本身是坏的,三次重启从来没有过机会。** 报错是 `BrowserContext.new_page: … has been closed` —— **重连成功了,拿到的却是一具尸体**。病根在 `slab-inventory/app/adspower.py` 的 `start_browser`,它的文档自己写着 "Start the profile (**or re-attach if already running**)":别的 cron 调 `browser/stop` 之后 AdsPower 仍可能认为 profile 是 Active,于是 `browser/start` **把那个正在退出的浏览器的旧 ws 原样还回来**;旧代码接着无条件用 `b.contexts[0]`,而那个 context 已经关了。
+- **已修**(`scripts/_batch4_ingest.py`,**只改本地,没动 slab-inventory 那个共享模块** —— slabs 在用它):新 `_attach()` **逐个试 context 直到拿到能开页的**,都不行就新建 context;`_reconnect()` 先试便宜的重连,**拿不到可用页面就强制 `browser/stop` → 等 6 秒 → 重开**。
+- **验的是真实故障形态**:建会话 → **真的把 profile 停掉** → 确认旧页面死了且死法被 `_BROWSER_DEAD` 认得 → `_reconnect` 拿回一个能真正加载内容的页面。**16 个检查全过**,含"超时/DNS/页面没价不许被误判成浏览器死"。
+- **⚠️ 这只是让它自愈,不是根治。** 根因仍是 singles 抓价和 `cron_governor` / `price_check_cron` / `ig_common` **共用 AdsPower 默认号 `k1bkogcy`**,而那几个会调 `browser/stop`。**给 singles 单开一个号才是断根,待 Gary 定。**
+
+### 🔴 中止会把已解析那部分的标签一起丢掉 —— 是我那个中止修复自己带出来的洞(已修)
+- **`bca2c792e6ab` 的 29 张有价没标签**:`sheet_streamer` 逐行写,所以 29 张真的进了表;但 **PDF 渲染排在成功路径上**,`BrowserGone` 一抛就整个跳过。`out/` 里那个 job 连 PDF 文件都没有。**店里拿到的还是"价格在表上但印不出来",和早上那次抱怨的形状一模一样。**
+- 已手工补渲染 **58 张**(29 张卡 × 数量),加上重跑的 62 张 = **120 张,正好等于原 job 记的 `physical qty total: 120`**。`/jobs/<id>/labels.pdf` **只判文件存不存在、不判状态**,所以 FAILED 的 job 照样下得到,job 页面上的链接也在(实测两个 job 都 200 + `%PDF`)。
+- **已修 `webapp/jobs.py`**:抽出 `_render_labels()`,**`except` 里也调一次** —— TSV 里有几行就渲染几张,**状态仍然是 FAILED**(部分标签不是跑完了),`error_msg` 写明 `N label(s) for the cards that DID resolve are ready … the rest were never checked`。**一张都没解析时不生成 PDF、也不吹嘘有标签**(两个方向都验了,10 个检查全过)。
+- **测试坑,差点测了个寂寞**:① 第一版 `sys.path` 把 slab-inventory 放在前面,**`from webapp import jobs` 静默导入了 slabs 那个同名模块**(它也有 `webapp/jobs.py`,`create_job` 签名还不一样)—— 现在测试里加了 `assert J.__file__ 在 ROOT 下面` ② 第二版输入不是 CSV,`is_csv` 判 False **走了 TXT 分支,我打的桩根本没被调用**,而测试"通过"了几条 —— **判定必须能区分"跑对了"和"根本没跑到"**。
+- 测试建的 4 个 job 已从 `jobs.db` 清掉(只删 `submitted_by='selftest'`,删前打印、删后回读,两个真 job 和 PDF 都在)。**否则明早团队会看到 4 个 FAILED,读成第五次事故。**
+
+### ✅ 那 49 张现在是完整的
+- 重跑 job `5c2b83bff6b1`:**20/20 · failed 0 · 浏览器重启 0 次 · 真错误 0**,写进 A926–A945。
+- **核对过,不是听 job 自报**:输入 49 个不重复 id = 29(第一批)+ 20(重跑),**漏 0 · 多 0 · 重复 0**;实读 sheet `A890:H950` 得 **56 个非空行**(5 行旧的 + 2 个分隔行 + 49 张卡),**A 列无重复**。
+- **数错误数要区分大小写**:`Select-String` 默认不区分,`ov`**`err`**`ide` 会被 `ERR` 匹配上 —— 我因此一度把 29 个 `force_url override` 报成 28 个失败。
+
 ## ✅ 单卡加"成交记录"链接(8/13,Gary:"不用在labels上 我们在系统里面显示 就行 就是类似于slabs的状况 我们把sales 的link 贴上去";**已写完,未过 review 未发版**)
 - **不做标签**(Gary 8/13 明确否掉)。**照 slabs 的先例做在 app 里** —— `SellSlabModal` / `SlabsInventory` 早就有 `slabCertUrl` + `ebaySearchUrl`,单卡这边只有 TCGplayer 链接。
 - **🔴 130point 不能做链接,这是硬事实**:它的搜索状态**从不进 URL**(8/13 实测:输入查询回车后地址栏就是 `https://130point.com/search`,`?q=` 和 `?search=` 都被剥掉、结果为空)。所以标签也好、系统也好,**没有任何 130point 链接可以贴**。
