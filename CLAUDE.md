@@ -95,6 +95,12 @@
 - **10 张卡实跑(均价口径)**:`Arceus AR1 59%` · `Mewtwo LV.X 51%` · `Arceus AR6 59%` · `DP50 45%` · `Lucario LV.X 57%` · `Reshiram 79%` · `Entei 44%` · `Metagross ex 108%` · `Magnemite 221%` · `Mr. Mime 30%(仅 1 笔,已标注)`。**两个离群都解释得通**:Magnemite 市价才 $1.12,便宜卡的邮费占比大、成交必然高于"市价";Mr. Mime 是下面那条 1st Edition 的事。
 - **🔴 1st Edition 那条规则当场救了一张卡**:`Mr. Mime (6) 06/64 Jungle` 的印次是 **1st Edition Holofoil,TCG 市价 $134.09**,而 24 笔成交里 **23 笔是 unlimited(都在 $12–20)**。加规则之前它报 **16/16 匹配、中位 $15** —— **等于把一张 $134 的卡按 $15 定价**。现在它只留 1 笔并明说"太薄,要人看"。
 - **🔴 又抓到一条多张一起卖混进均价**:`Xs 5 Sealed Entei 34/53 … original packaging $122.50` 被当成一笔单卡成交,Entei 均价因此从 **$13.80 虚高到 $19.52**。原来的 lot 规则只认 `x` 后跟两位以上数字。**放宽时有个陷阱**:裸的 `\bx\s*\d+` 会匹配 `LV.X 100`,把 Mewtwo LV.X / Lucario LV.X 的正经成交全误杀 —— 所以数量词必须跟名词(`x2 cards`)或用 `Xs N` 前缀形,另加 `sealed`(单卡成交不可能是 sealed)。**测试里专门钉了三条 LV.X 不许被误杀。**
+- **✅ TCG 那个锚点换成"最便宜的在售挂牌"(Gary 8/13:"我们做的是给他们一个reference 页面 … tcg我们选择cheapest listing的价格")**:
+  - **导出给不了这个数**:`TCG Low Price` / `TCG Low Price With Shipping` / `TCG Direct Low` 在 **11 个批次 553 行里全是空的**(Market Price 有 546 行)。所以只能抓页面。
+  - 页面上是 `As low as $X`,`extract_tcg_page` 已加提取。**取所有匹配里的最小值,不取第一个** —— 这个数按印次/品相分块重复出现,取"渲染时排第一个"会随页面重排而变。
+  - 页面现在三个数并排:`成交均价(带区间)` · `最便宜挂牌` · `市价(成交均价占市价百分比)`。**不给"相对最便宜挂牌"的百分比** —— 最低挂牌通常是残卡,那个比值会给一张正常卡报出 348%,是噪音。
+  - **comps 从 5 笔提到 25 笔**:表格那一格只显示最近 3 笔,但参考页是给人定价时读的,同一次请求不多花代价。实测每张返回 13–25 笔,而其中三分之一是评级卡或整套 —— 只存 5 笔常常只剩两笔可用。**表格那一格的均价也改成只算它显示的那 5 笔**,否则那一格自己和自己对不上。
+- **🔴 顺带查出一个既有问题(未改,只在参考页规避)**:`extract_tcg_page` 的市价取的是页面上**第一个** `Market Price`,而产品页按印次/品相**各有一个**。实测:我们那张 **Reverse Holofoil 的 Entei 抓到 $15.44,导出写 $31.35**;**Metagross ex 抓到 $26.35,导出写 $80.01**(而最便宜挂牌就要 $44)。**两张都是导出的值才对得上,因为导出是按印次给的。** 参考页已改用导出值;**管线写进表格的那个值我没动** —— 那是我们的挂价,改它是决定不是清理。**待 Gary 定。**
 - **`scripts/test_analyze_130_match.py` 32 用例**(标题全部取自 8/13 的真实 130point 结果):多张一起卖 · **不许误杀 LV.X** · 评级卡 · 自制卡 · reverse 双向 · 1st Ed 双向 · 异套复刻(自己是 Celebrations 时不排)· 卡号补零写法 · `analyse()` 汇总只算判定为同一张卡的。
 - **故意不加密码**,和 `/health` 同一个理由:链接是从库存 app 点过去的,那些人不一定有 singles 的密码,**打不开的链接不是功能**;而页面里全是公开的 eBay 成交标题和价格,没有成本、没有库存、没有客户信息。
 - **app 侧(分支 `feat/fx-and-sold-comps`,`1a7924b`,未过 review 未发版)**:`singlesCompsUrl(tcgId, {name,number,setName})` + `soldCompsLink(row)`,`SinglesInventory` 行和 `SellSingleModal` 各一个链接。
