@@ -53,6 +53,30 @@
 - **核对过,不是听 job 自报**:输入 49 个不重复 id = 29(第一批)+ 20(重跑),**漏 0 · 多 0 · 重复 0**;实读 sheet `A890:H950` 得 **56 个非空行**(5 行旧的 + 2 个分隔行 + 49 张卡),**A 列无重复**。
 - **数错误数要区分大小写**:`Select-String` 默认不区分,`ov`**`err`**`ide` 会被 `ERR` 匹配上 —— 我因此一度把 29 个 `force_url override` 报成 28 个失败。
 
+## ✅ 8/13 单卡批次的成交源改成 130point,不再走 eBay(Gary:"我们不走ebay了 直接走130points";已上线并验证)
+- **换源的理由是权限不是数据质量**:eBay 的 sold 视图**要登录**,这就把批次管线锁死在"那个恰好登录着的号"上 —— 也就是被 cron 抢的共用号 `k1bkogcy`。130point **免登录**,同一批卡它给 10 笔而 eBay 给 5 笔。
+- **🔴 但先查出一件推翻前提的事:专用号 `k1ckl201` 连 130point 也进不去。** 对照实测:`k1bkogcy` **3 秒进站**(标题 `130 Point`,搜索框在);`k1ckl201` **60 秒卡在 Cloudflare `Just a moment...` 不放行**。eBay 那边同样是弹登录页。**规律:专用号"太干净"(fresh fingerprint + no cookies),而反爬系统恰恰不信任干净的。换价源救不了隔离,这是两个独立问题。**
+- **新 `scripts/point130.py`(共用模块)**:纯解析 `parse_sold_body()` + 异步 `fetch_sold_async()` + 给管线用的 `fetch_sold_for_card()`。**解析规则只留一份**,因为那三条(只认 `^\$X USD$` 行 / Best Offer 取最后一个价 / 等 `Sold(N)` 计数器,等不到就抛 `Point130Broken`)是 8/13 拿真页面打出来的,复制一份必漂。
+- **🔴 130point 的中位数直接用会比现在更糟,必须过滤 —— 这是把标题打出来才看见的**:
+  ```
+  Charmeleon 28/108(TCG 市价 $0.63)
+    $0.99–$4.99  Non Holo / Regular LP        ← 我们这张
+    $15.00–$37.88 Reverse Holo Stamped        ← 另一个产品
+    不过滤 → 中位 $4.99,8 倍误差,而且每一笔都是"真成交"
+  Charizard Base Set 4/102
+    $100 "Celebrations … 4/102"(2021 复刻,号一模一样)· $16 "(Fan Art)" 自制卡
+  ```
+  **它匹配的卡是对的,混进来的是版本 / 复刻 / 自制。** 和手册里 eBay BIN 那次同一句话:*"过滤器是对的,查询词太宽"*。
+- **过滤器按 CSV 自己给的字段建,不猜**:`build_filters(set_name, printing)` 返回 `ban / want_reverse / want_first_ed`。**两个 flag 都是三态** —— True 要求、False 排除、**None 不加规则**(导出没说印次就不许猜,猜错不会报错,只会静默地给另一个产品定价)。
+  - **`Reverse Holofoil` 是导出里的独立值(实扫 8 个批次:Holofoil 453 · Normal 49 · **1st Edition Holofoil 28** · Reverse Holofoil 14 · Unlimited Holofoil 3)**,所以 `Holofoil` 确实指非 reverse,映射站得住 —— **这是查过才敢写的,不是假设**。
+  - 顺带补了 **1st Edition / Unlimited**:同一张画不同的钱,导出分得清就不该混。
+  - `REPRINT_SETS`(celebrations / classic collection / 25th anniversary / legendary collection)**只在我们自己不是那个套时才排**。
+- **落点**:`ingest_tcg_export.resolve_card` 的 vintage/JP 分支改调 `fetch_130point_sales()`,**用自己的新标签页**(不能把 TCGplayer 那页导航走)。`Point130Broken` **不吞** —— 明打 `🔴 130point unreachable — NOT the same as no sales`,comps 留空。`fetch_ebay_raw_sales` **保留**,`refresh_master_prices.py` 还在用。
+- **测试 31 个用例,跑真解析器 + 真页面文本**(`scripts/fixtures_130point/` 是 8/13 抓的实页 innerText)。含:胡编查询 → 0 笔且**页面确实加载了**(`Sold (0)` 在)· 历史搜索里的别的卡名不会被当成结果 · **`$2.99 AUD` 不会被算进美元中位** · 版本/复刻/自制三类污染各自被排掉 · 排掉后中位真的落回同一量级(`plain 2.21 / mixed 4.28 / reverse 28.87`)。
+- 端到端实跑:`Charmeleon → $2.71 (last sold 2.00, 0.99, 2.00)` · `Mr. Mime Jungle → $11.87` · **modern 卡照旧不查 130point**。`ebay_comps` 仍传给 `price_confidence`,所以 CHECK EBAY 的判定现在按 130point 笔数算。
+- **⚠️ 已知且刻意没做的**:**品相没过滤**(NM/LP/MP/HP 混在一起),所以 vintage 的 comps 均值可能明显低于 NM 市价(Mr. Mime $11.87 vs 市价 $33.82)。**这和之前走 eBay 时是同一行为**,而且那一格是"成交参考"不是定价覆盖。要收紧的话是下一步。
+- **⏳ 隔离那件事仍未解决**,专用号被 Cloudflare 和 eBay 双双挡住。三条路待 Gary 选:**① 养 `k1ckl201`(打开正常浏览一阵)② 重新克隆 `k1bkogcy` 并连 cookie 一起复制(k1ckl201 当初就是"no cookies",信任度是这么丢的)③ 不换号,给别的 cron 加闸门**(`refresh_master_prices` 已有 `_wait_for_ingest_clear()` 先例)。
+
 ## ✅ 单卡加"成交记录"链接(8/13,Gary:"不用在labels上 我们在系统里面显示 就行 就是类似于slabs的状况 我们把sales 的link 贴上去";**已写完,未过 review 未发版**)
 - **不做标签**(Gary 8/13 明确否掉)。**照 slabs 的先例做在 app 里** —— `SellSlabModal` / `SlabsInventory` 早就有 `slabCertUrl` + `ebaySearchUrl`,单卡这边只有 TCGplayer 链接。
 - **🔴 130point 不能做链接,这是硬事实**:它的搜索状态**从不进 URL**(8/13 实测:输入查询回车后地址栏就是 `https://130point.com/search`,`?q=` 和 `?search=` 都被剥掉、结果为空)。所以标签也好、系统也好,**没有任何 130point 链接可以贴**。
