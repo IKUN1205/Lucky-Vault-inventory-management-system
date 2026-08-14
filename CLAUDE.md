@@ -77,6 +77,28 @@
 - **⚠️ 已知且刻意没做的**:**品相没过滤**(NM/LP/MP/HP 混在一起),所以 vintage 的 comps 均值可能明显低于 NM 市价(Mr. Mime $11.87 vs 市价 $33.82)。**这和之前走 eBay 时是同一行为**,而且那一格是"成交参考"不是定价覆盖。要收紧的话是下一步。
 - **⏳ 隔离那件事仍未解决**,专用号被 Cloudflare 和 eBay 双双挡住。三条路待 Gary 选:**① 养 `k1ckl201`(打开正常浏览一阵)② 重新克隆 `k1bkogcy` 并连 cookie 一起复制(k1ckl201 当初就是"no cookies",信任度是这么丢的)③ 不换号,给别的 cron 加闸门**(`refresh_master_prices` 已有 `_wait_for_ingest_clear()` 先例)。
 
+## ✅ 8/13 "把搜索页面替他们做好":comps 页 + 逐笔 match 分析(Gary:"接进去链接 让团队看 类似于我们帮他们把搜索的页面做了的感觉")
+- **不能贴 130point 的链接,这是硬约束**:它的搜索状态从不进 URL(8/13 实测,回车后地址栏还是 `/search`,查询被剥掉)。所以**页面只能是我们自己的** —— 而这反而更好,因为外部搜索页永远做不到"标出哪一笔不是这张卡、为什么"。
+- **🔴 先证明了"一个中位数"这个展示方式本身是错的**。8 张真 vintage 卡实跑,按品相拆开后结论完全变了:
+  ```
+  卡                    TCG 市价   全部中位/市价   NM/LP 中位/市价
+  Arceus DP50           $34.89        29%            64%
+  Mewtwo LV.X DP28     $110.00        41%            67%
+  Arceus AR1            $65.06        54%            57%
+  Arceus AR6            $31.27        57%            62%
+  Lucario LV.X DP12    $137.86        66%            73%
+  ```
+  **混着算是 29–66% 的一片乱数,按 NM/LP 算收敛到 57–73%。** DP50 那张 14 笔里 8 笔是 MP/HP/DMG —— 拿它比 NM 口径的市价会得出"我们挂太高"的错误结论,实际是一半成交是残卡。**顺带得到一个可用的校准数:vintage 单卡的成交约为 TCGplayer 市价的 60–70%,五张卡一致。**
+- **两张卡的数直接不能用,而系统必须说出来**:`Magnemite 62/97` 13 笔里 reverse holo 9 / 普通 4,而**导出没写印次 → 判不了我们手上是哪个**(reverse 约 $6、普通约 $2.5);`Mr. Mime 06/64` 混进 1 笔 1st Edition($40,其余 $12–20)。**这种情况不挑数,只印"混了什么、各几笔"。**
+- **新 `scripts/analyze_130_match.py`**(纯函数,不碰浏览器):`classify()` 给每一笔打 match/不match + 理由(`graded` / `lot/bundle` / `not-a-real-card` / `reverse-holo` / `not-1st-edition` / `reprint-set(...)` / `number-missing` / `name-missing`);`analyse()` 按品相分档 + 检测版本混杂;`save_analysis()` 落盘。**品相只打标不用来排除** —— vintage 本来就跨品相定价,那个分布是信息不是污染。
+- **新页面 `GET /comps/<tcg_id>`(webapp,已上线)**:摘要用 **NM/LP 档中位 + 占市价百分比**(百分比才是一眼能看出异常的东西),下面逐笔列出成交、品相、以及**被排除的行和理由**。**排除理由必须可见** —— 一个没人能检查的过滤器只是另一个要人盲信的数字。
+- **故意不加密码**,和 `/health` 同一个理由:链接是从库存 app 点过去的,那些人不一定有 singles 的密码,**打不开的链接不是功能**;而页面里全是公开的 eBay 成交标题和价格,没有成本、没有库存、没有客户信息。
+- **app 侧(分支 `feat/fx-and-sold-comps`,`1a7924b`,未过 review 未发版)**:`singlesCompsUrl(tcgId, {name,number,setName})` + `soldCompsLink(row)`,`SinglesInventory` 行和 `SellSingleModal` 各一个链接。
+  - **🔴 我第一版写错并自己抓了回来**:原本让 app 判"有没有 comps",但 app 根本不知道 —— comps 只对**批次跑过的 vintage/JP 卡**存在,结果是每一行都显示链接、大部分点开是 404,而我写的 eBay 回退永远不触发。**改成 app 只出一个链接,卡的身份挂在 query 上,页面自己兜底**:有存的就展示,没有就给 eBay 成交搜索。**一个大部分时候打不开东西的链接,会教会人不要再点。**
+- 测试:`scratchpad/ebay_sold_url_test.mjs` **29 用例**(跑真函数)+ 页面 **19 项公网实测**(不带密码能开 · 排除理由在页上 · 没数据时给得出 eBay 出路 · 连身份都没有时**不硬凑**一个会打开整个目录的链接 · 主页仍 401)。`npx vite build` 通过。
+  - **测试自身的坑**:`URLSearchParams` 把空格编成 `+`,我用 `decodeURIComponent` 比对就误判失败 —— 改成按 URL 真正解析参数。
+- **⚠️ 待办**:`classify()` 还没有单测(只有跑真数据的观察);品相未写的行占比不低(每张 2–10 笔),NM/LP 档常常只有 3–5 笔,**薄的时候要不要给数还没定**。
+
 ## ✅ 单卡加"成交记录"链接(8/13,Gary:"不用在labels上 我们在系统里面显示 就行 就是类似于slabs的状况 我们把sales 的link 贴上去";**已写完,未过 review 未发版**)
 - **不做标签**(Gary 8/13 明确否掉)。**照 slabs 的先例做在 app 里** —— `SellSlabModal` / `SlabsInventory` 早就有 `slabCertUrl` + `ebaySearchUrl`,单卡这边只有 TCGplayer 链接。
 - **🔴 130point 不能做链接,这是硬事实**:它的搜索状态**从不进 URL**(8/13 实测:输入查询回车后地址栏就是 `https://130point.com/search`,`?q=` 和 `?search=` 都被剥掉、结果为空)。所以标签也好、系统也好,**没有任何 130point 链接可以贴**。
