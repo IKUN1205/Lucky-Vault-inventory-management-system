@@ -1,4 +1,17 @@
-# LV Inventory — 作业手册 brief (2026-08-13)
+# LV Inventory — 作业手册 brief (2026-08-17)
+
+## 🔴 8/17 门店"扫码说已卖出":8/07 那个出口从上线起一次都没成功过(已修,**未过 Codex 未发版**)
+- **群里 Hazy 16:53 原话**:"since we are using safari it creates an error saying it's been sold on. And it still adds it but then it shows this" + 一张截图。**Gary 16:51 问 "bar code no working?",17:0x 回 "fixing system checking"。**
+- **截图上是红条,病根直接印在上面**:`$40.00 charged but NOT recorded — tell a manager before the next sale. / Charged $80.00, recorded $40.00 of items. / Dendra — null value in column "date_acquired" of relation "singles" violates not-null constraint`。购物车那行是 `Dendra #266/193 · ⚠ app had this SOLD — booking a new line`。
+- **`singles.date_acquired` 是 `date NOT NULL`(create_singles_table.sql:97),而 `_recoverSoldSingle` 把它连同成本/来源一起写成 null** —— 那个 null 是 8/07 故意的(不许把同一笔进货的 COGS 记两遍),但 `date_acquired` 跟着一起 null 就是每次 insert 都被 Postgres 打回。
+- **实测确认它从来没成功过:全库 `sale_notes ~ RECOVERED_AT_COUNTER` = 0 行。** 这条出口 8/12 合进 main,5 天后今天第一次有人真的走到,**一次尝试一次失败**。
+- **修法:`date_acquired` = 收银台那天,不是抄 sold 行的进货日。** 抄它就等于断言"这一张来自那笔进货",而那正是上面把成本留空所拒绝断言的事;**收银台那天是唯一能证明的事实**。写在 `...saleData` 展开**之后**,让以后任何 payload 形状都塞不回 null。`sale_notes` 里明写「这个日期不是进货日」—— 不写,下一个人就会把它当进货日读。
+- **成本/来源仍然全 null,测试把这条钉死了** —— 修一个洞的时候顺手撤销另一个决定,以后就分不清哪个是对的。
+- `scratchpad/counter_recovery_test.mjs` **39 用例跑真函数**。要紧的是:**NOT NULL 列是从 `create_singles_table.sql` 解析出来的,不是我手写的清单** —— 只钉 `date_acquired` 会让下一个漏列以完全相同的方式再来一次。**拿改之前的文件跑同一套,正好挂 4 条**(不会失败的测试等于没测)。
+- **代价有界**:8/1 以来所有"收款 ≠ 记账"的纯销售单只有 **2 笔**,其中 8/14 那笔差 **$0.02** 是分摊取整,真缺口只有今天 **tx `64951833-d0ae-470f-aeb0-cedeb076f5b4`:收 $80.00,记 $40.00**。
+- **⏳ 那 $40 没补**:Hazy 说"$80 for destined rival and $10 card",和收款 $80 对不上;**群聊里的金额永远不能直接改库存**。Dendra 只有一行 `4cf7cfbb`(6/12 卖出),**一个字没动**。要门店说清第二件是什么、多少钱。
+- **红条那句原始 Postgres 错误别包装掉** —— 正是它让这个 bug 从一张手机翻拍照片上五分钟定位。
+- **⚠️ 已知没动**:`singles_graded_quantity_one` 那条 CHECK 会拒绝 `form='graded'` 且 qty>1 的恢复行(sold_override 之后不再问"超过库存"那一问)。**全库 3,173 行 singles 全是 raw、graded 0 行**,所以今天碰不到;没有为一个不存在的行改行为。
 
 ## 🔴 8/13 singles 停摆 + "66 张只打出 7 张"(Gary:"singles 又down了 而且labels generate 少了 你看看storefront 群聊")
 - **群里 Sully 8/13 10:30 的原话**:"We have 66 labels we're trying to print from list but it's only letting us print 7" + "Website is also down for singles";12:17 又追 "still down"。**我 12:22 把服务拉起来,时间对得上。**
