@@ -464,6 +464,7 @@
 - PostgREST 坑:1000 行必分页;空格用 `quote(p, safe="?&=.,*()-")` 勿双重编码;uuid 列无 like;products 列叫 `type`;**写完必 readback,批量写前备份 JSON**。`tps.sq`(tiktok_push_stock)自带完整分页**勿再套 offset 循环**、且不编码要先 quote。
 - 表:`products` · `inventory`(数量原地覆盖**无变更 log** — audit-log SQL 待 William)· `locations` · `movements`(Transfer/Intake)· `box_breaks`(拆盒:sealed−N / pack+3N 全在 Master,pack 成本=盒成本÷packs_per_box,照 BreakBox.jsx 语义)· `stream_counts`+items · `acquisitions` · `slabs`(软删字段全:deleted/at/reason)。
 - 房间:Master `1f68249f` · PH=Packheads `c995d0a6` · RocketsHQ `eeff0769` · LVUS `12293f16` · SlabbiePatty `04b32948` · **PokeCasino(原Whatnot,channel/sale_channel 存库值仍 'Whatnot'/'whatnot')**`ac9c06c4` · PokeAuctionHouse `1028e0f9` · Front Store `c4cf3dab`;共 23 locations(Sold 虚拟房有遗留怪名,勿用)。
+- **团队口头叫法 ≠ 房间名,推不出来只能问**(Gary 8/17 定):**`ebay1` = `Stream Room - eBay LuckyVaultUS` `12293f16`**。库里没有任何房间叫 "ebay1",而带 ebay 的有四个(两个直播房 + 两个 Sold 虚拟房)—— **猜错就是把货记进另一个直播间**。Gary 8/17:"你下次可以提问他" = 叫法对不上时直接问下单的人,别挑一个。
 
 ## 盘点与审计制度(Gary 7/22 定版)
 - 盲盘:expected=系统值,actual=实数,差值直写库存(正负都写);空行=0;guardrail 永不部署(Gary 否)。
