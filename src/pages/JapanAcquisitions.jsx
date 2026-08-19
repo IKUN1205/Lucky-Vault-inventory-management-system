@@ -14,6 +14,7 @@ import {
   createProduct,
   convertToUSD,
 } from '../lib/supabase'
+import { createProductChecked } from '../lib/duplicateGuard'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import ProductThumb from '../components/ProductThumb'
@@ -786,7 +787,7 @@ function JpQuickAddProduct({ existingProducts = [], currentUserName, addToast, o
       const brand = form.brandKey === 'other'
         ? (form.brandOther.trim() || null)
         : (JP_BRAND_OPTIONS.find(b => b.key === form.brandKey)?.brand || null)
-      const created = await createProduct({
+      const created = await createProductChecked({
         name,                 // Chinese = provisional (CJK in name → not yet normalized by US)
         aliases: [name],      // keep Chinese searchable even after US renames name→English
         brand,
@@ -818,7 +819,10 @@ function JpQuickAddProduct({ existingProducts = [], currentUserName, addToast, o
       onCreated?.(created)
     } catch (err) {
       const msg = err.message || 'unknown error'
-      if (/duplicate key|unique constraint/i.test(msg)) {
+      if (err.code === 'DUPLICATE_CANCELLED') {
+        // The prompt did its job — they recognised an existing SKU. Not an error.
+        addToast?.(`未新建 — 用已有的 SKU: ${err.candidates?.[0]?.name || ''}`)
+      } else if (/duplicate key|unique constraint/i.test(msg)) {
         addToast?.('条码已被占用,或产品已存在', 'error')
       } else {
         addToast?.(`创建失败: ${msg}`, 'error')

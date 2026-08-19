@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
+import { confirmNoDuplicates } from '../lib/duplicateGuard'
 import {
   Package,
   Upload,
@@ -344,6 +345,10 @@ export default function StorefrontImport() {
       }
       const tempToReal = {} // temp_id -> real product_id
       if (newProductRows.length > 0) {
+        // Every door into `products` asks the same question first. This one
+        // inserts directly (it needs the ids back in insertion order), so the
+        // guard is called rather than wrapped around the write.
+        await confirmNoDuplicates(newProductRows)
         const { data: inserted, error: insErr } = await supabase
           .from('products').insert(newProductRows).select('id, name')
         if (insErr) throw insErr
@@ -451,8 +456,16 @@ export default function StorefrontImport() {
       await loadReferenceData()
       setShowConfirm(false)
     } catch (err) {
-      console.error(err)
-      setApplyResult({ ok: false, error: err.message || String(err) })
+      if (err?.code === 'DUPLICATE_CANCELLED') {
+        // A decision, not a failure. Reporting it as an error is how people
+        // learn to press OK on the next prompt without reading it.
+        console.info('[StorefrontImport] duplicate prompt cancelled')
+        setApplyResult({ ok: false, cancelled: true,
+          error: 'Nothing imported. Map those rows to the existing SKUs and run it again.' })
+      } else {
+        console.error(err)
+        setApplyResult({ ok: false, error: err.message || String(err) })
+      }
     } finally {
       setApplying(false)
     }

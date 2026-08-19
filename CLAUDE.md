@@ -1,4 +1,49 @@
-# LV Inventory — 作业手册 brief (2026-08-18)
+# LV Inventory — 作业手册 brief (2026-08-19)
+
+## ✅ 8/19 加产品零查重已堵上并发版(Gary:「frank或者aldo 买入 以及转库的时候发现没有sku 就开始做sku 或者prompt match sku」;**Codex 4 轮,已发版**)
+- **触发时机他定得对**:买入和转库是**唯一有人真的拿着实物**的时刻。事后对账只能说某个数不对,永远还原不出那是什么货。
+- **但同一个时刻也正是重复 SKU 的生产线** ——「找不到就新建」就是现有那批重复的来路。所以顺序必须是**先匹配、后新建**,不是反过来。
+- **趁现在装锁最便宜**:实测 813 个产品,名字撞车 7 组 / 14 个,**两边都有库存的 0 组**。不是在收拾烂摊子,是在把「新建」权限交给更多人之前先补上。
+- **新 `findSimilarProducts(name, {brand, language, type, variant})`** + **`createProduct` 加 `confirmedNotDuplicate`**(有候选就抛 `POSSIBLE_DUPLICATE`,error 带 `candidates`)。`createProduct` 原来是**裸 insert**,四个创建入口全走它,**改一处全堵上**。新 `src/lib/duplicateGuard.js` 的 `createProductChecked()` 统一弹提示;**取消 = 正确结果**,四个入口都不再报成失败(报成失败会教人下次直接点 OK)。
+- **🔴 匹配规则是被真数据打出来的,前三版全是废的 —— 拿全库 813 个产品逐个模拟「今天有人打这个名字会看到什么」**:
+  ```
+  第1版 按名字相似度            → 触发 50.4%   废
+  第2版 加形态签名              → 32.7%
+  第3版 Jaccard + 剥品牌词      → 16.1%
+  第4版 sleeved/ETB 进签名      →  8.2%
+  第5版 变体不同 = 直接不是      →  3.2%   ✅
+  ```
+  - **50% 那版的病根**:同一套的 `Booster Box` 和 `Booster Pack` 只差一个词,**按文本算 83% 像**,而那是全目录最常见的一对。**包装词必须是决定性的,不能当成相似度里的一票。**
+  - **相似度不能除以短的那边**(`min()`)—— 那会让任何短名字匹配上所有包含它的长名字(`Astral Radiance Booster Box` 撞上 `Elite Trainer Box`)。改成除以并集。
+  - **品牌词要剥掉**(品牌是独立列)—— 不剥的话 `Pokemon 151 Tin` 和 `151 Tin` 看起来只有一半像,**真重复反而漏掉**。
+  - **`sleeved` / `elite trainer` / `PC` 不是装饰词,是定产品的** —— 当噪音剥掉会把 `Journey Together Sleeved Pack` 报成那 459 个散包的重复。
+  - **两个已知且不同的 `variant` 直接判定不是同一个** —— 有膜和无膜是故意分开的两个 SKU,变体表在这件事上比名字权威。
+- **白捡一份东西:这 3.2%(26 个 / 13 对)就是目录里现存的重复清单** —— `151` vs `Pokemon 151` · `Fusion Strike` vs `Pokemon Fusion Strike` · `Chaos Rising Booster Box` vs `Booster Box Booster Box` · `Evolving skies` 两份 · `OP-13 Carrying On/on His Will` 大小写两份 · `Adventure on KAMI's Island (Cut Slice)` 带不带 `[JP]` 两份。**其中 `151 Booster Pack` 148 件 vs `Pokemon 151 Booster Pack` 0 件是唯一有库存的一边。**
+- **测试 16 项跑真函数(只桩掉 supabase client)**,一半在验「什么时候必须闭嘴」:EN/JP 不许互指 · bundle 不是 box · 全新套不弹 · 空名字不弹 · **查询挂掉时 fail OPEN 返回空**(这是守卫不是闸门,查询故障不能挡住收货)。**变异测试证过会红**:关掉守卫 → 3 条失败。
+- **✅ 13 对重复已合并 11 对(Gary:「合并」)**。**每一个被合并方库存都是 0**(写入时校验,不是假设),所以这次只动身份不动货。做法:**幸存者吸收对方的名字进 `aliases`**(否则合并之后那个东西比合并前更难搜到)· 被合方 `active=false` + `aliases` 打 `MERGED_INTO:<id>` 标记。**行不删**(永不删产品行),**历史一条不改**(acquisitions / movements / 盘点 / 销售记录的是发生过的事,卖出行永不回改)。回读 11/11 × 3 项。
+  - **顺带修了守卫一个真洞:它会把已停用的死 SKU 当候选推给人** —— 那正好和合并的目的相反。加了 `active === false` 跳过(**只跳明确的 false**,没设过的不算)。合并 + 这条之后触发率 **3.2% → 1.5%**,而剩下那 12 个正是「打了旧名字 → 指向幸存者」,是想要的行为。
+  - **⚠️ 2 对故意没合,要人定**:`Adventure on KAMI's Island (Cut Slice)` —— **`[JP]` 前缀是既定规范**(7 月 164 个海贼王产品就是为此改的名),所以带前缀那个可能才是正版,合错方向会把那次改名撤销;`Eeveelutions Badge Gift Box **Set**` vs **`Single Box`** —— **可能本来就是两个产品**,而匹配器把 `set`/`single` 当包装词剥掉了,两边还都有 movements。
+  - **两个幸存者仍带着重复类型词**(`Evolving skies Booster Box Booster Box`)—— 它们是有库存有历史的那一边,**改名会当场改变房间盘点清单上的字**,那是要announce 的单独动作,没顺手做。
+- **⚠️ 还没做的**:买入/转库页面那个「找不到?」入口(第 3 条)和 `tg_move.py` 回带编号候选(第 4 条)。**Gary 要求分两步发**:先发这层纯保护,UI 那两条过 Codex 再发。
+
+
+### 🔴 Codex 4 轮又挖出 6 条,最重的三条都是「以为数全了」
+- **入口不是四个,是六个。** 手册原话「四个创建入口全走 `createProduct`,改一处全堵上」**是错的** —— `JapanAddProduct` 走 `upsertProducts`(裸 upsert,一次提交整个变体家族,**近似撞名会一键造出整族重复**)、`StorefrontImport` 直接 `.from('products').insert()`。两个都补上(`upsertProductsChecked` / `confirmNoDuplicates`),**两处的「取消」也都改成不报失败**。
+- **🔴 匹配器不读 `aliases`,而昨天合并时写进 aliases 的正是要留住的旧名字** —— 一手写进去、一手不看。实测 **162 个在库产品带着被吸收的名字,里面全是中文**(`宝石4弹 原盒` → `Gem Vol.4 Booster Box`),**而那正是中国快速加产品会被打进去的字**。现在名字和每个别名都参与打分;`MERGED_INTO:` 标记不算名字。
+- **CJK 整段被吞**:`[^a-z0-9 ]` 把中日文字符全删光 → tokens 为空 → 直接返回「没有相似的」。改成 Unicode 感知 + 剥掉片假名包装词(ブースターボックス/パック/ケース)。**故意不把 CJK 拆成单字** —— 库里一个纯 CJK 产品名都没有,**没有数据可校准,而没校准过的匹配器正是第一版 50% 噪音的来路**。整段当一个 token:抓得住「同一个日文名打两遍」,不会误报。
+- **复数没归一**:`_FORM_WORDS` 只有单数,`Booster Packs` 的形态签名成了 `booster` 而不是 `booster+pack`,和 `Booster Pack` 判成「包装不同」直接放行 —— **我们就有这么一个名字**(`PRB2 Booster Packs`)。只归一包装词的固定表,**不做通用去 s**(那会把差一个字母的两个套合并)。
+- **候选查询没分页**(815 个且在长,PostgREST 截断不报错)→ 走 `fetchAllPages`,失败仍 fail OPEN。
+- **🔴 库存查询失败会渲染成 `0 on hand`** —— 这是最能劝人按 OK 的一句话(「那个是空的,我这个肯定是别的」),**而它是编的**。现在 `on_hand` 为 null,提示明写 **stock unknown (lookup failed)**。
+- 测试 16 → **28 项**,噪音率仍 **1.5%**(真 815 个产品逐个模拟)。**噪音脚本自己中过招**:它的 supabase 桩不认 `range()`,守卫因此 fail OPEN,报出「触发率 0.0%」—— **一个看起来完美调校、实际根本没跑的数字。**
+- ⚠️ `add_batches_and_channel_map_2026_08_16.sql` 的 4 条仍未修,**这次没跟着发**。
+
+### ✅ 8/19 盘点消息也简化了(Gary:「这消息也需要简化」)
+- 病灶全在名字:发送侧拼的是 `brand | 套名 | 形态 | 语言`,四列里三列多余。
+- **品牌列去掉** —— 名字里已经写着 OP-15、Lorcana,**而且它是错的**:`OP-15 Kami's Adventure` 的 brand 写着 Pokemon(全库唯一一个错标的海贼王产品)。**一个会骗人的列不如不印。**
+- **形态列留下** —— 盒/包/blister 是三个价,**今天那 $2,856 就是这一栏没分开**。
+- **语言只标少数派**:算出这条消息的多数语言,只给不同的几行打 `[JP]`。**十行九行都标等于没标**(日本报告那个 `[JP]` 就是这么废掉的)。
+- **重复的套名合掉**:`The Time of Battle Booster Pack - The Time of Battle (OP16)` → 保留**带编号那一半**,编号是区分两个 OP 套的唯一凭据。
+- 按件数排序 · 来源房去掉 `Stream Room -` 前缀。18 项测试跑真函数 + 你贴的那条真消息。
 
 ## ✅ 8/18「(In Bag) = 垃圾袋 = 30 包」—— 一句话纠正了 8/07 的结论,顺带得到一把能自动查错的尺子(Gary:「in bag 就是trash bag那个sku 就是30包 只是没盒子」/「盒子的hit rate是比散包好的 所以价格高」)
 - **8/07 我判「那 278 个是盒不是包」** —— 方向对(绝不是 1 包),东西错。**它是一整盒的包拆出来装进垃圾袋、盒子扔掉。**

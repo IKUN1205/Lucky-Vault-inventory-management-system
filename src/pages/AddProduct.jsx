@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { createProduct, attachProductImage } from '../lib/supabase'
+import { createProductChecked } from '../lib/duplicateGuard'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { useAuth } from '../lib/AuthContext'
@@ -116,7 +117,7 @@ export default function AddProduct() {
       // Build full product name: "Launch Name Product Type"
       const fullName = `${form.launch_name.trim()} ${form.product_type}`
       
-      const created = await createProduct({
+      const created = await createProductChecked({
         brand: form.brand,
         type: form.sealed_unsealed,  // "Sealed" or "Pack"
         category: form.product_type,  // "Booster Box", "ETB", etc.
@@ -178,7 +179,12 @@ export default function AddProduct() {
       clearPhoto()
     } catch (error) {
       console.error('Error adding product:', error)
-      if (error.message?.includes('duplicate')) {
+      if (error.code === 'DUPLICATE_CANCELLED') {
+        // Not a failure. They looked at the existing SKUs and one of them was
+        // it, which is the outcome the prompt is for — say so plainly, because
+        // calling this "failed" teaches people to press OK next time.
+        addToast(`Nothing added — use the existing SKU: ${error.candidates?.[0]?.name || ''}`)
+      } else if (error.message?.includes('duplicate')) {
         addToast('This product already exists', 'error')
       } else {
         addToast('Failed to add product', 'error')
@@ -251,13 +257,16 @@ export default function AddProduct() {
     setSubmitting(true)
     let successCount = 0
     let failCount = 0
+    // Rows where the user was shown existing SKUs and said "that's the one".
+    // Tracked apart from failures so the summary can tell the two apart.
+    let skippedDuplicates = 0
     const successProducts = []  // for the Lark message — only the ones that actually saved
 
     for (const product of validProducts) {
       try {
         const fullName = `${product.launch_name.trim()} ${product.product_type}`
 
-        await createProduct({
+        await createProductChecked({
           brand: product.brand,
           type: product.sealed_unsealed,
           category: product.product_type,
@@ -278,12 +287,17 @@ export default function AddProduct() {
         })
       } catch (err) {
         console.error('Error adding product:', err)
-        failCount++
+        // A cancelled duplicate is a decision, not a failure. Counting it as
+        // failed would report "3 added, 2 failed" for a batch where nothing
+        // went wrong, and the next person would stop reading the prompt.
+        if (err.code === 'DUPLICATE_CANCELLED') skippedDuplicates++
+        else failCount++
       }
     }
 
     if (successCount > 0) {
-      addToast(`${successCount} product(s) added!${failCount > 0 ? ` ${failCount} failed.` : ''}`)
+      addToast(`${successCount} product(s) added!${failCount > 0 ? ` ${failCount} failed.` : ''}`
+        + (skippedDuplicates > 0 ? ` ${skippedDuplicates} skipped — already had that SKU.` : ''))
       setBulkProducts(bulkProducts.map(p => ({ ...p, launch_name: '' })))
 
       // Fire-and-forget Lark notification (bulk). One message per batch,
@@ -303,6 +317,10 @@ export default function AddProduct() {
       } catch (err) {
         console.error('[lark-notify] failed to build add_product bulk payload:', err)
       }
+    } else if (skippedDuplicates > 0 && failCount === 0) {
+      // Every row was an existing SKU. Nothing went wrong, so this is not an
+      // error toast — the batch simply had nothing new in it.
+      addToast(`Nothing added — all ${skippedDuplicates} already exist. Use those SKUs.`)
     } else {
       addToast('Failed to add products', 'error')
     }

@@ -635,6 +635,82 @@ function appendCounterNote(lines, body) {
   lines.push(note)
 }
 
+// ---------------------------------------------------------------------------
+// Stream-count product labels.
+//
+// The sender posts "brand | set | form | language", four columns of which three
+// are mostly implied by the fourth. Brand repeats what the set name already
+// says, and on 2026-08-19 it was outright wrong on a live line — an OP-15 set
+// filed under Pokemon — so a reader who trusts it is worse off. Language is the
+// same on every row but the odd one out, which is the only row worth marking.
+//
+// The FORM column has to survive. Box, pack and blister of one set are three
+// products at three prices, and one SKU standing for two of them is exactly what
+// made the Marvel Allegiance count swing between 3 and 27 across four counts.
+const _FORM_WORDS = /\b(booster|box|boxes|pack|packs|blister|sleeved|case|bundle|etb|display|collection)\b/gi
+function _core(s) {
+  return String(s || '').toLowerCase().replace(_FORM_WORDS, ' ')
+    .replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+export function splitProductLabel(raw) {
+  const parts = String(raw || '').split('|').map(s => s.trim())
+  // A set name may itself contain a pipe, so anchor on the ends, not on a count.
+  if (parts.length < 4) return { name: String(raw || '').trim(), form: '', lang: '' }
+  return {
+    brand: parts[0],
+    name: parts.slice(1, parts.length - 2).join(' | '),
+    form: parts[parts.length - 2],
+    lang: parts[parts.length - 1],
+  }
+}
+
+// "The Time of Battle Booster Pack - The Time of Battle (OP16)" is one set
+// written twice, once with its code. Keep the half carrying the code — dropping
+// the code instead would merge two OP sets that only the code tells apart.
+function _dedupeSet(name) {
+  const halves = String(name).split(/\s+-\s+/)
+  if (halves.length !== 2) return name
+  const [a, b] = halves.map(h => h.trim())
+  const ca = _core(a), cb = _core(b)
+  if (!ca || !cb) return name
+  if (ca === cb) return b.length >= a.length ? b : a
+  if (cb.startsWith(ca)) return b
+  if (ca.startsWith(cb)) return a
+  return name          // two genuinely different halves — keep both
+}
+
+export function shortCountName(raw, dominant = null) {
+  const { name, form, lang } = splitProductLabel(raw)
+  let s = _dedupeSet(String(name || '').replace(/^\[(EN|JP|CN)\]\s*/i, '').trim())
+  // Append the form only when the name is not already saying it. Plain
+  // case-insensitive containment, so "…Booster Box" + form "Booster Box" prints
+  // once while "…Premium Booster PRB2 Booster Packs" + form "Booster Box" keeps
+  // both — there the two really do disagree, and that is worth seeing.
+  if (form && form !== '?' && !s.toLowerCase().includes(form.toLowerCase())) {
+    s = `${s} · ${form}`
+  }
+  // Tag the exception, never the norm. A Packheads count is nine EN rows and one
+  // JP row; tagging all ten puts the marker everywhere and therefore nowhere,
+  // which is how [JP] went unread on the Japan report.
+  if (dominant && lang && lang !== '?' && lang.toUpperCase() !== dominant) s = `${s} [${lang}]`
+  return s || 'Unknown'
+}
+
+// The language most rows share — the room's norm for this message. Returns null
+// when every row agrees (nothing to contrast against) or when nothing says.
+export function dominantLanguage(...groups) {
+  const n = new Map()
+  for (const g of groups) {
+    for (const it of g || []) {
+      const l = splitProductLabel(it && it.name).lang
+      if (l && l !== '?') n.set(l.toUpperCase(), (n.get(l.toUpperCase()) || 0) + 1)
+    }
+  }
+  if (n.size < 2) return null
+  return [...n.entries()].sort((a, b) => b[1] - a[1])[0][0]
+}
+
 function buildStreamCountBrief(body) {
   const { roomName, streamerName, countedByName, totalSold, totalDiscrepancies } = body
   // Strip the "Stream Room - " prefix in the brief — main group already knows
@@ -657,22 +733,28 @@ function buildStreamCountBrief(body) {
 function buildStreamCountDetailed(body) {
   const { roomName, streamerName, countedByName, soldItems = [], discrepancyItems = [], totalSold, totalDiscrepancies } = body
   const lines = []
-  lines.push(`📋 Stream Count — ${roomName || 'Unknown room'}`)
+  // This message goes to that room's own group, so the "Stream Room - " prefix
+  // is telling people where they already are.
+  lines.push(`📋 Stream Count — ${(roomName || 'Unknown room').replace(/^Stream Room\s*[-—]\s*/i, '')}`)
+  const dominant = dominantLanguage(soldItems, discrepancyItems)
   // Three lines into one, and no Time: — Lark stamps every message itself.
   lines.push(`Sold by ${streamerName || '?'} (last session) · counted by ${countedByName || '?'} (now streaming)`)
 
   if (soldItems.length > 0) {
     lines.push('')
     const skuLabel = soldItems.length === 1 ? 'SKU' : 'SKUs'
-    lines.push(`📤 Sold during previous session: ${Number(totalSold) || 0} units / ${soldItems.length} ${skuLabel}`)
-    for (const item of soldItems) {
+    lines.push(`📤 Sold last session: ${Number(totalSold) || 0} units / ${soldItems.length} ${skuLabel}`)
+    // Biggest movers first. The submitted order is the order of the count sheet,
+    // which puts a 1-unit line above a 70-unit line for no reason a reader can use.
+    const bySold = [...soldItems].sort((a, b) => (Number(b.quantity) || 0) - (Number(a.quantity) || 0))
+    for (const item of bySold) {
       // "at least" where the books were already short: sold = expected - actual,
       // and a wrong expected can only understate it. "?" where we could not
       // find out which of the two this is — that is not the same as exact.
       const qty = item.unverified ? `× ${item.quantity || 0} (unverified)`
         : item.atLeast ? `≥ ${item.quantity || 0}`
         : `× ${item.quantity || 0}`
-      lines.push(`  • ${item.name || 'Unknown'} ${qty}`)
+      lines.push(`  • ${shortCountName(item.name, dominant)} ${qty}`)
     }
     // Both markers still have to be spelled out or a reader takes ≥ for =, but
     // one short line each rather than a sentence each.
@@ -680,7 +762,7 @@ function buildStreamCountDetailed(body) {
     if (soldItems.some(i => i.unverified)) lines.push(`   unverified = books for this room could not be checked`)
   }
 
-  appendSurplus(lines, discrepancyItems, totalDiscrepancies)
+  appendSurplus(lines, discrepancyItems, totalDiscrepancies, dominant)
   appendCounterNote(lines, body)
   return lines.join('\n')
 }
@@ -713,8 +795,11 @@ const MAX_UNSOURCED_SHOWN = 4
  * physical recount or the people in the room, and age is what makes them
  * escalate instead of blend in.
  */
-export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies) {
+export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies, dominant = undefined) {
   if (!discrepancyItems.length) return lines
+  // Default keeps standalone callers (and the tests) honest: decide from
+  // whatever this block itself holds.
+  const lang = dominant === undefined ? dominantLanguage(discrepancyItems) : dominant
 
   lines.push('')
   // Staff read "+N found" as cosmetic. What it means is that this SKU's sales
@@ -730,8 +815,10 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies) 
     lines.push('')
     lines.push(`✅ Fixable — record a Move in from below; company total unchanged:`)
     for (const item of fixable) {
-      const from = (item.sources || []).map(s => `${s.name} has ${s.qty}`).join(', ')
-      lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}${from ? `  ← ${from}` : ''}`)
+      const from = (item.sources || [])
+        .map(s => `${String(s.name || '').replace(/^Stream Room\s*[-—]\s*/i, '')} has ${s.qty}`)
+        .join(', ')
+      lines.push(`  • ${shortCountName(item.name, lang)} +${item.extra || 0}${from ? `  ← ${from}` : ''}`)
     }
   }
 
@@ -759,7 +846,7 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies) 
       if (streak > 1) bits.push(`${streak} counts running`)
       if (age !== null && age > 0) bits.push(`open ${age}d`)
       if (Number.isFinite(item.elsewhere)) bits.push(`system holds ${item.elsewhere} elsewhere`)
-      lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}${bits.length ? `  (${bits.join(', ')})` : ''}`)
+      lines.push(`  • ${shortCountName(item.name, lang)} +${item.extra || 0}${bits.length ? `  (${bits.join(', ')})` : ''}`)
     }
     if (hidden.length > 0) {
       const restUnits = hidden.reduce((n, i) => n + (Number(i.extra) || 0), 0)
@@ -772,7 +859,7 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies) 
     lines.push('')
     lines.push(`⚠️ Other rooms not checked for ${unchecked.length} SKU(s) — unresolved, not fixable:`)
     for (const item of unchecked) {
-      lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}`)
+      lines.push(`  • ${shortCountName(item.name, lang)} +${item.extra || 0}`)
     }
   }
   return lines

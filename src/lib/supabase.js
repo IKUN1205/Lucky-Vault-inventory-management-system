@@ -420,7 +420,268 @@ export const createVendor = async (vendor) => {
   return data
 }
 
-export const createProduct = async (product) => {
+// Words that describe packaging rather than identity. Two of them in one name
+// ("OP14 Booster Box Booster Box") is the shape of a SKU somebody re-created
+// because they could not find the first one.
+const _TYPE_WORDS = new Set([
+  'booster', 'box', 'boxes', 'pack', 'packs', 'bundle', 'bundles', 'blister',
+  'blisters', 'sleeved', 'collection', 'tin', 'deck', 'case', 'etb', 'elite',
+  'trainer', 'single', 'set', 'special',
+])
+
+// Identity of a product name, with the parts that are metadata stripped off:
+// the language prefix (it lives in products.language), punctuation, and any
+// packaging word repeated a second time.
+// Packaging words in katakana. They are the exact counterpart of 'booster box'
+// and 'booster pack' in _TYPE_WORDS, and they matter for the same reason: on
+// English names, box-vs-pack of one set scoring 83% alike was what made the
+// first version of this matcher fire on half the catalogue.
+//
+// CJK is deliberately NOT split into characters. Splitting would give the
+// Jaccard score something finer to work with, but there is not one pure-CJK
+// name in the catalogue to measure the result against, and an unmeasured
+// matcher is how the 50%-noise version happened. Whole-run tokens catch the
+// case that actually occurs — the same Japanese name typed twice — and cannot
+// over-fire. It will miss two names differing by a character; that is the
+// honest trade and it can be tightened the day there is data to tighten it on.
+const _PLURAL_FORMS = {
+  boxes: 'box', packs: 'pack', bundles: 'bundle', blisters: 'blister',
+  tins: 'tin', decks: 'deck', cases: 'case', sets: 'set', collections: 'collection',
+}
+
+const _JP_FORM_WORDS = /ブースターボックス|ブースターパック|ボックス|パック|ケース|カートン|シュリンク/g
+
+const _identityTokens = (name) => {
+  const words = String(name || '')
+    .replace(/^\[(EN|JP|CN)\]\s*/i, '')
+    .toLowerCase()
+    .replace(_JP_FORM_WORDS, ' ')
+    // Unicode-aware. The previous [^a-z0-9 ] deleted every CJK character, so a
+    // name typed in Chinese or Japanese produced NO tokens at all and the guard
+    // answered "nothing similar" — unguarded on the two pages, China and Japan
+    // quick-add, most likely to be given such a name. Three of 815 products
+    // carry CJK today and all three also carry Latin, so this is a hole waiting
+    // to open rather than one already open.
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+  const seenType = new Set()
+  const out = []
+  for (const raw of words) {
+    // Singularise the packaging words only. _FORM_WORDS is singular, so a name
+    // written "Booster Packs" produced the token `packs`, the form signature
+    // came out as `booster` instead of `booster+pack`, and the guard concluded
+    // the two were different packaging and stayed silent. We own such a name
+    // today: "[EN] One Piece: Premium Booster PRB2 Booster Packs".
+    // Deliberately a fixed list, not a rule: stripping a trailing s in general
+    // would fuse names that differ by one, which is a duplicate the other way.
+    const w = _PLURAL_FORMS[raw] || raw
+    if (_TYPE_WORDS.has(w)) {
+      if (seenType.has(w)) continue
+      seenType.add(w)
+    }
+    out.push(w)
+  }
+  return out
+}
+
+// Words that name the packaging or the variant rather than the set. Removing
+// them leaves what the thing actually IS, which is the only fair comparison
+// between two SKUs of one set that were named by different people.
+const _NON_SET_WORDS = new Set([
+  ..._TYPE_WORDS,
+  'in', 'bag', 'open', 'opened', 'unsealed', 'sealed', 'cut', 'slice', 'other',
+  'loose', 'the', 'of', 'a',
+])
+
+// Brand words come off too: the brand is its own column, so "Pokemon 151 Tin"
+// and "151 Tin" are the same product written by two people. Leaving the brand in
+// made that pair look half-different and the real duplicate went unflagged.
+const _setTokens = (name, brand) => {
+  const drop = new Set(_NON_SET_WORDS)
+  for (const w of String(brand || '').toLowerCase().split(/[^a-z0-9]+/)) {
+    if (w) drop.add(w)
+  }
+  return new Set(_identityTokens(name).filter(w => !drop.has(w)))
+}
+
+// The packaging form, as a signature. This has to be DECISIVE rather than one
+// more token in a similarity score: a Booster Box and a Booster Pack of one set
+// share every word but one, and they are the most common pair in the catalogue.
+// Scored as text they look 83% identical, and a guard built that way fired on
+// half of all products — a prompt at that rate is one people click past, which
+// is worse than no prompt.
+// Includes the words that look decorative but define a different SKU: a Sleeved
+// Booster Pack is not a Booster Pack, an Elite Trainer Box is not a Booster Box,
+// a PC (Pokemon Center) ETB is not an ETB. Treating those as noise put "Journey
+// Together Sleeved Booster Pack" up as a duplicate of the 459 loose packs.
+const _FORM_WORDS = ['box', 'pack', 'bundle', 'blister', 'tin', 'deck', 'case', 'etb',
+  'collection', 'sleeved', 'elite', 'trainer', 'pc', 'premium', 'upc', 'enhanced', 'special']
+const _formSig = (name) => {
+  const t = new Set(_identityTokens(name))
+  return _FORM_WORDS.filter(w => t.has(w)).join('+')
+}
+
+/**
+ * Products that might already BE the thing someone is about to create.
+ *
+ * The point of catching this here is that "I cannot find it, I will make one"
+ * is the moment duplicates are born, and it is also the only moment anyone is
+ * holding the item and can tell. Catching it later means a split shelf: two
+ * rows for one product, each with part of the stock, and every count, price
+ * and cost figure downstream quietly halved.
+ *
+ * Matching is on identity tokens, not on the raw string, and it is scoped to
+ * the same brand + language, because [EN] and [JP] of one set are genuinely
+ * two products (four EN/JP mismatches have been caught in this system already).
+ *
+ * `variant` matters more than the name: "(In Bag)" and "(Open)" are the same
+ * physical thing under two names and no string comparison will ever say so —
+ * their variant column does.
+ *
+ * Returns candidates with their on-hand quantity, most-stocked first: a
+ * duplicate that holds stock is the one actually splitting a shelf.
+ */
+export const findSimilarProducts = async (name, { brand, language, type, variant } = {}) => {
+  const tokens = _identityTokens(name)
+  if (tokens.length === 0) return []
+
+  // Paged. The largest brand+language group is 369 rows today, but a create
+  // with no brand set reads the whole catalogue (815 and climbing), and the
+  // PostgREST cap does not error when it truncates — it just returns the first
+  // page, so the guard would quietly stop seeing the newest half of the shelf.
+  let data
+  try {
+    data = await fetchAllPages(() => {
+      let q = supabase.from('products')
+        .select('id, name, aliases, brand, language, type, category, variant, active')
+        .order('id', { ascending: true })
+      if (brand) q = q.eq('brand', brand)
+      if (language) q = q.eq('language', language)
+      return q
+    })
+  } catch {
+    // Fail OPEN, deliberately: this is a guard, not a gate. A lookup outage must
+    // not stop someone receiving stock — it just means this create is unguarded,
+    // which is exactly where we already are today.
+    return []
+  }
+  if (!data) return []
+
+  // A survivor of a merge carries the absorbed name in `aliases`, and that was
+  // the whole point of putting it there — so the old name still finds the thing.
+  // Matching on `name` alone threw that away: 162 live products carry an
+  // absorbed name today and many of them are the Chinese ones (宝石4弹 原盒 →
+  // Gem Vol.4 Booster Box), which is exactly what a China quick-add is handed.
+  // MERGED_INTO:<id> is bookkeeping written by the merge, not a name.
+  const _identitiesOf = (p) => {
+    const out = [p.name]
+    for (const a of Array.isArray(p.aliases) ? p.aliases : []) {
+      if (typeof a === 'string' && a && !a.startsWith('MERGED_INTO:')) out.push(a)
+    }
+    return out
+  }
+
+  const want = new Set(tokens)
+  const scored = []
+  for (const p of data) {
+    // A merged-away SKU is deactivated, not deleted — its history still has to
+    // point somewhere. Offering it back as "is it one of these?" would send the
+    // next person to the dead row, which is the opposite of the merge's point.
+    // (Only an explicit false: an unset flag means nobody has decided.)
+    if (p.active === false) continue
+
+    // Two KNOWN and different variants settle it before any string is compared:
+    // 有膜 and 无膜 of one set are two SKUs on purpose, and so are a sealed box
+    // and an opened one. The taxonomy is the authority here and it disagrees
+    // with the name similarity.
+    if (variant && p.variant && variant !== p.variant) continue
+    const sameVariant = variant && p.variant && variant === p.variant
+    const sameType = !type || !p.type || type === p.type
+
+    // Score against the product's own name AND every name it has absorbed, and
+    // keep the best. An alias is not decoration: it is the name this thing used
+    // to be found by, and ignoring it re-opens the duplicate the merge closed.
+    let best = null
+    for (const ident of _identitiesOf(p)) {
+      const pt = new Set(_identityTokens(ident))
+      if (pt.size === 0) continue
+      let overlap = 0
+      for (const t of want) if (pt.has(t)) overlap++
+
+      // Is it the same SET? Measured on set tokens only, because packaging words
+      // dilute the score exactly where it matters most: "Ninja Spinner (In Bag)"
+      // against "Ninja Spinner Booster Box (Open)" scores 0.5 on full names — two
+      // shared words drowned by three packaging words — while on set tokens it is
+      // a perfect match, which is the truth: one product filed twice.
+      const ws = _setTokens(name, brand)
+      const ps = _setTokens(ident, p.brand)
+      let setRatio = 0
+      if (ws.size && ps.size) {
+        let so = 0
+        for (const t of ws) if (ps.has(t)) so++
+        // Overlap over the UNION, not over the shorter side. Dividing by the
+        // shorter side makes any short name match every longer name that contains
+        // it, which is how "Astral Radiance Booster Box" came out as a duplicate
+        // of "Astral Radiance Elite Trainer Box".
+        setRatio = so / (ws.size + ps.size - so)
+      }
+      if (setRatio < 0.8) continue
+
+      // Same set is not enough. A box and a pack of one set are two products, and
+      // they are the commonest pair we own — so the packaging has to agree too,
+      // either by carrying the same form words or by carrying the same variant
+      // (the variant IS the packaging, and it is the only thing that tells
+      // "(In Bag)" and "(Open)" are one product).
+      const sameForm = _formSig(name) === _formSig(ident)
+      if (!(sameVariant || (sameForm && sameType))) continue
+
+      if (!best || setRatio > best._ratio) best = { _overlap: overlap, _ratio: setRatio }
+    }
+    if (!best) continue
+    scored.push({ ...p, ...best })
+  }
+  if (scored.length === 0) return []
+
+  const ids = scored.map(p => p.id)
+  const { data: inv, error: invErr } = await supabase
+    .from('inventory')
+    .select('product_id, quantity')
+    .in('product_id', ids)
+  // A failed stock read is NOT zero stock. Printing "0 on hand" against every
+  // candidate is the most persuasive possible argument for pressing OK — "that
+  // one is empty, mine must be a different product" — and it would be an
+  // invention. on_hand stays null and the prompt says the stock is unknown.
+  const stock = invErr ? null : {}
+  if (stock) {
+    for (const r of inv || []) stock[r.product_id] = (stock[r.product_id] || 0) + (r.quantity || 0)
+  }
+
+  return scored
+    .map(p => ({ ...p, on_hand: stock ? (stock[p.id] || 0) : null }))
+    .sort((a, b) => ((b.on_hand || 0) - (a.on_hand || 0)) || (b._ratio - a._ratio))
+}
+
+/**
+ * Create a product. Refuses when something that looks like the same product
+ * already exists, unless the caller has shown the candidates to a human and
+ * they said none of them is it.
+ *
+ * The thrown error carries `candidates`, so the caller can show them rather
+ * than making the user go hunt.
+ */
+export const createProduct = async (product, { confirmedNotDuplicate = false } = {}) => {
+  if (!confirmedNotDuplicate) {
+    const candidates = await findSimilarProducts(product?.name, product)
+    if (candidates.length > 0) {
+      const err = new Error(
+        `"${product?.name}" looks like ${candidates.length === 1 ? 'a product' : 'products'} we already have`
+      )
+      err.code = 'POSSIBLE_DUPLICATE'
+      err.candidates = candidates
+      throw err
+    }
+  }
   const { data, error } = await supabase
     .from('products')
     .insert(product)
@@ -3046,7 +3307,7 @@ export const createJapanToUSShipment = async ({
 //
 // Returns: { created, updated } counts so the caller can tell the user
 // whether they just added 4 new SKUs or 3 already existed.
-export const upsertProducts = async (rows) => {
+export const upsertProducts = async (rows, { confirmedNotDuplicate = false } = {}) => {
   if (!Array.isArray(rows) || rows.length === 0) {
     return { created: 0, updated: 0, data: [] }
   }
@@ -3068,6 +3329,32 @@ export const upsertProducts = async (rows) => {
     (preexisting || []).map(p => `${p.brand}|${p.type}|${p.category}|${p.name}|${p.language}`)
   )
   const inputKeys = rows.map(r => `${r.brand}|${r.type}|${r.category}|${r.name}|${r.language}`)
+
+  // Same guard as createProduct, because this is the fifth way into the
+  // products table and it was the one not covered: Japan quick-add posts a
+  // whole variant family through here, so a near-miss on the set name creates
+  // the entire family a second time in one click. The exact-key upsert above
+  // only catches a byte-identical name.
+  //
+  // Only rows that would CREATE are checked — an update to a row that already
+  // exists is not a duplicate, it is the fix.
+  if (!confirmedNotDuplicate) {
+    const dupes = []
+    for (let i = 0; i < rows.length; i++) {
+      if (existing.has(inputKeys[i])) continue
+      const candidates = await findSimilarProducts(rows[i].name, rows[i])
+      if (candidates.length > 0) dupes.push({ name: rows[i].name, candidates })
+    }
+    if (dupes.length > 0) {
+      const err = new Error('We may already have some of these products')
+      err.code = 'POSSIBLE_DUPLICATE'
+      err.duplicates = dupes
+      // Flattened too, so a caller that only knows the single-product shape
+      // still shows something rather than an empty list.
+      err.candidates = dupes.flatMap(d => d.candidates)
+      throw err
+    }
+  }
 
   const { data, error } = await supabase
     .from('products')

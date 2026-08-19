@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { upsertProducts } from '../lib/supabase'
+import { upsertProductsChecked } from '../lib/duplicateGuard'
 import { ToastContainer, useToast } from '../components/Toast'
 import { useAuth } from '../lib/AuthContext'
 import { Plus, Save, AlertCircle } from 'lucide-react'
@@ -157,7 +157,7 @@ export default function JapanAddProduct() {
         variant: p.variant,
         active: true,
       }))
-      const { created, updated } = await upsertProducts(rows)
+      const { created, updated } = await upsertProductsChecked(rows)
       const msg = updated > 0
         ? `✓ ${created} new SKU${created === 1 ? '' : 's'} created · ${updated} already existed (updated taxonomy)`
         : `✓ ${created} new SKU${created === 1 ? '' : 's'} created`
@@ -192,8 +192,16 @@ export default function JapanAddProduct() {
       setForm(f => ({ ...f, short_code: '', english_name: '' }))
       setChosen(new Set(DEFAULT_VARIANTS_FOR_NEW_SET))
     } catch (err) {
-      console.error('[JapanAddProduct] submit failed:', err)
-      addToast(`Failed: ${err.message || err}`, 'error')
+      if (err?.code === 'DUPLICATE_CANCELLED') {
+        // Not a failure. They looked at the existing SKUs and used one, which is
+        // the outcome the prompt exists for — reporting it as failed is how
+        // people learn to press OK without reading.
+        console.info('[JapanAddProduct] duplicate prompt cancelled')
+        addToast(`Nothing added — use the existing SKU: ${err.candidates?.[0]?.name || ''}`)
+      } else {
+        console.error('[JapanAddProduct] submit failed:', err)
+        addToast(`Failed: ${err.message || err}`, 'error')
+      }
     } finally {
       setSubmitting(false)
     }
