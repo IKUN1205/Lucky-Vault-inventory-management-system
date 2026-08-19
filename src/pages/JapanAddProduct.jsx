@@ -14,6 +14,7 @@ import {
   buildJapanProductName,
   buildJapanProductAliases,
   variantToType,
+  isSinglePackVariant,
   DEFAULT_VARIANTS_FOR_NEW_SET,
 } from '../lib/japanVariants'
 
@@ -33,6 +34,7 @@ import {
 //   - Brand inferred from series_zh; language hard-coded to JP.
 // ============================================================================
 
+// Which shelf (type='Pack', category 'Booster Pack'). A bag is not a sealed box.
 const PACK_VARIANTS = new Set(['in_bag', 'single_pack'])
 
 export default function JapanAddProduct() {
@@ -44,7 +46,10 @@ export default function JapanAddProduct() {
     series_zh: '宝可梦',
     short_code: '',
     english_name: '',
-    packs_per_box: 30,    // default for sealed-style variants; ignored for packs
+    // No default. A pre-filled 30 walked straight through the submit check —
+    // the field was never empty, so it always passed — and 30 is wrong for a
+    // 10-pack high-class set and for One Piece. Mega Dream carried 30 and is 10.
+    packs_per_box: '',
   })
 
   // Which variants to create. Default-checked = the 4 common ones.
@@ -75,6 +80,10 @@ export default function JapanAddProduct() {
       .map(variant => {
         const type = variantToType(variant)
         const isPack = PACK_VARIANTS.has(variant)
+        // How many packs one unit holds is a SEPARATE question from which shelf
+        // it sits on. Only 散包 is one pack; a 垃圾袋 holds a whole box's worth
+        // with no box, so it keeps the pack count and can still be broken down.
+        const isOnePack = isSinglePackVariant(variant)
         return {
           variant,
           name: buildJapanProductName(e, variant),
@@ -88,8 +97,21 @@ export default function JapanAddProduct() {
           language: 'JP',
           type,
           category: isPack ? 'Booster Pack' : 'Booster Box',
+          // packs_per_box: a bag holds a box's worth, so it gets the count.
+          // breakable: NOT set for a bag, even though one really can be broken
+          // into loose packs. BreakBox picks its source list by `breakable`
+          // (BreakBox.jsx:49) and then finds the destination pack SKU by
+          // brand+language+type==='Pack'+name-contains, without excluding the
+          // source - and a bag is type='Pack'. It would match itself and book
+          // -1 +30 on one product id: net +29 bags out of thin air. Offering an
+          // operation the app performs wrongly is worse than not offering it.
           breakable: !isPack,
-          packs_per_box: isPack ? null : Number(form.packs_per_box) || 30,
+          // No `|| 30` fallback. A blank or bad value must not quietly become 30 -
+          // it is wrong for a 10-pack high-class set and for One Piece, and a
+          // wrong count here misreads every future count of that SKU by a factor.
+          // handleSubmit blocks instead; the field is pre-filled with 30, which
+          // the user can see and change.
+          packs_per_box: isOnePack ? null : Number(form.packs_per_box),
           short_code: form.short_code.trim(),
         }
       })
@@ -105,6 +127,19 @@ export default function JapanAddProduct() {
     }
     if (chosen.size === 0) {
       addToast('Pick at least one variant', 'error'); return
+    }
+    // Anything that is not 散包 holds a box's worth of packs - including 垃圾袋,
+    // which is a box's packs with the box thrown away. Refuse rather than invent
+    // the number: 30 is right for JP Pokemon, wrong for a 10-pack high-class set
+    // and for One Piece, and the SKU keeps whatever it is given forever.
+    const needsCount = [...chosen].filter(v => !isSinglePackVariant(v))
+    const ppb = Number(form.packs_per_box)
+    if (needsCount.length > 0 && (!Number.isInteger(ppb) || ppb < 1)) {
+      addToast(
+        `Packs per box needed for ${needsCount.map(variantLabel).join(' / ')} — `
+        + `JP Pokemon is usually 30, high-class sets are 10. Not guessed.`,
+        'error')
+      return
     }
 
     setSubmitting(true)
@@ -287,7 +322,11 @@ export default function JapanAddProduct() {
         </div>
 
         {/* Packs per box override (only useful when any box-style variant chosen) */}
-        {[...chosen].some(v => !PACK_VARIANTS.has(v)) && (
+        {/* Shown whenever something that HOLDS packs is ticked - which includes
+            垃圾袋. Keyed on PACK_VARIANTS it stayed hidden for a bag-only submit
+            while still writing 30, so a set whose box is not 30 could not be
+            entered and nothing said so. Same predicate as the value below. */}
+        {[...chosen].some(v => !isSinglePackVariant(v)) && (
           <div className="pt-3 border-t border-vault-border">
             <label className="block text-sm font-medium text-gray-300 mb-2"># of Packs per Box (for Booster Box variants)</label>
             <input
@@ -298,7 +337,7 @@ export default function JapanAddProduct() {
               min="1"
               className="max-w-xs"
             />
-            <p className="text-[10px] text-gray-500 mt-1">JP boxes are usually 30. EN boxes are 36. Doesn't apply to 散包/垃圾袋 (Pack rows).</p>
+            <p className="text-[10px] text-gray-500 mt-1">JP boxes are usually 30 (high-class sets are 10). EN boxes are 36. 垃圾袋 holds a whole box's worth, so it uses this number too. Doesn't apply to 散包.</p>
           </div>
         )}
 

@@ -42,7 +42,7 @@ const out = appendSurplus([], REAL, 97).join('\n')
 console.log('\n--- rendered ---\n' + out + '\n----------------\n')
 
 ok('总数还在', out.includes('+97 units'))
-ok('分成两块', out.includes('Fixable now') && out.includes('No source anywhere'))
+ok('分成两块', out.includes('✅ Fixable') && out.includes('No source anywhere'))
 ok('可修的点名来源房间', out.includes('Master Inventory has 36'), out)
 ok('可修的三条都在', ['Hololive', 'FB03', 'Epic Seven'].every(n => out.includes(n)))
 ok('查无来路的不再被要求 Move',
@@ -63,8 +63,8 @@ const UNCHECKED = [{ name: 'Something', extra: 5, streak: 2, since: null,
 const u = appendSurplus([], UNCHECKED, 5).join('\n')
 ok('查不到别房时不许说"可修"', !u.includes('Fixable now'), u)
 ok('查不到别房时不许说"查无来路"', !u.includes('No source anywhere'), u)
-ok('查不到就明说查不到', u.includes('Could not check other rooms'), u)
-ok('并且要当成未解决', u.includes('not as fixable'))
+ok('查不到就明说查不到', u.includes('Other rooms not checked'), u)
+ok('并且要当成未解决', u.includes('unresolved, not fixable'))
 
 // Degenerate inputs
 ok('没有差异就不输出', appendSurplus([], [], 0).length === 0)

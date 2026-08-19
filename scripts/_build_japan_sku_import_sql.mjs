@@ -51,12 +51,23 @@ const xlsxRows = rawRows.map((r, i) => ({
 console.error(`xlsx rows after cleanup: ${xlsxRows.length}`)
 
 // ---- 2. Pull existing products from DB --------------------------------------
-const { data: existingProducts, error: prodErr } = await supabase
-  .from('products')
-  .select('id, name, brand, language, type, category, active')
-if (prodErr) {
-  console.error('Supabase error:', prodErr.message)
-  process.exit(1)
+// Paged. PostgREST caps a select at 1000 rows and says nothing about it — the
+// table is at 811 today, so an unpaged read is one growth spurt away from
+// silently hiding products, which here would mean re-creating a SKU that
+// already exists and reading no sibling pack count for it. (/slabs lost ~1500
+// rows to exactly this and looked fine doing it.)
+const existingProducts = []
+for (let from = 0; ; from += 1000) {
+  const { data: page, error: prodErr } = await supabase
+    .from('products')
+    .select('id, name, brand, language, type, category, active, packs_per_box, variant')
+    .range(from, from + 999)
+  if (prodErr) {
+    console.error('Supabase error:', prodErr.message)
+    process.exit(1)
+  }
+  existingProducts.push(...page)
+  if (page.length < 1000) break
 }
 console.error(`existing products in DB: ${existingProducts.length}`)
 
@@ -103,6 +114,9 @@ function buildAliases({ short_code, series_zh, english_core, english_full }) {
 }
 
 // ---- 5. Walk xlsx rows, classify each as UPDATE / INSERT / SKIP -------------
+// Sets we could not read a pack count for. Left NULL rather than assumed, and
+// printed at the end so the gap is visible before anyone runs the SQL.
+const unknownPackCount = new Set()
 const updates = []   // { product_id, aliases, short_code, variant, source_row }
 const inserts = []   // { name, brand, language, type, category, aliases, short_code, variant }
 const skipped = []   // { reason, ... }
@@ -185,6 +199,22 @@ for (const row of xlsxRows) {
   } else {
     // Determine type/category based on variant
     const isPack = PACK_VARIANTS.has(variant_en)
+    // One number for the whole set: a 垃圾袋 holds a box's worth, so it must
+    // never disagree with its own box - two SKUs of one set carrying different
+    // pack counts is the state that caused today's 30x miscount.
+    //
+    // Read it off the set's own sealed box in the DB. A flat 30 is wrong for a
+    // 10-pack high-class set (Mega Dream is 10, and two of its SKUs carried 30
+    // until 2026-08-18) and for One Piece. When there is no box to read, leave
+    // it NULL and list it - inventing a number that is silently wrong by 3x is
+    // worse than an empty column somebody has to fill.
+    const setSibling = existingProducts.find(p =>
+      (p.language || '').toUpperCase() === 'JP' &&
+      p.packs_per_box &&
+      ['sealed', 'unsealed'].includes(p.variant || '') &&
+      p.name.toLowerCase().includes(english_core.toLowerCase()))
+    const setPacksPerBox = setSibling ? setSibling.packs_per_box : null
+    if (!setPacksPerBox) unknownPackCount.add(english_core)
     const baseName = variant_en === 'sealed'
       ? `${english_core} Booster Box`
       : variant_en === 'unsealed'
@@ -206,7 +236,11 @@ for (const row of xlsxRows) {
       type: isPack ? 'Pack' : 'Sealed',
       category: isPack ? 'Booster Pack' : 'Booster Box',
       breakable: !isPack,
-      packs_per_box: !isPack ? 30 : null,  // common JP-set default; admins can fix later
+      // A 垃圾袋 is a box's worth of loose packs with the box thrown away, so it
+      // gets the box's pack count. Sharing isPack with the shelf question wrote
+      // null here for all eleven bag SKUs, and a null reads downstream as
+      // "1 unit = 1 pack" - off by the whole box. Only 散包 is genuinely one.
+      packs_per_box: variant_en === 'single_pack' ? null : setPacksPerBox,
       aliases, short_code: row.short_code, variant: variant_en,
       source_row: row,
     })
@@ -263,7 +297,10 @@ for (const i of inserts) {
   lines.push(
     `INSERT INTO products (name, brand, language, type, category, breakable, packs_per_box, aliases, short_code, variant, active) ` +
     `VALUES (${sqlStr(i.name)}, ${sqlStr(i.brand)}, ${sqlStr(i.language)}, ${sqlStr(i.type)}, ${sqlStr(i.category)}, ${i.breakable}, ${i.packs_per_box ?? 'NULL'}, ${sqlArray(i.aliases)}, ${sqlStr(i.short_code)}, ${sqlStr(i.variant)}, true) ` +
-    `ON CONFLICT (brand, type, category, name, language) DO UPDATE SET aliases = EXCLUDED.aliases, short_code = EXCLUDED.short_code, variant = EXCLUDED.variant;`
+    // packs_per_box via COALESCE: an existing row with an empty count gets filled
+    // — that is the state the eleven 垃圾袋 SKUs were left in — but a value
+    // somebody already set is never overwritten by a derived one.
+    `ON CONFLICT (brand, type, category, name, language) DO UPDATE SET aliases = EXCLUDED.aliases, short_code = EXCLUDED.short_code, variant = EXCLUDED.variant, packs_per_box = COALESCE(products.packs_per_box, EXCLUDED.packs_per_box);`
   )
 }
 lines.push('')
@@ -279,6 +316,13 @@ lines.push('')
 
 writeFileSync(OUT_PATH, lines.join('\n'))
 console.error(`\nWrote ${OUT_PATH}`)
+
+if (unknownPackCount.size > 0) {
+  console.error(`
+⚠ packs_per_box left NULL for ${unknownPackCount.size} set(s) - no sealed box in the DB to read it from.`)
+  console.error('  Fill these in before running the SQL; a bag or box with no pack count is read downstream as one pack:')
+  for (const n of [...unknownPackCount].sort()) console.error('  -', n)
+}
 
 // Also dump the skipped rows so the user can see what we ignored
 if (skipped.length > 0) {

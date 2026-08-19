@@ -281,7 +281,23 @@ export default function JapanShipments() {
               carrier: header.carrier || null,
               trackingNumber: header.tracking_number?.trim() || null,
             }),
-          }).catch(err => console.error('[lark-notify] jp_to_us_shipment failed:', err))
+          })
+            .then(async r => {
+              // The shipment row is already saved; this only reports whether
+              // anyone was actually told. EVERY recipient counts, not just Japan:
+              // this event also goes to the US intake team, and a package landing
+              // in LA that nobody is expecting is the exact failure the message
+              // exists to prevent.
+              const body = await r.json().catch(() => null)
+              const missed = (body?.results || []).filter(x => !x.ok).map(x => x.target)
+              if (!r.ok || missed.length > 0) {
+                addToast(
+                  `Saved, but the shipment notice did not reach ${missed.join(', ') || 'anyone'}`
+                  + ' — tell them directly', 'error')
+                console.error('[lark-notify] jp_to_us_shipment undelivered:', body || r.status)
+              }
+            })
+            .catch(err => console.error('[lark-notify] jp_to_us_shipment failed:', err))
         } catch (err) {
           console.error('[lark-notify] jp_to_us_shipment payload build failed:', err)
         }
@@ -339,7 +355,21 @@ export default function JapanShipments() {
             reason: reason || null,
             shippedDate: s.date_purchased || null,
           }),
-        }).catch(err => console.error('[lark-notify] jp_shipment_canceled failed:', err))
+          })
+          .then(async r => {
+            // Every recipient counts. A cancellation that reaches Japan but not
+            // the US intake team leaves them waiting for a package that is not
+            // coming — the same gap, pointed the other way.
+            const body = await r.json().catch(() => null)
+            const missed = (body?.results || []).filter(x => !x.ok).map(x => x.target)
+            if (!r.ok || missed.length > 0) {
+              addToast(
+                `Saved, but the cancellation did not reach ${missed.join(', ') || 'anyone'}`
+                + ' — tell them directly', 'error')
+              console.error('[lark-notify] jp_shipment_canceled undelivered:', body || r.status)
+            }
+          })
+          .catch(err => console.error('[lark-notify] jp_shipment_canceled failed:', err))
       } catch (err) {
         console.error('[lark-notify] jp_shipment_canceled payload build failed:', err)
       }

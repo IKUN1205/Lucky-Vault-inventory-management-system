@@ -4494,11 +4494,24 @@ const _recoverSoldSingle = async (src, sellQty, saleData) => {
     location_id: src.location_id,
     acquirer_id: null,
     vendor_id: null,
-    date_acquired: null,
     notes: src.notes,
     photo_url: src.photo_url,
     status: 'sold',
     ...saleData,
+    // singles.date_acquired is `date NOT NULL` (scripts/create_singles_table.sql),
+    // so "unknown" is not a value this column accepts. Leaving it null is why
+    // every counter recovery since this shipped on 08-07 died with
+    // `null value in column "date_acquired" violates not-null constraint` —
+    // zero rows carry the recovery tag, so the escape hatch has never once
+    // worked, and on 08-17 it cost the storefront a checkout that took $80 and
+    // recorded $40.
+    //
+    // Set AFTER the spread so no future saleData shape can put the null back.
+    // The value is the counter date, not src.date_acquired: copying the sold
+    // row's acquisition date would assert this copy came from that purchase,
+    // which is the exact claim the null cost above refuses to make. What we can
+    // actually prove is that the card was in our hands at the register today.
+    date_acquired: saleData.sale_date || new Date().toLocaleDateString('en-CA'),
     sale_notes: [
       `${COUNTER_RECOVERY_TAG}: app showed this sold on ${src.sale_date || 'an unknown date'}`
       + ` for ${src.sale_price_usd == null ? '?' : '$' + src.sale_price_usd}`
@@ -4506,7 +4519,9 @@ const _recoverSoldSingle = async (src, sellQty, saleData) => {
       + ' Cashier confirmed a physical copy at the counter, so this sale is booked'
       + ' as its own row and the earlier sale is left untouched.'
       + ' COST IS UNKNOWN on this row on purpose — this copy cannot be tied to a'
-      + ' purchase, so its profit is overstated until someone assigns a cost.',
+      + ' purchase, so its profit is overstated until someone assigns a cost.'
+      + ' DATE ACQUIRED is the date it appeared at the counter, NOT a purchase'
+      + ' date — the column cannot hold "unknown", so do not read it as provenance.',
       saleData.sale_notes || '',
     ].filter(Boolean).join(' '),
   }

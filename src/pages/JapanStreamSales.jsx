@@ -215,7 +215,24 @@ export default function JapanStreamSales() {
               totalJpy: totalJpyAccum,
               totalUsd: convertToUSD(totalJpyAccum, 'JPY'),
             }),
-          }).catch(err => console.error('[lark-notify] jp_stream_sale failed:', err))
+          })
+            .then(async r => {
+              // The sale is already saved; this is only about whether anyone in
+              // Japan was told. Fire-and-forget hid a total delivery failure -
+              // no group, no Telegram, and a green toast on screen.
+              // Every recipient, not just the Japan one — if this event ever
+              // gains a second audience, a silent failure there must not hide
+              // behind a green toast.
+              const body = await r.json().catch(() => null)
+              const missed = (body?.results || []).filter(x => !x.ok).map(x => x.target)
+              if (!r.ok || missed.length > 0) {
+                addToast(
+                  `Sale saved, but the notification did not reach ${missed.join(', ') || 'anyone'}`
+                  + ' — tell Hwa directly', 'error')
+                console.error('[lark-notify] jp_stream_sale undelivered:', body || r.status)
+              }
+            })
+            .catch(err => console.error('[lark-notify] jp_stream_sale failed:', err))
         } catch (err) {
           console.error('[lark-notify] jp_stream_sale payload build failed:', err)
         }
