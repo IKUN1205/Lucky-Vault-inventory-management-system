@@ -124,9 +124,10 @@ export default async function handler(req, res) {
     return handleJapanEvent(body, res, buildJpStreamSale, {})
   }
   if (type === 'jp_local_sale') {
-    // Inventory In&Out only — reuse the singles dispatcher which already
-    // points at LARK_WEBHOOK_INVENTORY_IO (falls back to main URL).
-    return handleSinglesEvent(body, res, buildJpLocalSale)
+    // Was Inventory In&Out only — a US group — on William's call. Gary
+    // 2026-08-18: Japan's own alerts do not belong in US channels. A sale out
+    // of the Japan warehouse to a Japanese customer is Japan's event.
+    return handleJapanEvent(body, res, buildJpLocalSale, {})
   }
   if (type === 'jp_to_us_shipment') {
     // 3 stakeholders for cross-border shipments:
@@ -587,7 +588,7 @@ async function handleReceive(body, res) {
 
 function buildStreamCountUndone(body) {
   const { roomName, streamerName, countedByName } = body
-  const room = (roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')
+  const room = shortRoom(roomName)
   const lines = []
   lines.push(`↩️ Stream Count UNDONE — ${room}`)
   lines.push(`Counter: ${countedByName || '?'} (was recording ${streamerName || '?'}'s session)`)
@@ -657,9 +658,8 @@ function buildStreamCountDetailed(body) {
   const { roomName, streamerName, countedByName, soldItems = [], discrepancyItems = [], totalSold, totalDiscrepancies } = body
   const lines = []
   lines.push(`📋 Stream Count — ${roomName || 'Unknown room'}`)
-  lines.push(`Sold by: ${streamerName || '?'} (previous session)`)
-  lines.push(`Counted by: ${countedByName || '?'} (now streaming)`)
-  lines.push(`Time: ${nowUtcStamp()}`)
+  // Three lines into one, and no Time: — Lark stamps every message itself.
+  lines.push(`Sold by ${streamerName || '?'} (last session) · counted by ${countedByName || '?'} (now streaming)`)
 
   if (soldItems.length > 0) {
     lines.push('')
@@ -674,12 +674,10 @@ function buildStreamCountDetailed(body) {
         : `× ${item.quantity || 0}`
       lines.push(`  • ${item.name || 'Unknown'} ${qty}`)
     }
-    if (soldItems.some(i => i.atLeast)) {
-      lines.push(`   ≥ = the books were already short on that SKU, so the real number can only be higher.`)
-    }
-    if (soldItems.some(i => i.unverified)) {
-      lines.push(`   unverified = we could not check the books for this room, so none of these are confirmed.`)
-    }
+    // Both markers still have to be spelled out or a reader takes ≥ for =, but
+    // one short line each rather than a sentence each.
+    if (soldItems.some(i => i.atLeast)) lines.push(`   ≥ = books were short, real number can only be higher`)
+    if (soldItems.some(i => i.unverified)) lines.push(`   unverified = books for this room could not be checked`)
   }
 
   appendSurplus(lines, discrepancyItems, totalDiscrepancies)
@@ -719,11 +717,10 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies) 
   if (!discrepancyItems.length) return lines
 
   lines.push('')
-  lines.push(`⚠️ Found beyond system: +${Number(totalDiscrepancies) || 0} units — NOT added to inventory`)
   // Staff read "+N found" as cosmetic. What it means is that this SKU's sales
-  // cannot be measured until the books are right, and goods keep leaving.
-  lines.push(`   Sales for these SKUs are UNKNOWN this session, not zero — a count can only`)
-  lines.push(`   measure sales when the books are right.`)
+  // cannot be measured until the books are right, and goods keep leaving, so the
+  // warning is compressed onto the number rather than dropped.
+  lines.push(`⚠️ +${Number(totalDiscrepancies) || 0} units beyond system — not added; sales for these SKUs UNKNOWN, not zero`)
 
   const fixable = discrepancyItems.filter(i => i.fixable === true)
   const unsourced = discrepancyItems.filter(i => i.fixable === false)
@@ -731,8 +728,7 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies) 
 
   if (fixable.length > 0) {
     lines.push('')
-    lines.push(`✅ Fixable now — the stock exists in another room. Record a Move into this room;`)
-    lines.push(`   the company total does not change:`)
+    lines.push(`✅ Fixable — record a Move in from below; company total unchanged:`)
     for (const item of fixable) {
       const from = (item.sources || []).map(s => `${s.name} has ${s.qty}`).join(', ')
       lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}${from ? `  ← ${from}` : ''}`)
@@ -741,9 +737,7 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies) 
 
   if (unsourced.length > 0) {
     lines.push('')
-    lines.push(`❓ No source anywhere — the whole company holds less than was counted, so there is`)
-    lines.push(`   no room to move these from. Do NOT adjust stock. Needs a physical recount or`)
-    lines.push(`   the people in the room:`)
+    lines.push(`❓ No source anywhere — Do NOT adjust stock; needs a physical recount:`)
     // Oldest first: the point of showing these is that some have been open for
     // weeks, and sorting by size buries exactly those. But the cap must never
     // hide the biggest — on 2026-08-12 one SKU was +67 of the +97, and a list
@@ -776,8 +770,7 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies) 
 
   if (unchecked.length > 0) {
     lines.push('')
-    lines.push(`⚠️ Could not check other rooms for ${unchecked.length} SKU(s), so these are unclassified —`)
-    lines.push(`   treat as unresolved, not as fixable:`)
+    lines.push(`⚠️ Other rooms not checked for ${unchecked.length} SKU(s) — unresolved, not fixable:`)
     for (const item of unchecked) {
       lines.push(`  • ${item.name || 'Unknown'} +${item.extra || 0}`)
     }
@@ -800,17 +793,13 @@ function buildMessage(body) {
     const KIND_ICON = { sealed: '📦', single: '🎴', slab: '💎' }
     const lines = []
     lines.push('📦 Inventory Move')
-    lines.push(`By: ${user || 'Unknown'}`)
-    lines.push(`Route: ${fromLocation} → ${toLocation}`)
-    lines.push('')
+    lines.push(`By: ${user || 'Unknown'}  ·  Route: ${shortRoom(fromLocation)} → ${shortRoom(toLocation)}`)
     for (const item of items) {
       const icon = KIND_ICON[item.kind] || KIND_ICON.sealed
       lines.push(`${icon} ${item.name || 'Unknown'} × ${item.quantity ?? 0}`)
     }
-    lines.push('')
     const skuLabel = items.length === 1 ? 'item' : 'items'
-    lines.push(`Total: ${items.length} ${skuLabel} / ${totalUnits ?? 0} units`)
-    lines.push(`Time: ${nowUtcStamp()}`)
+    lines.push(`Total: ${items.length} ${skuLabel} / ${totalUnits ?? 0} units  ·  ${nowUtcStamp()}`)
     return lines.join('\n')
   }
 
@@ -918,8 +907,9 @@ function buildMessage(body) {
     }
     const totalUnits = receipts.reduce((s, r) => s + (Number(r.thisBatch) || 0), 0)
     const lines = []
-    lines.push(`📥 Intake — ${totalUnits} units across ${receipts.length} line${receipts.length === 1 ? '' : 's'}`)
-    if (receiver) lines.push(`Received by: ${receiver}`)
+    // Receiver folded into the header; as its own line it was always four words.
+    lines.push(`📥 Intake — ${totalUnits} units across ${receipts.length} line${receipts.length === 1 ? '' : 's'}`
+      + (receiver ? ` · by ${receiver}` : ''))
 
     for (const [tracking, rows] of byTracking) {
       const units = rows.reduce((s, r) => s + (Number(r.thisBatch) || 0), 0)
@@ -953,8 +943,7 @@ function buildMessage(body) {
       }
       if (outstanding.length > 8) lines.push(`  ... and ${outstanding.length - 8} more`)
     }
-    lines.push('')
-    lines.push(`Time: ${nowUtcStamp()}`)
+    // No Time: — Lark stamps every message with its own clock.
     return lines.join('\n')
   }
 
@@ -1535,13 +1524,48 @@ function buildSingleDeleted(body) {
 // ============================================================================
 // Japan-side Lark dispatch
 // ============================================================================
-// Japan events route to LARK_WEBHOOK_JAPAN if it's set, otherwise fall
-// through to the main URL so messages never silently drop. jp_to_us_shipment
-// ALSO fans out to LARK_WEBHOOK_ACQUISITIONS (US-side intake team) so
-// they know a package is on the way without having to refresh the
-// pending-acquisitions list. Duplicate target URLs are de-duped.
+// Japan events route to LARK_WEBHOOK_JAPAN. They used to fall back to the main
+// URL "so messages never silently drop" — but that main URL is a US group, and
+// Gary 2026-08-18 ruled Japan's alerts out of US channels. The fallback is
+// replaced rather than removed, because not dropping silently was the right
+// half of that decision: Japan webhook → Hwa's Telegram → refuse loudly.
+// jp_to_us_shipment ALSO fans out to LARK_WEBHOOK_ACQUISITIONS (US-side intake
+// team) — that one is genuinely a US event. Duplicate target URLs are de-duped.
 function getJapanWebhook() {
-  return process.env.LARK_WEBHOOK_JAPAN || process.env.LARK_WEBHOOK_URL || null
+  return process.env.LARK_WEBHOOK_JAPAN || null
+}
+
+// Last resort for a Japan event when no Japan group is configured: DM the
+// Japan buy lead. Needs TELEGRAM_BOT_TOKEN + TELEGRAM_JAPAN_CHAT_ID in Vercel.
+// Lark answers 200 even when it refuses the message — keyword filter, rate
+// limit, revoked bot — and puts the verdict in the body ({"code":9499,...} or
+// {"StatusCode":19001,...}). A body we cannot parse is NOT evidence of refusal,
+// so that counts as sent.
+function larkBodyAccepted(txt) {
+  try {
+    const j = JSON.parse(txt)
+    const code = j?.code ?? j?.StatusCode ?? j?.status_code
+    return code == null || Number(code) === 0
+  } catch {
+    return true
+  }
+}
+
+async function postJapanTelegram(text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  const chat = process.env.TELEGRAM_JAPAN_CHAT_ID
+  if (!token || !chat) return { ok: false, reason: 'no TELEGRAM_BOT_TOKEN / TELEGRAM_JAPAN_CHAT_ID' }
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text, disable_web_page_preview: true }),
+    })
+    const body = await r.text()
+    return { ok: r.ok, status: r.status, response: body.slice(0, 200) }
+  } catch (err) {
+    return { ok: false, reason: String(err?.message || err) }
+  }
 }
 
 async function handleJapanEvent(body, res, builder, opts = {}) {
@@ -1570,9 +1594,30 @@ async function handleJapanEvent(body, res, builder, opts = {}) {
   pushTarget('japan', jpUrl)
   pushTarget('acquisitions', acqUrl)
   pushTarget('inventory_io', ioUrl)
+
+  // The Japan audience is not covered by the US fan-out targets. jp_to_us_shipment
+  // also goes to LARK_WEBHOOK_ACQUISITIONS, so keying this on "no targets at all"
+  // meant that with LARK_WEBHOOK_JAPAN unset the US team got the message, the
+  // response said ok, and Japan silently got nothing. Key it on the Japan target
+  // being missing instead.
+  // Started, not awaited. Awaiting it here put a slow Telegram in front of the
+  // US sends, so a jp_to_us_shipment could lose the arrival warning to a
+  // platform timeout - the fallback killing the message it exists to protect.
+  let jpFallback = null
+  const jpFallbackPromise = jpUrl ? null : postJapanTelegram(text)
   if (targets.length === 0) {
-    console.error('[lark-notify] Japan event: no webhook configured')
-    return res.status(500).json({ error: 'No webhook configured (set LARK_WEBHOOK_JAPAN or LARK_WEBHOOK_URL)' })
+    jpFallback = await jpFallbackPromise
+    if (jpFallback && !jpFallback.ok) {
+      console.error('[lark-notify] Japan copy undelivered:', jpFallback.reason || jpFallback.status)
+    }
+    if (jpFallback && jpFallback.ok) {
+      return res.status(200).json({ ok: true, results: [{ target: 'telegram_japan', ok: true }] })
+    }
+    return res.status(502).json({
+      error: 'Japan event not delivered — set LARK_WEBHOOK_JAPAN, or TELEGRAM_BOT_TOKEN + '
+        + 'TELEGRAM_JAPAN_CHAT_ID. It is NOT posted to a US group.',
+      telegram: jpFallback,
+    })
   }
 
   const results = await Promise.all(targets.map(async t => {
@@ -1583,14 +1628,57 @@ async function handleJapanEvent(body, res, builder, opts = {}) {
         body: JSON.stringify({ msg_type: 'text', content: { text } }),
       })
       const txt = await r.text()
-      return { target: t.name, ok: r.ok, status: r.status, response: txt }
+      // Judging by r.ok alone counted a refused message as delivered, which then
+      // suppressed the Telegram fallback and left a success toast on screen for
+      // something nobody received.
+      return { target: t.name, ok: r.ok && larkBodyAccepted(txt), status: r.status, response: txt }
     } catch (err) {
       console.error(`[lark-notify] Japan event ${t.name} send failed:`, err)
       return { target: t.name, ok: false, error: String(err?.message || err) }
     }
   }))
 
-  return res.status(200).json({ ok: results.every(r => r.ok), results })
+  // A configured-but-dead Japan webhook fails exactly the same way for the
+  // reader as an unset one. Key the failover on what actually happened, not on
+  // whether the env var exists - callers here are fire-and-forget and would
+  // never notice the ok:false.
+  if (jpFallbackPromise && !jpFallback) {
+    jpFallback = await jpFallbackPromise
+    if (!jpFallback.ok) {
+      console.error('[lark-notify] Japan copy undelivered:', jpFallback.reason || jpFallback.status)
+    }
+  }
+  const jpSend = results.find(r => r.name === 'japan' || r.target === 'japan')
+  if (jpSend && !jpSend.ok && !jpFallback) {
+    jpFallback = await postJapanTelegram(text)
+    if (!jpFallback.ok) {
+      console.error('[lark-notify] Japan webhook failed AND fallback failed:',
+        jpFallback.reason || jpFallback.status)
+    }
+  }
+
+  // An undelivered Japan copy has to appear in the response — reporting only the
+  // US sends is how a channel comes to look like it works. But the Japan
+  // AUDIENCE is one audience with two possible routes: if Lark refused and the
+  // Telegram fallback landed, Hwa has the message, and telling the operator to
+  // "go tell them directly" would be a false alarm. Alarms that cry wolf stop
+  // being read. So a successful fallback REPLACES the failed Lark attempt
+  // (keeping the failure detail for whoever fixes the webhook), while the US
+  // targets keep reporting for themselves.
+  let all = results
+  if (jpFallback) {
+    const larkTried = results.find(r => r.target === 'japan')
+    const tgRow = {
+      target: 'telegram_japan',
+      ok: !!jpFallback.ok,
+      reason: jpFallback.reason || null,
+      afterLarkFailure: larkTried && !larkTried.ok ? (larkTried.response || larkTried.error || larkTried.status) : null,
+    }
+    all = jpFallback.ok
+      ? [tgRow, ...results.filter(r => r.target !== 'japan')]
+      : [tgRow, ...results]
+  }
+  return res.status(200).json({ ok: all.every(r => r.ok), results: all })
 }
 
 // 🎌 Japan Live Sale Recorded
@@ -1619,13 +1707,9 @@ function buildJpStreamSale(body) {
   if (recordedBy && recordedBy !== streamer) lines.push(`Recorded by: ${recordedBy}`)
   if (saleDate) lines.push(`Date: ${saleDate}`)
   if (notes) lines.push(`Notes: ${notes}`)
-  lines.push('')
-  for (const it of items) {
-    const jpyStr = it.lineJpy != null ? `  ¥${Number(it.lineJpy).toLocaleString()}` : ''
-    const usdStr = it.lineUsd != null ? `  (≈ ${fmtUsd(it.lineUsd)})` : ''
-    lines.push(`• ${it.name || 'Unknown'} × ${it.quantity ?? 0}${jpyStr}${usdStr}`)
-  }
-  lines.push('')
+  const grouped = jpItemLines(items)
+  if (grouped.tags) lines.push(`(${grouped.tags})`)
+  for (const l of grouped.lines) lines.push(l)
   const totals = []
   if (totalUnits != null) totals.push(`${totalUnits} units`)
   if (totalJpy != null) totals.push(`¥${Number(totalJpy).toLocaleString()}`)
@@ -1666,13 +1750,9 @@ function buildJpLocalSale(body) {
   if (recordedBy && recordedBy !== salesperson) lines.push(`Recorded by: ${recordedBy}`)
   if (saleDate) lines.push(`Date: ${saleDate}`)
   if (notes) lines.push(`Notes: ${notes}`)
-  lines.push('')
-  for (const it of items) {
-    const jpyStr = it.lineJpy != null ? `  ¥${Number(it.lineJpy).toLocaleString()}` : ''
-    const usdStr = it.lineUsd != null ? `  (≈ ${fmtUsd(it.lineUsd)})` : ''
-    lines.push(`• ${it.name || 'Unknown'} × ${it.quantity ?? 0}${jpyStr}${usdStr}`)
-  }
-  lines.push('')
+  const grouped = jpItemLines(items)
+  if (grouped.tags) lines.push(`(${grouped.tags})`)
+  for (const l of grouped.lines) lines.push(l)
   const totals = []
   if (totalUnits != null) totals.push(`${totalUnits} units`)
   if (totalJpy != null) totals.push(`¥${Number(totalJpy).toLocaleString()}`)
@@ -1723,6 +1803,118 @@ function buildJpShipmentCanceled(body) {
 //
 //   before  One Piece | [JP] THE AZURE SEA'S SEVEN (Case) | Booster Box | JP × 1
 //   after   THE AZURE SEA'S SEVEN (Case) × 1
+// "Stream Room - TikTok Packheads" reads as "TikTok Packheads" to everyone
+// who works here; the prefix is on every room and carries nothing.
+function shortRoom(name) {
+  return String(name || 'Unknown').replace(/^Stream Room\s*[-\u2014]\s*/i, '')
+}
+
+// ---- Japan item lists -----------------------------------------------------
+// Senders post `name` as "Brand | Set | Category | Language". On a Japan list
+// the brand and the language are the same on every line, and a SKU can appear
+// twice because it was entered as two rows. Both are noise; the variant
+// ("(In Bag)", "(Open)", "(Unsealed)") is not, so it survives.
+function splitJpName(raw) {
+  const parts = String(raw || '').split('|').map(x => x.trim()).filter(Boolean)
+  const label = (parts.length >= 2 ? parts[1] : (parts[0] || 'Unknown')).replace(/^\[JP\]\s*/i, '')
+  const category = parts.length >= 3 ? parts[2] : ''
+  // A 垃圾袋 / "(In Bag)" is a box's worth of loose packs with the box thrown
+  // away - one unit is 30 packs, not one. It is filed under category "Booster
+  // Pack", so without this it prints as "10 packs" when it is 300. Its own bag
+  // is the honest unit. "(Open)" is the same thing under a second name: all
+  // three products spelled that way carry variant=in_bag.
+  const isBag = /\((in bag|open)\)/i.test(label)
+  // A case holds several boxes. Its category is "Booster Box", so without this
+  // one case sold prints as "1 box (case)" - which is what someone auditing a
+  // count reads as one box.
+  const isCase = /\(case\)/i.test(label)
+  const form = isBag ? 'bag' : isCase ? 'case'
+    : (/box/i.test(category) || /booster box/i.test(label) ? 'box' : 'pack')
+  // The set is the label with the form words and any bracketed variant removed;
+  // whatever is left in brackets IS the variant.
+  const variant = (label.match(/\(([^)]+)\)/) || [, ''])[1].trim()
+  // `ex` comes off wherever it falls, not only in front of a packaging word.
+  // Stripping it in one position but not the other split one set over two lines:
+  // "Terastal Festival ex Booster Box" became "Terastal Festival" while a row
+  // sent as plain "Terastal Festival ex" stayed as itself.
+  let set = label
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\b(ex\s+)?(booster box|booster pack|single pack)\b/gi, ' ')
+    .replace(/\s+ex\s*$/i, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!set) set = label
+  return { set, variant, form, brand: parts[0] || '', lang: parts[3] || '' }
+}
+
+function jpItemLines(items = []) {
+  const bySet = new Map()
+  const brands = new Set(), langs = new Set()
+  let anyMoney = false
+  for (const it of items) {
+    const { set, variant, form, brand, lang } = splitJpName(it.name)
+    if (brand) brands.add(brand)
+    if (lang) langs.add(lang)
+    // Case-insensitive: the catalogue holds both "Mega Dream Booster Box (Open)"
+    // and "MEGA Dream ex Booster Box (Unsealed)". Keyed on the raw string those
+    // land on two lines and read as two products - which is exactly what they
+    // must NOT read as, because they are the same set and the point of the line
+    // is to put (open) next to (unsealed) where someone can see the duplicate.
+    // Brand and language are part of the key, not just the header tag. The
+    // catalogue holds an [EN] and a [JP] SKU of the same set, splitJpName strips
+    // the [JP] prefix, and a sale can contain both - keyed on the set name alone
+    // they would merge into one line and overstate each SKU while the header
+    // said only "Pokemon EN/JP".
+    const skey = `${brand}|${lang}|${set}`.toLowerCase()
+    if (!bySet.has(skey)) bySet.set(skey, { label: set, brand, lang, variants: new Map() })
+    const key = `${variant}|${form}`
+    const cur = bySet.get(skey).variants.get(key) || { variant, form, qty: 0, jpy: null, usd: null }
+    cur.qty += Number(it.quantity) || 0
+    // Money merges with the quantity or a merged line would show one row's yen
+    // against two rows' units.
+    if (it.lineJpy != null) { cur.jpy = (cur.jpy || 0) + Number(it.lineJpy); anyMoney = true }
+    if (it.lineUsd != null) { cur.usd = (cur.usd || 0) + Number(it.lineUsd); anyMoney = true }
+    bySet.get(skey).variants.set(key, cur)
+  }
+  // Tag a line only with the dimension that actually varies in THIS message.
+  // Keeping two same-named SKUs on separate lines is worth nothing if both lines
+  // read identically; tagging every line when nothing varies is just noise.
+  const showLang = langs.size > 1
+  const showBrand = brands.size > 1
+  const lines = []
+  for (const { label, brand: bLabel, lang: lLabel, variants } of bySet.values()) {
+    // If a set holds more than one bag SKU - "(Open)" AND "(In Bag)", the exact
+    // duplicate this message is meant to expose - the unit alone renders them as
+    // "1 bag · 2 bags" and the reader cannot tell which is which. Keep the
+    // suffix in that case; drop it when there is only one, where it just repeats
+    // the word bag.
+    const bagVariants = [...variants.values()].filter(v => v.form === 'bag').length
+    const bits = []
+    for (const v of variants.values()) {
+      const unit = v.qty === 1 ? v.form
+        : (v.form === 'box' ? 'boxes' : v.form === 'bag' ? 'bags'
+          : v.form === 'case' ? 'cases' : 'packs')
+      let bit = `${v.qty.toLocaleString()} ${unit}`
+      // "(in bag)" after the word bags says the same thing twice; every other
+      // variant still shows, because that is where a duplicate SKU is visible.
+      const hideVariant = (v.form === 'bag' && bagVariants < 2) || v.form === 'case'
+      if (v.variant && !hideVariant) bit += ` (${v.variant.toLowerCase()})`
+      // Both, when both are sent. The reader does not have our FX rate, so the
+      // USD is not something they can work out from the yen - dropping it loses
+      // money detail rather than repetition.
+      if (v.jpy != null) bit += ` ¥${Math.round(v.jpy).toLocaleString()}`
+      if (v.usd != null) bit += ` (≈ ${fmtUsd(v.usd)})`
+      bits.push(bit)
+    }
+    const shown = label
+      + (showBrand && bLabel ? ` [${bLabel}]` : '')
+      + (showLang && lLabel ? ` [${lLabel}]` : '')
+    lines.push(`${shown} — ${bits.join(' · ')}`)
+  }
+  const tags = [[...brands].join('/'), [...langs].join('/')].filter(Boolean).join(' ')
+  return { lines, tags, anyMoney }
+}
+
 function shortSetName(it) {
   const explicit = (it.setName || '').trim()
   // Fall back to the pipe-delimited product string a sender may still post:

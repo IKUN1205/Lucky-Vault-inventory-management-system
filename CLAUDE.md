@@ -1,4 +1,36 @@
-# LV Inventory — 作业手册 brief (2026-08-17)
+# LV Inventory — 作业手册 brief (2026-08-18)
+
+## ✅ 8/18「(In Bag) = 垃圾袋 = 30 包」—— 一句话纠正了 8/07 的结论,顺带得到一把能自动查错的尺子(Gary:「in bag 就是trash bag那个sku 就是30包 只是没盒子」/「盒子的hit rate是比散包好的 所以价格高」)
+- **8/07 我判「那 278 个是盒不是包」** —— 方向对(绝不是 1 包),东西错。**它是一整盒的包拆出来装进垃圾袋、盒子扔掉。**
+- **不是信这句话,是账本自己说的。** 五个套各自独立印证 `袋价 ÷ 30` 落在「散包」和「拆封盒」之间:
+  ```
+  套              袋÷30    拆封盒/包   散包
+  Storm Emeralda   ¥509     ¥559      ¥399
+  Abyss Eye        ¥351     ¥461      ¥336
+  Mega Brave       ¥280     ¥283      ¥206
+  Mega Symphonia   ¥215     ¥225      ¥220
+  Munikis          ¥221     ¥240      ¥200
+  ```
+  **一袋若真是 1 包,单包成本就是 ¥6,452–15,266 —— 散包价的 30–40 倍。**
+- **`variant` 这一列早就写对了,是名字和元数据在打架**:`variant=in_bag` 共 14 个 SKU —— **11 个叫 `(In Bag)`(type=Pack,ppb=null)· 3 个叫 `(Open)`(type=Sealed,ppb=30)**。同一个东西录了两遍,一遍对一遍错。Ninja Spinner `(Open) ¥7,440/30 = ¥248` 落在散包 ¥220 和无膜盒 ¥286 之间,**钱证明 (Open) 和 (In Bag) 是同一件事**。
+- **🔴 病根一行**:`JapanAddProduct.jsx` 的 `PACK_VARIANTS = new Set(['in_bag','single_pack'])` —— **一个集合在回答两个不同的问题**:「放哪个货架」(袋子确实不是封盒,归 Pack 没错)和「一件是几包」(散包 1,袋子一整盒)。因为共用一个答案,**11 个垃圾袋 SKU 全部被写成 `packs_per_box=null`,而 null 在下游读作「1 件 = 1 包」**。已拆成两个谓词(新 `isSinglePackVariant()`),**`type` 故意没动** —— 错的只有算术。
+- **✅ 已写库**:6 个有货有进价的 JP 宝可梦袋 `ppb→30`(Storm 38 · Mega Brave 16 · Mega Symphonia 14 · Abyss Eye 13 · Munikis 3 · Inferno X 1),备份 `bag_ppb_backup.json`,乐观锁「仍为 null」,**回读 6/6**。
+- **故意没写的 5 个**:两个海贼王袋 —— **它家族里 `(Case)` 也写着 12,而一箱装的是 12 个盒不是 12 包**,同一列在一个家族里两个意思,**抄它就是把猜测洗成事实**;Black Bolt / White Flare / Glory of Team Rocket —— **零库存零进货,没有任何东西能验证 30**。要填说一声。
+- **🔴 那句 hit rate 是一把能自动查错的尺子**:「盒的每包成本必须高于散包」是市场事实,所以它是个**能失败的检验**。`scratchpad/ppb_sanity.py` 扫全库 JP:**22 个盒 SKU,3 条不成立** ——
+  - **`Mega Dream Booster Box (Open)` 和 `MEGA Dream ex Booster Box (Unsealed)` 记 30,钱推出来是 10.8 / 11.9**,而**它自己的封盒兄弟早就写着 ppb=10**(高级包盒本来就是 10 包)。按 30 算,盒里的包 ¥483 而散包 ¥1,105 —— **盒比散包便宜一半,不可能**。散包价是三次独立购入(¥900 / ¥1,110 / ¥1,000),不是坏行。**已改 30→10,备份 `megadream_ppb_backup.json`,回读通过。**
+  - 第三条 `Mega Symphonia (In Bag)` 只差 2%(¥215 vs ¥220)—— 袋子本来就比散包便宜一点,**30 是对的**。**这条正好证明这把尺子不是见谁都报。**
+- **🔴 Codex 连审 8 轮才判干净,共 15 条真缺陷,其中 13 条是我这批引入的。** 最重的两条:
+  - **P1 我把袋子设成 `breakable=true`,那会凭空造货**:BreakBox 按 `breakable` 取源(`BreakBox.jsx:49`),而 `findPackProduct()` 只按 `brand+language+type='Pack'+名字包含` 找目标、**不排除自己** —— 袋子的 type 正是 Pack,拆 1 袋会对同一个 product 先 −1 再 +30,**净增 29**。已撤回 `breakable`(**`packs_per_box` 保留** —— 你说的那件事是包数,breakable 是另一个功能,而那个匹配器处理不了 Pack 型源)。实查全库 `type='Pack'` 且 breakable 的产品 **0 个**,所以这个洞是我要造出来的、不是已经开着的。
+  - **P1 `Number(form.packs_per_box) || 30` 会静默造数**:空值/0/打错一律变 30,而 **30 对 10 包的高阶套和海贼王都是错的 —— 正是今天刚清掉的那个错**。已去掉静默回退,改成挡提交并点名会写到哪几个变体。
+  - 其余:日本回落只在"env 没配"时触发(配了但失效的 webhook 一样收不到)→ 改成按**实际发送结果**触发;回落 `await` 排在美国发送之前(慢 Telegram 能把美国到货预告拖到超时)→ 改成并发;四个调用方全是 fire-and-forget(`.catch` 而已)→ 三个日本页面现在会读结果并弹"日本没收到,直接告诉 Hwa";`(Case)` 印成 `1 box (case)`(**一箱装的是多个盒**)→ 单独的 case 单位;EN/JP 同名套会被合并 → 分组键加上品牌+语言,**而且只在这条消息里真的混了才在行上打标**;逐行 USD 被 `else if` 吞掉 → 两个都印。
+  - **导入器 `_build_japan_sku_import_sql.mjs` 有同一个病根**(它就是造出那 11 个坏 SKU 的东西)。改成**从同套的封盒读真实包数**,读不到就**留 NULL 并在生成的 SQL 里点名**,不再一律写 30。
+- **🔴 一个反复中招的陷阱,值得单独记**:`bash heredoc → Python → JS` 三层下来,**`` 到 Python 时已经是 `` 被解释成退格符(U+0008)**。它在正则里不再是词边界,于是 **`!/boxe?s?/` 这种否定断言永远为真 —— 测试报平安,但它什么都没测**。今天写坏了三条,Codex 抓出一条。已在 `jp_group_test.mjs` 顶部加守卫:**文件里出现字面退格符就直接 abort**,并对 case 和双袋两组断言各做了一次变异测试(故意改坏代码,确认测试真的会红)。**以后这条管道里的反斜杠一律用 `chr(92)` 构造,不靠小心。**
+- **又补审了分支上那笔 8/17 收银台修复(`5d2e87a`,手册记着「未过 Codex」)** —— 不能借今天这批把它夹带出去。连它一起再审 3 轮,又改 6 条:**Lark 拒收消息时返回的是 HTTP 200 + body 里的错误码**(`{"code":9499}` / `{"StatusCode":19001}`),我按 `r.ok` 判成功 = 把「被拒发」记成「已送达」,而回落和弹窗都挂在这个判断上 · 预填的 30 会直接走过我新加的校验(字段永远不空)→ **默认值删掉,包数必须手打** · 导入器 `ON CONFLICT` 不写 `packs_per_box` → 加 `COALESCE`(**只填空的,绝不覆盖人填的**)· `ex` 只在包装词前被剥,`Terastal Festival ex` 会和 `Terastal Festival ex Booster Box` 裂成两行 → 统一剥 · 导入器读产品**没分页**(811 行,离 1000 不远,`/slabs` 就被这个坑过 1500 行)· **发货页只检查日本那个收件人** —— 日本收到了但美国入库群没收到时页面一声不吭,**而那正是「包裹到了 LA 没人知道」**。
+- **🔴 最后一条是我自己的误报,值得记**:Lark 失败但 Telegram 成功时,Hwa 其实收到了,页面却还在喊「没送到」。**日本是一个受众、两条路**;回落成功就该顶替掉失败那条,而不是两条并列。**会喊狼来了的告警比没有告警更糟** —— 这本手册通篇都是这个教训。
+- **⚠️ 明确不改、留给你定的一条**:Codex 连三轮坚持 `_recoverSoldSingle` 不该把收银台那天写进 `date_acquired`(它在 SinglesInventory 上直接显示,还参与 `fetchBestSingleIdentity` 的日期排序)。**它说得对,但正确的修法要 DDL** —— 那列是 `date NOT NULL`,「留空」和「加一个 observed_at 列」都需要建表权限,而我们没有(没有 service key、没有 William)。**写回 null 就是把 8/17 那个 bug 原样装回去。** 通了 Supabase access token 就能真修。
+- **⚠️ 导入器不会回头修已存在的坏行**:它对已匹配到的 SKU 走 `updates` 分支,新加的「读同套封盒」只对新插入的生效。**那 6 个有证据的已经直接写库改好了**,这里不重复声称。
+- 测试从 21 → **54 项**,`npx vite build` 通过。**⚠️ `scripts/add_batches_and_channel_map_2026_08_16.sql`(不是今天的东西)被连带审出 4 条**:slot 行 `product_id NOT NULL` 让拍卖坑位根本插不进去 · `ON DELETE CASCADE` 会硬删映射(违反软删铁律)· `confidence='verified'` 不要求 verified_by/at · `updated_at` 没有触发器。**待定。**
+- **消息侧同步修了**:`jpItemLines` 现在把袋子按 bags 计,`Storm Emeralda — 10 bags`(原来印 `10 packs (in bag)`,**而那是 300 包,面子上就是 30 倍的错**)。**故意不印包数** —— builder 只拿得到名字和数量,而我们自己的目录对海贼王的 ppb 自相矛盾,**能修的是单位,不能顺手断言一个它看不见的数**。测试 37 项全过,其中一组专钉「袋子永远不许印 packs / boxes」,**而旧断言正好是在要求这个 bug**(它写死了要 `10 packs (in bag)`)。
 
 ## 🔴 8/17 门店"扫码说已卖出":8/07 那个出口从上线起一次都没成功过(已修,**未过 Codex 未发版**)
 - **群里 Hazy 16:53 原话**:"since we are using safari it creates an error saying it's been sold on. And it still adds it but then it shows this" + 一张截图。**Gary 16:51 问 "bar code no working?",17:0x 回 "fixing system checking"。**
@@ -464,7 +496,7 @@
 - PostgREST 坑:1000 行必分页;空格用 `quote(p, safe="?&=.,*()-")` 勿双重编码;uuid 列无 like;products 列叫 `type`;**写完必 readback,批量写前备份 JSON**。`tps.sq`(tiktok_push_stock)自带完整分页**勿再套 offset 循环**、且不编码要先 quote。
 - 表:`products` · `inventory`(数量原地覆盖**无变更 log** — audit-log SQL 待 William)· `locations` · `movements`(Transfer/Intake)· `box_breaks`(拆盒:sealed−N / pack+3N 全在 Master,pack 成本=盒成本÷packs_per_box,照 BreakBox.jsx 语义)· `stream_counts`+items · `acquisitions` · `slabs`(软删字段全:deleted/at/reason)。
 - 房间:Master `1f68249f` · PH=Packheads `c995d0a6` · RocketsHQ `eeff0769` · LVUS `12293f16` · SlabbiePatty `04b32948` · **PokeCasino(原Whatnot,channel/sale_channel 存库值仍 'Whatnot'/'whatnot')**`ac9c06c4` · PokeAuctionHouse `1028e0f9` · Front Store `c4cf3dab`;共 23 locations(Sold 虚拟房有遗留怪名,勿用)。
-- **团队口头叫法 ≠ 房间名,推不出来只能问**(Gary 8/17 定):**`ebay1` = `Stream Room - eBay LuckyVaultUS` `12293f16`**。库里没有任何房间叫 "ebay1",而带 ebay 的有四个(两个直播房 + 两个 Sold 虚拟房)—— **猜错就是把货记进另一个直播间**。Gary 8/17:"你下次可以提问他" = 叫法对不上时直接问下单的人,别挑一个。
+- **团队口头叫法 ≠ 房间名,推不出来只能问**(Gary 8/17 定):**`ebay1` = `Stream Room - eBay LuckyVaultUS` `12293f16`** · **`ebay2` = `Stream Room - eBay SlabbiePatty` `04b32948`**(Gary 8/18 确认)。库里没有任何房间叫 "ebay1"/"ebay2",而带 ebay 的有四个(两个直播房 + 两个 Sold 虚拟房)—— **猜错就是把货记进另一个直播间**。Gary 8/17:"你下次可以提问他" = 叫法对不上时直接问下单的人,别挑一个。**8/18 我按排除法推出 ebay2=SlabbiePatty 是对的,但仍然先摊开假设让 Gary 确认才写 —— 推得对不等于可以自己定。** 两个号已钉进 `lv-finance/tg_move.py` 的 `ALIAS`(`ebay2` 不钉的话直接解析不到,裸 `ebay` 则命中 4 个房)。
 
 ## 盘点与审计制度(Gary 7/22 定版)
 - 盲盘:expected=系统值,actual=实数,差值直写库存(正负都写);空行=0;guardrail 永不部署(Gary 否)。
@@ -540,7 +572,7 @@
 - **CN 只缺 5 个 SKU / 3,139 件 / $8,799**,而且正好就是已配好 BIN 查询的那 5 个 → **CN 这条线其实已经通了**,剩下的是复核那 3 条弱证据(红/蓝 promo 各 1 条挂单、Venusaur jumbo 标题存疑,而 jumbo 是 1,705 件的大头)。
 - **JP 缺 25 个 SKU / 2,217 件 / $98,986,但归并后只有 9 个"套"**。**Storm Emeralda 一个套就占 $87,043 = 88%**,其余全部加起来不到 $12k。**别按 SKU 排工作量,按套排。**
 - **`products.variant` 列本来就有**(sealed / unsealed / in_bag / single_pack),变体建模是对的;**错的是钉价按名字** → 母产品钉了、变体名字不同就取不到价。实证:**Abyss Eye 盒和散包都钉了,`Abyss Eye (In Bag)` 45 件没钉;Ninja Spinner 盒钉了,`(Open)` 13 件 + 散包 200 件没钉** = $3,198 纯粹因为变体自己有个名字而定不了价。**这是"必须按 product_id 不按名字"最干净的证据。**
-- **`Storm Emeralda (In Bag)` 的 `type=Pack` 是错的**:acquisitions 里每一条都是 ¥15,000–17,000/个,和整盒同一个价位带(散包实际是 $3.37)。**那 278 个是盒不是包**,$102.93 的成本是对的,type 要改。
+- **~~`(In Bag)` 那 278 个是盒不是包~~ —— 8/18 Gary 纠正:是「垃圾袋」**,一整盒的包拆出来装袋、盒子扔掉,所以 **1 袋 = 30 包**(见 8/18 那节)。当时判「和整盒同价位带、绝不是 1 包」是对的,判「是盒」是错的;`type=Pack` 也不算错,**真正错的是 `packs_per_box` 存成了 null**。
 - **未定价里真正"外部价源永远匹配不上"的只有 `others (Other)` 929 件和 `Stream JP (order)` 6 件** —— 日仓的收纳桶,不是产品。之前把 In Bag / Unsealed 一起算进"命名问题"是我判错了,它们是正经变体。
 
 ### eBay BIN 两个新过滤器(8/7,都是被真数据打出来的)

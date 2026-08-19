@@ -148,10 +148,29 @@ export function buildJapanProductAliases({ short_code, series_zh, english_name, 
 }
 
 /** Whether a variant lives in products.type='Sealed' or 'Pack'. Aligns with
- *  the xlsx importer's classification. */
+ *  the xlsx importer's classification. A 垃圾袋 is genuinely not a sealed box,
+ *  so it belongs on the Pack shelf — but see isSinglePackVariant below: which
+ *  shelf it sits on and how many packs it holds are different questions. */
 export function variantToType(variant) {
   const PACK_VARIANTS = new Set(['in_bag', 'single_pack'])
   return PACK_VARIANTS.has(variant) ? 'Pack' : 'Sealed'
+}
+
+/** Whether ONE unit of this variant is literally one pack.
+ *
+ *  Only 散包 is. A 垃圾袋 ('in_bag') is a box's worth of loose packs with the
+ *  box thrown away — Gary 2026-08-18: "in bag 就是trash bag那个sku 就是30包
+ *  只是没盒子" — so it keeps the box's packs_per_box and stays breakable.
+ *
+ *  This used to share a set with variantToType's PACK_VARIANTS, which wrote
+ *  packs_per_box = null on all eleven 垃圾袋 SKUs. A null there reads as
+ *  "1 unit = 1 pack", so ten bags of Storm Emeralda — 300 packs — counted as
+ *  ten. Our own money says otherwise: bag cost / 30 lands between the loose
+ *  pack and the unsealed box on every set we have bought (Storm ¥509 vs ¥399
+ *  and ¥559; Abyss Eye ¥351 vs ¥336 and ¥461; three more the same). At one
+ *  pack per bag it would be 30-40x the price of a pack. */
+export function isSinglePackVariant(variant) {
+  return variant === 'single_pack'
 }
 
 /** Default-pre-checked variants on the bulk Add Product form. Reflects the
