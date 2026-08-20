@@ -1,5 +1,77 @@
 # LV Inventory — 作业手册 brief (2026-08-19)
 
+## 🚨 新铁律:**每个 SKU 必须写明「一件是什么」**(Gary 8/19:「sku 需要 unit」)
+**这三天每一起事故都是同一个病根:行上有一个数,但没有任何地方说这个数在数什么。**
+```
+8/18  (In Bag)      packs_per_box=null → 下游读作 1 包,实际 30 包        30 倍
+8/18  (Case)        消息印成 "1 box (case)",一箱装的是 12 个盒          12 倍
+8/19  Collection Box 拆出的散包账上 1,248 包,实际只买过 134 个盒 × 4     2.3 倍
+8/11  TikTok        倍数藏在 `sku_name` 文本里("10 Pack Bundle")       10 倍
+8/11  TikTok        裸数字的 sku_name 是坑位号不是数量                   84 倍
+```
+- **这不是五个 bug,是同一个 schema 缺陷发作了五次。** 每次都是几十倍量级,而且**钱永远是对的**(总价对、银行对),所以任何金额级对账都抓不到 —— 和 OP-09 那笔 `530×$2` vs `2×$530` 完全同一形状。
+- **要求两列,不是一列**:`unit`(这一件是 pack / box / bag / case / blister)+ `base_units`(它含多少个最小单位)。**`packs_per_box` 只回答了第二问,而它在袋子和箱子上答的还是错的** —— 因为第一问没人问。
+- **`unit` 不许留空,也不许猜。** 猜不出来就**挡住入库**并点名(照 8/18 那条「去掉静默回退 `|| 30`」的先例)。**静默默认成 1 正是这五起事故的共同执行路径。**
+- **落地顺序**(还没做):① 先在 `products` 上补两列(需要 DDL,走 dashboard SQL editor)② 加产品/加变体表单强制选 `unit` ③ 所有读 `packs_per_box` 的地方改读 `base_units` ④ **`scratchpad/ppb_sanity.py` 那把「盒的每包成本必须高于散包」的尺子扩成 unit 校验** —— 它 8/18 就自动抓出过两个 30 应该是 10 的行,是现成的自动查错器。
+- **在补上之前,任何按件数算的结论都要先问一句「这一件是什么」。** 8/13 日本仓那个 7.5 倍虚高、今天这个 2.3 倍虚高,都是没问这一句。
+
+## ✅ 8/19 SKU 统一已做完三笔(Gary:「我们要统一sku o需要修正」/「这个就是sleeve 我们改一下」/「kami是op15 我们需要更新一下sku」)
+- **OP-16 散包**:`5080eecb`(零查重造的重复名 SKU)并进 `b6e1a0ee`,132 包移过去。
+- **OP-15 / Kami 散包**:`1928690c OP-15 Kami's Adventure Booster Pack` 并进 `3a468a57`,幸存者按家族规范改名 **`[EN] OP-15 Adventure On Kami's Island Booster Pack`**,两个旧名都吸进 `aliases`。成本用**加权平均且排除 $0.00 的未知行**(我第一版直接继承幸存者的成本,是错的)。结果 98 @ $9.50(Master)+ 2 @ $0.00(ebay2)= 100 包。
+- **sleeved 认领**:`[EN] OP-16 The Time Of Battle Blister Pack`(1,423 @ $9.50,8/09 进的)其实就是 sleeved,已改名。**我原先说「我们没买过 OP-16 sleeved」是错的,Gary 当场纠正。**
+- **🔴 `variant` 是 CHECK 约束的枚举,没有 `sleeved` 这个值**(`sealed / single_pack / unsealed / cut_slice / in_bag / other / case`),硬写报 23514。**全库每一个 sleeved SKU 的 variant 都是 None** —— 照抄既定做法,别为一个 SKU 改约束。
+- **🔴 我自己踩的两个坑,都值得记**:
+  1. **`inventory.last_updated` 不是 PostgREST 自动写的,是 app 在写。** 我的脚本没写它 → `fetchOpenSurplus` 那条「盘点后账被动过就作废」的规则永远不触发 → 刚合并掉的两个 SKU 上凭空冒出 `+204` / `+22` 两条幽灵多出。**任何直接改 inventory 的脚本都必须自己盖 `last_updated`**,已补写 12 行。
+  2. **名字已经 URL 编码过再走 `quote()` = 双重编码**,`%5B` 变成 `%255B`,**静默匹配零行**(不报错)。改成在 Python 里按 id 前缀过滤。
+
+## ✅ 8/19 点货 vs TikTok API 对账(Gary:「所以说tiktok vs 点的 差多少能看出来吗」)
+- **方法:拿盘点窗口去截收银机的订单行,逐 SKU 比。** 窗口用 **`count_time` 不是 `created_at`**(见下面那个坑),对照组是**没被合并过的 SKU**。
+- **8/19 13:19 → 21:57 PT(8.6 小时)那一场**:
+  ```
+                     点出来  收银机    差    盘点/收银
+  OP-13 blister         61      61     +0     100%   ← 对照组,分毫不差
+  OP-16 散包           284      60   +224     473%
+  Kami/OP-15 散包      354      81   +273     437%
+  OP-16 sleeved          8       0     +8       -
+  Lorcana                2       0     +2       -
+  合计                 709     202   +507     351%
+  ```
+- **OP-13 逐件吻合 = 窗口和方法都是对的**,所以那 497 包(≈$4,722)的缺口是真的。**排掉了别的出口**:那 8.6 小时**零拍卖坑位**(82 行全是具名产品)· 离开 Packheads 的 Move 只有**我自己写的两条 SKU_MERGE**(同房间)· `box_breaks` 0 条。
+- **🔴 最可能的解释:那两个重复 SKU 一直在把同一堆包数两遍。** 三个 SKU 里,**两个被合并的都炸出巨大缺口,唯一没合并的分毫不差。** 进货那边对得上这个方向:账上从拆盒来的散包是 OP-16 624 + Kami 624,**这需要 312 个 Collection Box,而我们总共只买过 134 个** → 拆盒建进去的包数约为实际的 **2.3 倍**,虚增存货成本约 **$6,764**。
+- **负差当场写库,所以账现在反而更接近真实了**(428→144、354→0)。**问题不在库存在钱**:虚增的成本会让每一笔卖出的毛利算得偏低、库存估值虚高。
+- **⚠️ 我没有据此动账。** 两种读法都能解释今晚的数(账一直虚高 / 今晚真丢了 497 包),**定案只有一条路:让人实点一次 Packheads + Master 的 OP-16 / Kami 散包**(现在账上 OP-16 Master 373 + PH 144、Kami Master 98)。**今晚写的三笔都有备份,回滚随时可以。**
+- **🔴 `count_time` 和 `created_at` 差得能改结论**:120 场盘点中位差 0.19 小时,**但有 3 场超过 8 小时,全在 Packheads、基本都是 Yaz(一场 67 小时、一场 15.5 小时)**。我先用 `created_at` 得出「OP-16 点货只看到 50%」,换 `count_time` 变成 3,867% —— **是拿 Lorcana 定的案**:Yaz 那场的 Lorcana 数(33)在 15.5 小时的**归档窗口**上和收银机分毫不差,证明她是**归档时才数的**,`count_time` 打错了。**对照 SKU 是唯一能分辨「窗口错」和「货真丢了」的东西。**
+- **🔴 我自己的扫描器中过 Marvel 那个陷阱**:`_count_error_sweep.py` 把**没映射的 SKU 当成「什么都没卖」**,于是把差额报成 $13,595。加 `MAPPED_PIDS` / `unmapped_sku` 之后,**真正可核对的缺口是 3 行 / 15 件 / $2,930**。**没映射 ≠ 没卖,这条和「查询挂掉 ≠ 0 on hand」是同一条。**
+- `listing_stock_audit.py` 加了 `oversell_gap` / `unmapped_live` / `slot_live` 三个桶:**40 个在售 listing / 1,404 件完全没有 SKU 映射**,最大两个正是 Kami's Island 和 OP-16 散包。**map 的 key 要从 listing 改成 `(listing, sku_id)`** —— 一个 listing 底下挂着多个 sku。
+- **`apply_orders_to_inventory.py` 第 8 条缺陷(新)**:它按 listing 取一个**固定倍数**,而同一个 listing 底下不同 sku 的倍数不同 → 实测会把 889 件扣成 436 件,**少扣一半以上**。上线前必修。
+
+## ✅ 8/19 买入价上限规则(Gary:「下次vol 7 8 高于90% buy request 我们要拒绝」/「我们更多是警告 需要approve才能入库」)
+- **触发它的那笔**:`Illustration Box Vol. 7` 我们付 **$38.00**,近期成交 **$38.16 = 99.6%** —— **按市价买进,等于把利润全让给上家。**
+- 新 `inventory-sync/buy_rules.py` + `data/buy_price_rules.json`,四种判定:`hold`(超上限)/ `ok` / `unrated`(没配规则)/ `unknown`(取不到市价)。**Gary 定的口径是警告不是硬拦** —— 动作叫 `approve_to_receive`,**货照收,但要人批准才入库**。
+- **坑:`pct > cap` 会在 90.00% 上被浮点数判成超标**,已改 `round(pct, 2) > cap`。13 个测试全过。
+- **⏳ 待定**:上限该不该套在散包上 —— OP-16 sleeved 买在 91%,但它实卖 $14.01,**散包的周转和盒不是一回事**。
+- **⏳ 待接**:把 `buy_rules.check()` 接进 `intake_cost_watch.py`(服务端,不用发版)。
+
+## ✅ 8/19 拆盒经济学首次算清(Gary 连问「他们实际能卖多少钱」「我们卖多少钱」「毛利是多少」「扣除tiktok手续费实际赚多少」)
+```
+一个 Collection Box $38.00  →  2 包 OP-16 + 2 包 OP-15(Gary 确认的配比)
+四包实卖合计            $51.50
+毛加价                  +36%
+扣 TikTok 6% 手续费后   净毛利 ≈ 22%
+```
+- **🔴 我据此纠正了自己两个错判**:① 我曾报「$5,928 被重复入账」,理由是 OP-16 和 Kami 两个 SKU 上出现完全相同的 398/16/210 和日期成本 —— **Gary 指出一个盒出 2+2,数量本来就该一模一样**。`$38 ÷ 4 = $9.50` 和三行全部对得上。**撤回。** ② 我曾报「OP-16 散包我们按市价 141% 买的」—— **$9.50 是拆盒推导出来的成本,不是买入价**,而它实卖 $12.16–12.59。**撤回。**
+- **顺带查出一个更值钱的数:折扣是我们自己给的。** 三周里 `seller_discount` **$2,031(13.1%)是我们自己打的折**,TikTok 出的 `platform_discount` 只有 **$169**。**「担保价 $11.99」不是平台压的,是我们自己挂的。**
+- **⏳ 待补**:11 个 Illustration Box SKU 的 `packs_per_box` 还是空的(只有 2 个写了 4)。**这正是上面那条新铁律的第一个作业。**
+
+## ✅ 8/19 TCGplayer 价源修复(Gary:「cloudfare 我们有本地解的方法」/「tcg换个proxy试一下」)
+- **病根是办公室 IP 被封,不是代码坏了。** `slab-inventory/app/scrapers/tcg_api.py` 加 `_proxies()` 读 `inventory-sync/data/tcg_proxy.json`(socks5,27 个出口,`random.choice`)。**改动是加法的** —— 配置文件不在时行为完全不变,因为 slabs 也在用这个模块。
+- **`erp_pricing.py` 加 `SOURCE_DOWN` 计数 + 独立标记 `TCG_SOURCE_UNREACHABLE -> price UNKNOWN, do not read as no-match`。** **「取不到价」和「这个品没有价」必须是两个答案** —— 混成一个正是 130point 那次差点写出「这些品没有成交数据」的来路。
+- 验收:6 个钉了 id 的产品**全部恢复出价**。
+
+## ⏳ 8/19 还欠的两件事
+- **给群里发那份 correction report**(Gary:「我们群里发个correction report」)—— 稿子写好了,**等 Gary 定发哪个群**。
+- **Frank 的买取记录在「buy record」群**(Gary:「frank的买取记录应该在buy record群聊里面」)—— **我们那个自建 Lark 应用现在看得到的群是 0 个**,连原来的 BACKEND CORE 都不在了,**读不到**。两条出路:把应用拉进那个群,或者我走 AdsPower(`k1bkorhr`,Gary 本人的 Lark)去读。
+
 ## ✅ 8/19 加产品零查重已堵上并发版(Gary:「frank或者aldo 买入 以及转库的时候发现没有sku 就开始做sku 或者prompt match sku」;**Codex 4 轮,已发版**)
 - **触发时机他定得对**:买入和转库是**唯一有人真的拿着实物**的时刻。事后对账只能说某个数不对,永远还原不出那是什么货。
 - **但同一个时刻也正是重复 SKU 的生产线** ——「找不到就新建」就是现有那批重复的来路。所以顺序必须是**先匹配、后新建**,不是反过来。
@@ -537,6 +609,7 @@
 - **定价铁律(Gary 7/24"不能一直模糊搜索"):sealed-master 钉 id 制** — 自动写价只认 `slab-inventory/data/sku_urls.json` 钉住的 TCG product id(285 条);模糊名搜只当钉价候选证据(erp_pricing 返回 `pinned` 字段+UNPINNED flag,reprice 未钉=只报不写)。钉前必验:名称+语言(DB lang / 标题 / 实拍图三对齐,已四次抓到 EN/JP/CN 错配)+价位合理。无 TCG 线(CN 全部、JP OP 盒=kaitori、Kayou/UpperDeck/JP 玩偶周边)→ 130point 周一(名单剩 7 个)或人工。
 - **卖出铁律(7/23)**:卖出 = status=sold + 全套 sale_date/price/channel/fees/transaction_id,**行永不删**。日巡哨兵抓"sold 无信息"半截账。
 - **删除铁律(7/23)**:只许软删(deleted + deleted_reason + 删前快照),硬删禁止;**不编数据**(假日期/假价格禁止,查无可查就留空)。
+- **单位铁律(8/19,Gary「sku 需要 unit」)**:**每个 SKU 必须写明「一件是什么」**(`unit`)**和「一件含多少个最小单位」**(`base_units`)。**猜不出来就挡住入库并点名,绝不静默默认成 1** —— 静默默认正是 In Bag 30 倍、Case 12 倍、Collection Box 2.3 倍、TikTok 10 倍/84 倍这五起事故的共同执行路径,而它们**钱全是对的**,金额级对账永远抓不到。详见开头那节。
 
 ## Supabase(数据真源)
 - Keys:`inventory-sync/data/_supabase_keys.json`(anon 可读写;DDL = William)。
