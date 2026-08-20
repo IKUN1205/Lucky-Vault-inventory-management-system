@@ -450,11 +450,22 @@ export default function PurchasedItems() {
         // response) so we have product names already in memory.
         const product = products.find(p => p.id === item.product_id)
         const launchName = product ? extractLaunchName(product.name, product.category) : 'Unknown product'
+        // Carry the market comparison onto the notification. The serverless
+        // route has no way to reach TCGplayer, and this page already holds the
+        // feed for the on-screen readout, so the judgement is made here and
+        // sent as data. `market` goes along so the percent is checkable by the
+        // person reading the message instead of being a number to trust.
+        const mj = judgeLine(
+          unitCostOf(item, (n) => convertToUSD(n, header.currency)),
+          marketFor(item.product_id, marketPrices))
         larkItems.push({
           name: product
             ? `${product.brand} | ${launchName} | ${product.category} | ${product.language}`
             : 'Unknown product',
-          quantity: parseInt(item.quantity)
+          quantity: parseInt(item.quantity),
+          marketState: mj.state,
+          marketPct: mj.pct != null ? Math.round(mj.pct) : null,
+          market: mj.market ?? null,
         })
         totalCostOriginal += costNum
         totalCostUSD += costUSD

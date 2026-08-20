@@ -1055,8 +1055,19 @@ function buildMessage(body) {
     lines.push(`By: ${acquirer}`)
     if (vendor) lines.push(`Vendor: ${vendor}${sourceCountry ? ` (${sourceCountry})` : ''}`)
     lines.push('')
+    let unpriced = 0
     for (const item of items) {
-      lines.push(`• ${item.name || 'Unknown product'} × ${item.quantity ?? 0}`)
+      const clause = marketClause(item)
+      if (!clause) unpriced++
+      lines.push(`• ${item.name || 'Unknown product'} × ${item.quantity ?? 0}${clause}`)
+    }
+    // Say how many lines nothing checked. Without this, a message where every
+    // line happens to be unpriceable looks exactly like a message where every
+    // line came back fine — and the reader has no way to tell which they got.
+    if (unpriced) {
+      lines.push(items.length === unpriced
+        ? 'No market price on file for any of these — nothing was checked.'
+        : `(${unpriced} of ${items.length} lines had no market price to check against.)`)
     }
     lines.push('')
     const skuLabel = items.length === 1 ? 'SKU' : 'SKUs'
@@ -1425,6 +1436,40 @@ function buildMessage(body) {
   }
 
   throw new Error(`Unknown notification type: ${type}`)
+}
+
+// The one extra fact on a purchase line: what we paid, against the market.
+//
+// Gary 2026-08-20, on this exact card: "这个消息我们再价格对比 market 的%可以吗"
+// / "只是加一个信息 发 buy request 的时候".
+//
+// The judgement is made in the browser (src/lib/marketPct.js) because this
+// function cannot reach TCGplayer, and the page already holds the price feed.
+// Everything here is defensive about what arrives: a bad payload must produce
+// NO clause, never a made-up one.
+//
+// Returns '' when there is nothing honest to say. The caller counts those and
+// says so, because a line with no clause and a line that came back fine look
+// identical otherwise.
+//
+// The market price travels with the percent on purpose — a percent alone is a
+// number you have to trust, and a percent next to the price it came from is a
+// number you can check.
+function marketClause(item) {
+  const state = item?.marketState
+  if (state === 'unit_mismatch') {
+    // Never print the ratio here. "3,750% of market" is arithmetically true
+    // for a 30-pack bag against a single-pack price and tells the reader the
+    // opposite of what happened. This week that shape of error hit five times.
+    return ' — our unit and the market unit may not be the same thing, check what one unit is'
+  }
+  const pct = Number(item?.marketPct)
+  const market = Number(item?.market)
+  if (!Number.isFinite(pct) || !(pct > 0) || !Number.isFinite(market) || !(market > 0)) return ''
+  const price = `$${market.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  if (state === 'above') return ` — ${Math.round(pct)}% of the ${price} market, ABOVE market`
+  if (state === 'at') return ` — ${Math.round(pct)}% of the ${price} market, at market`
+  return ` — ${Math.round(pct)}% of the ${price} market`
 }
 
 function formatCost(amount, currency) {
