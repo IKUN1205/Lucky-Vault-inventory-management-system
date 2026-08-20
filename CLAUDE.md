@@ -1,5 +1,22 @@
 # LV Inventory — 作业手册 brief (2026-08-20)
 
+## 🔴 8/20 Frank 的 Telegram 转库:权限是给了的,卡在四层,第一层是一个词(Gary:「是没给他权限吗 卡在哪里」)
+- **是 Frank,而且时间对得分毫不差。** `member_inbox.jsonl` 里他的原话:
+  ```
+  15:29 PT  I forgot to transfer the 146 op16 booster packs to packheads from master
+  15:30 PT  Move 146 op16 booster packs to packheads
+  15:32 PT  Okay i just did it manually
+  ```
+  而 `movements` 那笔是 **22:31:16 UTC = 15:31 PT**。**他等了两分钟,没等到,自己去网页做了。**
+- **⚠️ 那笔在库里记在 Eric 名下,但它是 Frank 的。** 这是**第二次**出现「Frank 的动作记成 Eric」(8/18 那 35 片 blister 是第一次)。**按人算的表要当心这一条**,`moved_by_id` 是下拉框选的,不是身份。
+- **① 真正卡住他的是一个词:`room_transfers.ROOM_ALIASES` 里没有 `master`。** 只有 `e2/e1/PK/RK/VA/store/office` 七个 —— **而 master 是几乎每一笔转库的出发地**。他写 "from master" → 解析器不认 → `from_room: null` → `status: unparsed` → 收到「没解析全」→ 换个说法再发 → 还是不行。
+  - **`tg_move.py` 那张表一直是全的**(Gary 8/18 逐个确认过)。**两张别名表,而面对团队打字的那张是残缺的那张。**
+  - ✅ 已补 `master / casino / PAH / japan`(含中文 `总仓 / 日本仓`)+ `ph / lvus / front / rocketshq`。**新测试 `test_room_aliases.py` 断言 `tg_move.ALIAS` 的每一个别名都必须在聊天解析器里解析得出来** —— 补一个词治不了下一次,让两张表不能再漂才治得了。
+- **② 就算解析成功,它也不会动库存。** `room_transfers.handle_message` 只往 `data/room_transfers.jsonl` 追加一行,然后回一句 **"📦 Transfer noted (burn calc will offset it)"**。**它从不写 `movements` 或 `inventory`。**
+- **③ 而那句承诺是假的:`room_transfers.jsonl` 全仓库没有任何东西读它**(grep lv-finance + inventory-sync + slab-inventory,只有它自己)。**所以 burn calc 也不会冲销。** ✅ 已改成明写「这只是留档,系统库存还没有动,请到 app 的 Move Inventory 里做一笔,否则下次盘点会报成差异」。**说 noted 而其实什么都没动,和批次报 DONE 却给一个空 PDF 是同一个病。**
+- **④ 🔴 `tg_move.py` 没有 `if __name__ == "__main__"` 守卫,argparse 在 import 时就跑 —— 所以它根本 import 不了。** 这就是「昨天写好的写库工具没有任何东西调用它」的字面原因:**不是没接,是接不上。** ✅ 已包进 `main()`(备份 `tg_move.py.bak_0820`),**CLI 行为逐条实测不变**(不给身份仍然拒绝),现在 `import tg_move` 通了。
+- **⏳ 还没做的一件事:把 `room_transfers` 接到 `tg_move` 上,让它真的写库。** 现在**技术上可行了**,但**故意没直接接** —— 「op16 booster packs」在库里对得上好几个 SKU,直接写就是拿聊天文本猜 SKU。**正确做法是解析 → 定位 SKU → 回一条「确认这个吗」→ 人回 yes 才写**(`tg_move` 的 `--confirm` token 机制就是为这个设计的)。要接说一声。
+
 ## ✅ 8/20 「+163 discrepancies」拆开:一个是转库,一个是没人认同货架上有什么(Gary:「是转库了呢还是什么情况」/「自售自数其实可以通过 api 对应上」)
 - **`⚠️ +163` 是 25 行里的 2 行,其余 23 行分毫不差。** 那个数把 2 行分歧印成了 163 个错误 —— **`buildStreamCountBrief` 印的是件数求和,应该印行数并点名最大的那行。**
 - **① OP-16 散包 +142 = 转库,已证实。** `movements` 里 **`2026-08-20T22:31:16 Master → Packheads x146 by Eric type=Transfer`** —— **Polar 21:50 报数,Eric 22:31 补记,差 41 分钟。** Master 373→227,Packheads 144→290,账已平。**货一直在,只是搬在前、记在后。**
