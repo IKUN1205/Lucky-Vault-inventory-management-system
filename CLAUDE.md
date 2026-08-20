@@ -53,6 +53,27 @@
 - `listing_stock_audit.py` 加了 `oversell_gap` / `unmapped_live` / `slot_live` 三个桶:**40 个在售 listing / 1,404 件完全没有 SKU 映射**,最大两个正是 Kami's Island 和 OP-16 散包。**map 的 key 要从 listing 改成 `(listing, sku_id)`** —— 一个 listing 底下挂着多个 sku。
 - **`apply_orders_to_inventory.py` 第 8 条缺陷(新)**:它按 listing 取一个**固定倍数**,而同一个 listing 底下不同 sku 的倍数不同 → 实测会把 889 件扣成 436 件,**少扣一半以上**。上线前必修。
 
+## 🔴 8/20 singles 两个 bug + 团队自助报障(Gary:「系统有说报错了 / 他们现在 label 没有名字 只有 cat / 能不能让他们后台直接提交一个 ticket」)
+- **报错那个是一行日志**:`job e47ba141b12c`(92 张)FAILED,`[sheet_streamer] gid 反查失败 (HttpError) — 用传入的名字 'New Singles'`,3 秒后 `Unable to parse range` 死掉。**33 秒后同一批重交就成功了。**
+  - **病根不是 Google 抖了一下,是回落的目标本身是错的。** 真 tab 名是 `New Singles `(**尾部有空格,手册 8/11 记过**),job 里存的是没空格那个 —— **`_resolve_tab_name` 存在的唯一理由就是那个名字不对,失败时却回落到它**。那不是 fail open,是 fail broken:保证 3 秒后死,还附一句没人看得懂的错误。
+  - **已改**:重试 3 次 → 用**上次成功反查到的名字**(落盘 `data/tab_names.json`)→ 都不行就**明确拒绝并说明为什么不回落**。三条路径都实测(正常/API 挂但有缓存/API 挂且无缓存)。
+- **🔴 标签「只有号码没名字」是一个 `elif` 分支**。两条路都会打 `price_source=csv_export`,但只有一条补名字:
+  ```python
+  if not data:                        # 抓取彻底失败 → 名字/套/稀有度/价格全补 ✓
+      data = csv_fallback_card(row)
+  elif not data.get("market_price"):  # 页面「加载了」但没价 → 只补价格 ✗
+      data["market_price"] = csv_px   #   名字保持抓取结果 = 空
+  ```
+  **8/20 两批 154 张全走第二条**:页面加载了但解析出来是空壳(名字空/套空/稀有度空/价格空),于是只有价格被补,标签上只剩 `285/217`。**而 CSV 里一直写着 `Mega Scrafty ex - 285/217`。**
+  - **修法照抄 eBay 那条教训:「有卡但一条标题都解析不出 = 改版,不是没有结果」** —— **页面解析不出名字就判定为抓取失败**,走整条兜底。46 个原有测试全过。
+  - **已补救 8/20 那 154 张**:`backfill_tsv_from_csv.py` 补 TSV(备份 `.bak_08201231`),再用 **webapp 自己那条 `python -m scripts.print_labels` 路径**重渲染 PDF(旧的留 `.bak_namefix`)。**⚠️ 我第一次直接调 `render_pdf` 用的是另一个默认版式,尺寸掉了 5 倍才发现** —— 补渲染必须走线上同一条命令。其中一张 **$1,094.11 的 `Pikachu with Grey Felt Hat` 原来只印了 `085/`**。
+  - **⏳ sheet 上那 154 行仍带坏名字**(TSV 和 PDF 修了,表格没修)。
+- **✅ 新 `webapp/tickets.py` + `/tickets` 页 + 批次页底部的报障框**。团队只写「看到了什么」,**日志、报错、以及对自己产出的体检报告全自动附上**;新 ticket 推 Gary 的 Telegram。
+  - **🔴 但 ticket 是小的那一半。今天这两件事团队根本不需要解释,是没人在看。** 所以**批次跑完自己检查自己的产出**(`scan_job`),明显不对就**自己开单**。判据**故意只留三条**(全部/超 20% 标签没名字 · 超 20% 没价格 · 报 DONE 但产出读不出来)—— 会乱响的自检等于没有。
+  - **两个方向都实测**:拿 8/20 修复前的 TSV → 自动开单「53 张里 46 张只有卡号没有卡名」;拿修复后的 → **一声不吭**。
+  - 端到端在 **8099**(不是 8080、更不是 slabs 的 8081)跑通:无密码 401 → 带密码 200 → 提交 303 → 清单页显示自动抓取的证据;**测试单已删净**,按 PID 杀临时实例,重启线上,**8081 全程未被碰**,公网带密码 200。
+- **✅ 日巡那条铁律2 告警之前一直在误报**(`count sold 731 > tiktok 253`)。两个 bug:**倍数没算**(`5 PACKS` 当 1 件)· **窗口用 `count_time`**(手打的,错过 67 小时)。现在改用 `created_at`、按单位词算倍数,并且**只有在「没有归不到 SKU 的行」且「窗口内没有调入」时才真报警**,否则打「比不了」并说清是什么挡住了比较。
+
 ## ✅ 8/20「Frank 说他转了」查实:他转了,而且不是共用登录(Gary:「所有 manager 包括 frank mario 都可以挪」)
 - **Frank 说「那天一共转了 35」——** 全月 8/01–8/20 每人每天调入 Packheads 的总数里,**35 只出现过一次**:`08-18 PT 17:36 x29(Master)+ 17:44 x6(Front Store)= 35 片 OP-13 blister`。**数字分毫不差,他是对的。**
 - **🔴 但我第一版判成「他用了 Eric 的登录」是错的。** 查代码:**`MovedInventory.jsx:795` 有一个 `Moved By *` 下拉框(required),`StreamCounts.jsx` 的 `counted_by_id` 同样是选的。** 名字是**填表人从名单里挑的**,不是会话身份。所以那 35 片记成 Eric,要么是 Eric 真替他做了(记录就是对的),要么是挑错了名字。**已在第二条 Telegram 里向 Frank 更正。**
