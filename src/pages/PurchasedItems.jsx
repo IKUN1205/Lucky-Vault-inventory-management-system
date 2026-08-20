@@ -4,8 +4,10 @@ import {
   createAcquisition, deleteAcquisition, createVendor, createPaymentMethod, convertToUSD, getExchangeRates
 } from '../lib/supabase'
 import {
-  costOutlierLines, unreferencedLines, NOTE_FLAGGED, NOTE_UNVERIFIED,
+  costOutlierLines, unreferencedLines, unitCostOf, NOTE_FLAGGED, NOTE_UNVERIFIED,
 } from '../lib/costSanity'
+import useMarketPrices from '../lib/useMarketPrices'
+import { marketFor, judgeLine, describe as describeMarket } from '../lib/marketPct'
 import { ToastContainer, useToast } from '../components/Toast'
 import SearchableSelect from '../components/SearchableSelect'
 import BarcodeScanner from '../components/BarcodeScanner'
@@ -80,6 +82,11 @@ export default function PurchasedItems() {
   const [lineItems, setLineItems] = useState([
     { id: 1, product_id: '', quantity: 1, cost: '', price_mode: 'unit', notes: '' }
   ])
+
+  // Market prices for the "% of market" readout under each cost field. Empty
+  // map until the feed resolves, and empty forever if it fails — every consumer
+  // below renders "no market price on file" for a miss, never a percentage.
+  const marketPrices = useMarketPrices()
 
   const [productFilters, setProductFilters] = useState({
     brand: '',
@@ -216,6 +223,18 @@ export default function PurchasedItems() {
     const c = parseFloat(item.cost) || 0
     const q = parseInt(item.quantity) || 0
     return item.price_mode === 'unit' ? round2(c * q) : c
+  }
+
+  // "% of market" for one line, or null when there is nothing honest to say.
+  //
+  // Goes through unitCostOf so BOTH the per-unit/total toggle and the currency
+  // are handled. Skipping the conversion would read a ¥18,000 box against a
+  // $153 market as 11,765% — the band in marketPct would catch that, but being
+  // caught by a guard is not the same as being right.
+  const marketNoteFor = (item) => {
+    if (!item?.product_id) return null
+    const unitUsd = unitCostOf(item, (n) => convertToUSD(n, header.currency))
+    return describeMarket(judgeLine(unitUsd, marketFor(item.product_id, marketPrices)))
   }
 
   // Flip a line between per-unit and total entry. KEEP the number the
@@ -821,6 +840,32 @@ export default function PurchasedItems() {
                       )}
                     </p>
                   )}
+                  {/* What we are paying against the market, while it can still
+                      be changed. Informational — the blocking gate is the
+                      separate cost-sanity check on submit. Never shows a bare
+                      number when the feed has nothing: "no market price" and
+                      "0%" are different answers. */}
+                  {(() => {
+                    const note = marketNoteFor(item)
+                    if (!note) return null
+                    // The warning state gets a chip, not just a colour. This
+                    // page is gold end to end — the toggle, the total, the
+                    // submit button — so amber text reads as one more accent
+                    // label and slid straight past in the 2026-08-20
+                    // screenshot pass, at 140% of market. Red on a tinted
+                    // ground is the only treatment here that reads as "stop".
+                    if (note.tone === 'warn') {
+                      return (
+                        <p className="mt-1">
+                          <span className="inline-block text-[11px] px-1.5 py-0.5 rounded border border-red-500/40 bg-red-500/10 text-red-300">
+                            {note.text}
+                          </span>
+                        </p>
+                      )
+                    }
+                    const tone = note.tone === 'ok' ? 'text-emerald-300' : 'text-gray-500'
+                    return <p className={`text-[11px] mt-1 ${tone}`}>{note.text}</p>
+                  })()}
                 </div>
 
                 <div className="mt-3">
