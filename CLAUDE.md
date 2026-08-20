@@ -15,7 +15,15 @@
 - **② 就算解析成功,它也不会动库存。** `room_transfers.handle_message` 只往 `data/room_transfers.jsonl` 追加一行,然后回一句 **"📦 Transfer noted (burn calc will offset it)"**。**它从不写 `movements` 或 `inventory`。**
 - **③ 而那句承诺是假的:`room_transfers.jsonl` 全仓库没有任何东西读它**(grep lv-finance + inventory-sync + slab-inventory,只有它自己)。**所以 burn calc 也不会冲销。** ✅ 已改成明写「这只是留档,系统库存还没有动,请到 app 的 Move Inventory 里做一笔,否则下次盘点会报成差异」。**说 noted 而其实什么都没动,和批次报 DONE 却给一个空 PDF 是同一个病。**
 - **④ 🔴 `tg_move.py` 没有 `if __name__ == "__main__"` 守卫,argparse 在 import 时就跑 —— 所以它根本 import 不了。** 这就是「昨天写好的写库工具没有任何东西调用它」的字面原因:**不是没接,是接不上。** ✅ 已包进 `main()`(备份 `tg_move.py.bak_0820`),**CLI 行为逐条实测不变**(不给身份仍然拒绝),现在 `import tg_move` 通了。
-- **⏳ 还没做的一件事:把 `room_transfers` 接到 `tg_move` 上,让它真的写库。** 现在**技术上可行了**,但**故意没直接接** —— 「op16 booster packs」在库里对得上好几个 SKU,直接写就是拿聊天文本猜 SKU。**正确做法是解析 → 定位 SKU → 回一条「确认这个吗」→ 人回 yes 才写**(`tg_move` 的 `--confirm` token 机制就是为这个设计的)。要接说一声。
+### ✅ 8/20 已接通并通知到人(Gary:「可以接 然后让 mario frank 以及 aldo 都知道」)
+- 新 `lv-finance/tg_move_bridge.py`,挂在 `telegram_command_listener` 的成员中继里,**排在 `room_transfers` 之前**(顺序是硬要求:留档那条会先把消息吃掉然后回一句 "noted",而库存一动没动 —— 那正是让 Frank 白等两分钟的路径)。
+- **流程永远是四步,绝不跳:`解析 → 定房定 SKU → 出计划 → 回 YES 才写`。** 计划带着 `tg_move` 的 token(SKU+房间+数量+**写完之后的库存**的哈希);**期间货架动过,token 就对不上,一个字不写。过期的 YES 落不了地。**
+- **🔴 真数据当场推翻了我第一版的排序,而测试夹具看不见**:候选原来**按库存量排**,于是 Frank 那句 "op16 booster packs" 排出来第一个是 **sleeved(Master 有 1,216)**,而他要的散包(227)在第二 —— **顺手点「1」就搬错货**。改成**按「你打的词之外还剩几个词」排,最贴的排第一**;库存只用来打平手和把源房没货的沉下去。**读编号列表的人只会认真读第一行,第一行必须是最贴的那个,不是最大的那堆。**
+- **🔴 而且候选里混着 `(RETIRED DUPLICATE)`** —— 已按 `active=false` 过滤(5 个候选 → 2 个)。**把合并掉的 SKU 当搬运目标提供出去,等于把刚清理掉的重复又灌回来。**
+- **拒绝清单**(每一条都实测过「拒绝了,而且零写入」):**没登记的 chat**(身份只认 chat id,不认消息里打的名字)· **`app_user_id` 为空**(Gaoyuan)· **名字对上多个 SKU/房间** → 列出来问 · **源房不够** → 永不写负库存 · **超过 15 分钟的 YES** / **第二次 YES**(计划一次性,写之前就清掉)· **`VA` / `office` 两个房不给映射**(VaultTcgAuction 在 `tg_move.ALIAS` 里没有别名,裸 `va` 会子串命中好几个房 —— **宁可交回人做,也不猜房间**)。
+- **数量检查排在查库之前**:`room_transfers` 对 5 位数返回 `qty=None` 却仍标 `ok=True`,不先拦就会报成「找不到 SKU」,**拿名字背数字的锅**。
+- 测试 `test_tg_move_bridge.py`(桩掉 HTTP 层,**桩会记录每一次写请求**,所以「拒绝了」是靠零写入证明的,不是靠打印一句拒绝)+ `test_room_aliases.py`。**真库端到端跑过一遍,`dry=True` 只读,真实写入尝试 0 次。**
+- ✅ **已 Telegram 通知 Frank / Mario / Aldo**(三条都回 `sent: True`),Frank 那条额外说明了今天下午为什么没通、以及那是我们的问题。
 
 ## ✅ 8/20 「+163 discrepancies」拆开:一个是转库,一个是没人认同货架上有什么(Gary:「是转库了呢还是什么情况」/「自售自数其实可以通过 api 对应上」)
 - **`⚠️ +163` 是 25 行里的 2 行,其余 23 行分毫不差。** 那个数把 2 行分歧印成了 163 个错误 —— **`buildStreamCountBrief` 印的是件数求和,应该印行数并点名最大的那行。**
