@@ -15,7 +15,22 @@
 - **🔴 我 8/19 那条撤回本身是错的,现在改回来**:我曾报「OP-16 散包按市价 141% 买的」,后来撤回,理由是「$9.50 是拆盒推导出来的成本不是买入价」。**8/20 的取证已经证明拆盒那个前提不成立**(7 条 $9.50 的行 vendor 全是 **Discord**,而且包比盒早进门 9 天)。**所以 $9.50 是真买入价,128–142% 是真的。**
   - **但这个比值对这个货没有意义,而这才是重点**:同样这些包我们**实卖 $12.16–12.59 = 同一个 TCG 市价的 168%**。**TCG 不是我们成交的那个市场。** 所以 ≥105% 那句话已经改成「除非这也是我们卖得高于 TCG 的货」——**一句会误描述自己那个数的提示,会教人以后不看它**。
 - **判定分四种,「查不到」永远不算通过**:`priced` / `ceiling`(`buy_rules` 有规则才给结论)/ `unit_mismatch` / `unpriced`(点名要钉哪个) / **`source_down`**(TCG 连不上 —— **绝不并进 unpriced**,「没查到」读成「没有」正是 130point 把 $36 的盒报成 $11,922 的来路)。
-- **⏳ 要 Gary 定的一件事**:百分比是**进 app 那条消息本身**(要发版;市价可以照 `useProductImages.js` 的先例发一份 JSON 给 app 读,**不需要 DDL**),还是**服务端过几分钟补一条**(不用发版,而且能覆盖 jp_vendor 那些 app 看不见的行)。
+
+### ✅ 8/20 百分比已做进「录入的当下」(Gary:「可以给他们 buy record 的时候可以给个%」)
+- **不是事后播报,是买手在 Purchased Items 打价的那一刻就看到**。和现有制度一致 —— 买入和转库是唯一有人真的拿着实物的时刻;事后只剩一个没人能核的数字。
+- **是提示不是闸门**。旁边那个 `costSanity`(1/3–3x 硬拦)问的是「这是不是打错了」,**99% 市价不是打错,是买贵了,一个阈值答不了两个问题**。真会拦货的上限仍然只在 `buy_price_rules.json`,是 Gary 一个产品一个产品定的。
+- **落地三件**(分支 `feat/buy-market-pct` `9202455`,**未过 Codex 未发版**):`src/lib/marketPct.js`(纯函数)· `src/lib/useMarketPrices.js` · `api/market-prices.js` · `PurchasedItems.jsx` 成本框下面一行。
+- **必须走 `costSanity.unitCostOf(item, toUsd)`** —— 它同时处理**「每件/总价」开关**和**币种**。少了换汇,¥18,000 一盒对 $153 的市价会读成 **11,765%**。
+- **🔴 单位那道闸门和 Python 那边是同一套**(`[20%, 300%]`),而且**测试直接读 `buy_market_check.py` 校验常数有没有漂**。变异测试:关掉闸门 → **12 条红**,而且买手会看到 **「3752% of the $2.50 market — above market」**(垃圾袋)· **「2% of the $90.00 market」**(散包对盒,读起来像捡到宝)· **「11760% — above market」**(忘了换汇,告诉买手他巨亏而他没有)。
+- **🔴🔴 顺带查出一个存在很久的洞:`lv-slabs.luckyvault.us` 一个 CORS 头都没有。** 用无头 Chromium 实测,跨域 fetch 直接 `TypeError: Failed to fetch`,原始响应里也确实没有 `Access-Control-Allow-Origin`。
+  - **所以 `useProductImages.js` 那 319 条一直在返回 `{}`** —— 它**故意静默降级**(「pages render unchanged, with no thumbnails」),所以没人会发现。而**另一半 `products.image_url` 这一列根本不存在**(PostgREST 400,那条 DDL 还在积压里)。**两半都是死的,全库产品缩略图现在一张都不显示。** 这条在页面控制台里直接看得到,截图那一轮打出来了。
+  - **修法没有去碰 8081(slabs)**,而是在本仓库加了 `api/market-prices.js` 服务端代理(服务器对服务器没有 CORS),照 `singles-price-detail.js` 的边缘缓存写法。**缩略图那条一行就能一起修好(把 URL 指过来),故意没做** —— 那是另一个功能,夹带进来就没法单独判断这次改动。
+- **🔴 截图当场抓到一条断言看不见的**:140% 那条警告原来用琥珀色,**而这个页面从头到尾都是金色**(每件/总价开关、总价、提交按钮),它读起来不像警告,像又一个强调标签。**已改成红色 chip。** 这就是 8/13 那条「发版前必须自己打开截图看」的第二次兑现。
+- **五个状态在真页面上逐个验过**(`scratchpad/shot_purchased_items.py`,vite preview + 真 feed):`85%` · `90%` · 垃圾袋 **「no market price — not checked」不给百分比** · OP-13 blister **97% 且没有「match not verified」**(它是钉过价的)· 140% 红条。**控制台零错误**(除了上面那两个既有的 CORS/400)。
+- **feed 是 `buy_market_check.py --publish stocked` 写的**,落在 `slab-inventory/data/kaitori_board/market_prices.json`(**实测和公网那份 `product_images.json` 字节完全相同,确认就是被服务的那个目录**)。280 个产品 / 178 个有市价(64%)。**已挂进 05:40 日巡**(排在日巡前面、失败不影响日巡 —— 价旧了只是提示降级,日巡挂了是瞎一天)。缓存增量:第二次跑 **0 次取价**。
+- **陈旧不许冒充实时**:超过 7 天的价会印 **「market read N days ago」** 并降掉「确认」的绿色。**这是汇率那个 bug 的教训写成代码** —— `convertToUSD` 四个月没人发现,就是因为从来没有东西说这个数多老了。
+- **⚠️ 而 `convertToUSD` 现在仍是写死汇率**(8/13 那个修复至今未发版,`api/fx-rate.js` 在 main 上根本不存在),所以**日元线的百分比会带 6.7% 偏差**。Frank 买的是美元,这个表单上基本不咬人,但要知道。
+- **⚠️ 36% 的产品没有市价** —— 这些行明写「no market price for this product — not checked」,**绝不印 0%**,也绝不让一行看起来被核过而其实没有。
 
 ## 🚨 铁律:**每个 SKU 必须写明「一件是什么」**(Gary 8/19:「sku 需要 unit」)
 **这三天每一起事故都是同一个病根:行上有一个数,但没有任何地方说这个数在数什么。**
