@@ -1,4 +1,16 @@
-# LV Inventory — 作业手册 brief (2026-08-20)
+# LV Inventory — 作业手册 brief (2026-08-21)
+
+## ✅ 8/21 转录库 v2 落地 + vahe 把 e1 的卖法改对了 + 首个「账 vs 转录消耗」对照(Gary:「本地我们更新了转录的库…可以查到每个 lot 卖多少 以及消耗情况对比」)
+- **转录库目录 v2(8/21)**:Drive `live_transcripts/` 的转录文件挪进 `ebay/`、`tiktok/` 子目录,`MANIFEST.csv` 的 filename 列=相对路径;根级四件(MANIFEST / README_handshake / products_catalog / _auction_log)不动。**消费侧铁律:路径以 manifest 为准或递归扫,绝不根目录 glob `*.jsonl`(v2 下静默拿到 0 个转录不报错)。** 现 **41 场(eBay 31 + TikTok PK 10)**,覆盖到 8/21 凌晨;转录机每 30 分钟自动推。**TikTok Packheads 转录是全新的一条线**(s1–s10,8/16–8/19,含 `_meta` 头带 clock_offset)。
+- **✅ 新 `lv-finance/pull_transcripts.py`**:SA(`slab-inventory/data/sheets_sa.json`)走 Drive API 的无头拉取器 —— 这正是 finance 侧 handshake 文档里欠的那个「常驻拉取器」(MCP 是交互会话,cron 里没有)。按 MANIFEST 驱动、尺寸比对增量、manifest 行缺文件时报错退出(投递缺口≠没数据)。本机镜像已重构成 v2 并补齐 14 场。
+- **🔴 vahe 8/20(e1)当场把卖法改对了,钉死 8 个 lot / 34 包 / $223 = $6.56/包 = 市价的 100%**(8/18–19 他还是 $4.00 = 61%)。变化不是 2 连包卖好了(2 连包仍 $3–8/包,均 $5.33),是 **lot 结构变了**:上了 5 连包($37×2)、10 连包($76)、并反复用「packs are seven each」锚价 + 口头直卖(点着数出 10 包 = $70)。
+  - **三个 lot 的赢家名和主播喊的人逐个对上**(sportsguyty4145 / beda_35826「BEDA」/ jrboy808「JR boy」),外加一笔主播自己报数(「went for six bucks for two packs」= lot070)。
+  - **10 连包没人要 → 拆成两个 5 连包各 $37 当场卖掉** —— lot 结构决定价格的又一实证。
+  - **按 lot 大小切全部 129 包:10 连包永远 $7.50/包 = 114% 市价(MA 8/13 $73 · Brandon 8/17 $76 · vahe 8/20 $76,三个主播两个房完全一致);2-3 连包 84%、5 连包 85%。** 存底 `journey_ebay_lots.json` 已更新(34 lots,备份 `.bak_0821`)。
+- **🔴 拍锤日志的 ts 滞后真实落锤最多 ~3 分钟**(lot039:主播讨论 $4 结果比日志 ts 早 3 分钟)。宣告句→下一锤的 join 不受影响(滞后单向),但**不许拿日志 ts 当精确落锤时刻做窄窗口**。
+- **🔴 口头直卖不进拍锤日志**:8/20 那笔 10 包 $70 是主播点着数出来的,没有锤。只有订单能证——而 `ebay_buyer_orders.jsonl` 停在 8/20 10:59 UTC,**vahe 晚场订单还没进来,先记 observed_not_pinned**。白送又 3 包(18:09/19:08/21:38)。
+- **✅ 首个「账 vs 转录消耗」对照(Gary 要的那条)**:e1 账上 Journey **130 包,`last_updated` 停在 8/18 16:00Z = 转库那一笔,之后一次没动**;而转录已看到 **≥66 包钉死消耗(8/18 12 + 8/19 20 + 8/20 34)+ ~15 包没钉死(直卖/白送/lot039)≈ 81–87 包**。**真实在架应 ≈45–50 包 —— e1 下次盘点必然报一个大负差,现在可以预告并逐 lot 拆解**(daily_close 公式:盘点净差 = 补货 − 场耗)。对照组:**e2 账上 190,8/18 之后所有 e2 场次 0 次 Journey 开拍 → e2 的账应该还是准的**。
+- **finance 侧已建好的(别重复造)**:拍锤×订单 join(Brandon 52/52=100%、锤→订单中位 +0.6min)· TT 双口径($1 池逐单 88%,置顶品场级 GMV 97%)· 逐笔毛利 v0(`scratchpad/lt/brandon_pnl.py`)· 口播别名表需求(op eleven→OP-11)· 盘点净差分解公式。三方验证目标:transcript ↔ orders ↔ stream_counts 三源互证。
 
 ## 🔴 8/20 「Journey 在 eBay 均价多少」——答案是查不出,而查不出的原因就是 daily 结算该补的那条腿(Gary:「只能看 transcript 去看 ebay 这就是我们 daily 结算要带的 看 ebay 的数字准不准和 tiktok 一样 然后看消耗以及销售」)
 - **钱有、货名没有。** eBay 发货 CSV 每一笔都有实际净额(item sales / 各项费 / 实收),但 **32,646 条 eBay 订单标题里「Journey」出现 0 次** —— 70% 的订单标题是场次名(`#156 - EBAY LIVE AUCTION- 8/9 W/CARLOS`),**`#N` 是坑位号**。Journey 853 包全走 `$1 START PACK RIPS` 混场,**从来没有过自己的具名 listing**。
