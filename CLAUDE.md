@@ -14,7 +14,7 @@
 ## ✅ 8/21 日本 tracking 已挂进 05:40 日巡(Gary:「日本的tracking 你更新在alert里面」)
 - **`jp_shipment_watch.py` 从 8/12 写好起 `--telegram` 就从来没发出去过**:`from notify_telegram import send` —— 模块在 lv-finance,日巡脚本加了那个 path 而它没加,ModuleNotFoundError 被 except 吞成一行 stderr。**又一个「装好了但从来没响过」**。已修(补 sys.path),实测 `已发 Telegram`。
 - **在途也进消息**(原来只发「送达没人收」):箱子在路上就 1-2 天,日巡里的在途是信号不是墙纸;`IN_TRANSIT` 不计入 urgent,发送闸门单独判。已写进 `run_inventory_watch.cmd`(排日巡之后,失败不影响日巡)。
-- 当日实况:**在途 4 票**,含两箱 `THE WORLD'S STRONGEST WARRIORS (Case)` 合计 **$43,684**(8/19 + 8/21 发出)+ 袋装小票 + 39 件混装;送达未入库仅 3 件/$0。老的部分收货尾巴(6 月三票差 9-15 件)照常列出。
+- 当日实况(Gary:「日本应该有两个快递 一个今天到」→ 17track 钉 FedEx 逐票实查后**他说得对**):**真在途 = 2 票,正是两箱 `THE WORLD'S STRONGEST WARRIORS (Case)`** —— `876087907291`(12 件 $26,612,8/21 晚离成田,**今天到的就是它**)+ `876032526966`(7 件 $17,072,8/19 发出,**17track 重试后仍查无数据 —— 要么还没进系统要么号录错,要让 Hwa 核号**)。「在途 4 票」里另两票其实**早已送达且基本收完**(`875850110456` 8/18 到、38/39;`875974095783` 8/20 到、18/19,各差 1 件)——账上 `tracking_delivered_at` 没人写才被分错桶,已用**承运商扫描日期**补上 9 行(备份 `jp_delivered_backup_0821.json`,回读通过),alert 已按修正分桶重发。**教训重申:watch 读的是 DB 字段,而没人写送达日期,分桶就永远停在「在途」—— 送达日期以后由谁写要定**(inbound_notify 只更新自己的 state 文件,不写 acquisitions)。
 
 ## 🔴 8/21 Vercel 转户核查:部署管道健康,但公网上还挂着一个 7 月老版本的化石项目
 - **新管道健康**:GitHub deployments API(匿名可查)显示最近每笔 push 都触发 Production 部署且 `success`;部署专属 URL 带 Vercel SSO 保护。**生产自定义域名仍不知道**——`.vercel.app` 项目名域名 404,常见子域名 DNS 全无 Vercel CNAME;k1bkorhr 浏览器 Vercel/GitHub 都没登录,进不了后台。
