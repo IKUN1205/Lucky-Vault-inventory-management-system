@@ -1502,6 +1502,18 @@ export const fetchAuditProducts = async (locationId) => {
 }
 
 export const fetchInventoryForRoom = async (locationId) => {
+  // Zero rows STAY on the count sheet for 48h after their last write (Gary
+  // 2026-08-21 "假设api不对的情况下…还是应该留着 48小时内没有补货一直保持0
+  // 可以挪出"). A wrong count that zeroes a line used to drop it off the very
+  // sheet the next counter would have corrected it on — 151 Booster Pack and
+  // Shining Legends vanished that way at Rockets, FB10 and [JP] OP-13 at
+  // Packheads. Stream rooms count roughly daily, so a 48h grace window means
+  // the next one or two counters can still see the row and count the goods
+  // back if the zero was wrong; a row that HOLDS 0 with no restock for 48h
+  // falls off as genuinely sold out. last_updated is stamped by count
+  // write-downs and transfers alike, so it is exactly "the last time this
+  // row changed". Rows with a null last_updated stay excluded at 0.
+  const cutoff = new Date(Date.now() - 48 * 3600 * 1000).toISOString()
   const { data, error } = await supabase
     .from('inventory')
     .select(`
@@ -1509,11 +1521,15 @@ export const fetchInventoryForRoom = async (locationId) => {
       product:products(*)
     `)
     .eq('location_id', locationId)
-    .gt('quantity', 0)
+    .or(`quantity.gt.0,and(quantity.eq.0,last_updated.gte.${cutoff})`)
   if (error) throw error
-  
-  // Sort by brand then name
-  return (data || []).sort((a, b) => {
+
+  // Merged/retired SKUs must not resurface: a merge zeroes the loser's rows,
+  // which lands them inside the 48h grace window — without this filter the
+  // two duplicates retired on 8/19 popped straight back onto the Packheads
+  // sheet. Only an explicit active=false is excluded (never-set stays in),
+  // same rule as the duplicate guard.
+  return (data || []).filter(r => r.product?.active !== false).sort((a, b) => {
     const brandCompare = (a.product?.brand || '').localeCompare(b.product?.brand || '')
     if (brandCompare !== 0) return brandCompare
     return (a.product?.name || '').localeCompare(b.product?.name || '')
