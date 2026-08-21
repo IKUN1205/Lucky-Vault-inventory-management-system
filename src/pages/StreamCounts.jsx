@@ -17,6 +17,7 @@ import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { BrandChip, LangChip } from '../components/ProductChips'
 import ProductThumb from '../components/ProductThumb'
+import { categoryOf, categoryLabel, categoryRank } from '../lib/countCategories'
 import { 
   ClipboardList, 
   Play, 
@@ -207,13 +208,21 @@ export default function StreamCounts() {
       // restocks + items that sold recently), then everything by inventory VALUE descending
       // (qty x market/cost) so the money sits at the top of each group. This exposes no system
       // quantities — the count stays blind; it only changes ROW ORDER.
+      // 2026-08-21 (Gary "第一件事是分品类 op/pokemon/weiss/marvel 这种大品类"):
+      // the PRIMARY grouping is now the product family, so a counter can walk
+      // the room one shelf-family at a time instead of hunting through one
+      // long mixed list. Within a family the old order stands: recently
+      // active first, then by value. Category comes from the NAME, not the
+      // brand column — brand is mislabeled on at least one SKU.
       const FRESH_MS = 7 * 24 * 3600 * 1000
       const decorated = invData.map(inv => ({
         ...inv,
+        _cat: categoryOf(inv.product),
         _fresh: Boolean(inv.last_updated && (Date.now() - new Date(inv.last_updated).getTime()) < FRESH_MS),
         _value: (Number(inv.quantity) || 0) *
                 (Number(inv.current_market_price) || Number(inv.avg_cost_basis) || 0),
       })).sort((a, b) =>
+        (categoryRank(a._cat) - categoryRank(b._cat)) ||
         (Number(b._fresh) - Number(a._fresh)) ||
         (b._value - a._value) ||
         (a.product?.name || '').localeCompare(b.product?.name || ''))
@@ -1108,8 +1117,9 @@ export default function StreamCounts() {
               / 数到多少填多少；房间里没有的产品<span className="font-semibold">留空或填 0</span> 即可（卖完或移走了），系统就是这么设计的。
             </p>
             <p className="mt-1 text-amber-200/80">
-              List order: recently restocked / recently sold items first, then by inventory value.
-              / 排序：最近补货或有动销的在最上面，其余按库存价值从高到低。
+              The list is grouped by product family (One Piece / Pokemon / Weiss…) — finish one
+              family before moving to the next. 🆕 marks recently restocked or recently sold items.
+              / 清单按大品类分组，数完一类再数下一类；🆕 = 最近补货或有动销。
             </p>
           </div>
 
@@ -1141,16 +1151,20 @@ export default function StreamCounts() {
                       // (_fresh/_value drive ROW ORDER + the NEW badge only.)
                       const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
                       const prev = inventory[idx - 1]
-                      const groupBreak = idx === 0 || Boolean(prev?._fresh) !== Boolean(inv._fresh)
+                      // Section header per product family (Gary 8/21). The
+                      // fresh/older split used to be the section break; it
+                      // survives as the 🆕 chip on individual rows so the
+                      // list has ONE level of grouping, not two.
+                      const groupBreak = idx === 0 || prev?._cat !== inv._cat
+                      const catCount = inventory.filter(x => x._cat === inv._cat).length
 
                       return (
                         <React.Fragment key={inv.id}>
                           {groupBreak && (
-                            <tr className="bg-vault-surface/60">
-                              <td colSpan={4} className="py-1.5 text-xs font-semibold tracking-wide uppercase text-gray-400">
-                                {inv._fresh
-                                  ? '🆕 Recently restocked / sold — count these first · 最近补货/有动销 — 先数这些'
-                                  : 'Older stock (by value) · 其余库存（按价值排序）'}
+                            <tr className="bg-vault-surface/80 border-t border-vault-gold/30">
+                              <td colSpan={4} className="py-2 text-sm font-bold tracking-wide text-vault-gold">
+                                {categoryLabel(inv._cat)}
+                                <span className="ml-2 text-xs font-normal text-gray-400">{catCount} products · 数完这一类再数下一类</span>
                               </td>
                             </tr>
                           )}
@@ -1162,6 +1176,9 @@ export default function StreamCounts() {
                               <span className="inline-flex items-center gap-2">
                                 <BrandChip brand={inv.product?.brand} />
                                 <span>{launchName}<LangChip lang={inv.product?.language} /></span>
+                                {inv._fresh && (
+                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-400" title="Recently restocked / sold · 最近补货或有动销">🆕</span>
+                                )}
                               </span>
                             </td>
                             <td className="text-gray-400">{inv.product?.category}</td>
