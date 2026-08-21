@@ -468,7 +468,10 @@ export default function PurchasedItems() {
             : 'Unknown product',
           quantity: parseInt(item.quantity),
           marketState: marketFeedDown ? 'feed_down' : mj.state,
-          marketPct: mj.pct != null ? Math.round(mj.pct) : null,
+          // Raw, not rounded: the endpoint re-checks the unit band itself,
+          // and 19.6 rounded to 20 would sneak inside it. Rounding is the
+          // renderer's job.
+          marketPct: mj.pct ?? null,
           market: mj.market ?? null,
           // The card must carry the same honesty markers the form shows:
           // pinned=false renders "(match not verified yet)", asOf drives the

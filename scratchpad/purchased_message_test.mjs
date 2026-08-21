@@ -180,5 +180,14 @@ ok('a fresh reading is not stamped',
 ok('garbage asOf is ignored, clause survives',
   marketClause({ marketState: 'under', marketPct: 85, market: 100, marketAsOf: 'not-a-date' }).includes('85% of the'))
 
+ok('19.6% raw is outside the band even though it rounds to 20',
+  !/%/.test(marketClause({ marketState: 'under', marketPct: 19.6, market: 100 })))
+ok('300.4% raw is outside the band even though it rounds to 300',
+  marketClause({ marketState: 'under', marketPct: 300.4, market: 100 }).includes('may not be the same thing'))
+ok('a mismatch built on an unverified match says so',
+  marketClause({ marketState: 'unit_mismatch', marketPinned: false }).includes('match not verified yet'))
+ok('84.6% renders rounded as 85%',
+  marketClause({ marketState: 'under', marketPct: 84.6, market: 100 }).includes('85% of the'))
+
 console.log(`\n${fails.length ? 'FAILURES:\n  ' + fails.join('\n  ') : 'ALL PASS'}  (${pass} passed, ${fails.length} failed)`)
 process.exit(fails.length ? 1 : 0)

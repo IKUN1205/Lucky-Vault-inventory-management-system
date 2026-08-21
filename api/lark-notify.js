@@ -1467,6 +1467,7 @@ function marketClause(item) {
     // for a 30-pack bag against a single-pack price and tells the reader the
     // opposite of what happened. This week that shape of error hit five times.
     return ' — our unit and the market unit may not be the same thing, check what one unit is'
+      + (item?.marketPinned === false ? ' (match not verified yet)' : '')
   }
   const pct = Number(item?.marketPct)
   const market = Number(item?.market)
@@ -1476,6 +1477,7 @@ function marketClause(item) {
   // "under" would otherwise sail straight onto the card (Codex 8/21).
   if (pct < 20 || pct > 300) {
     return ' — our unit and the market unit may not be the same thing, check what one unit is'
+      + (item?.marketPinned === false ? ' (match not verified yet)' : '')
   }
   const price = `$${market.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   let clause
