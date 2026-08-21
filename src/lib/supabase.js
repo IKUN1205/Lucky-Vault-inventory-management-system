@@ -1501,6 +1501,22 @@ export const fetchAuditProducts = async (locationId) => {
   })
 }
 
+// Stamp last_updated on one inventory row WITHOUT touching quantity. Used by
+// the count submit when a counter finds goods on a zero-grace row: the found
+// units are not written (positive diffs never are), but the observation must
+// restart the 48h zero-row clock, or the disputed row ages off the very sheet
+// the next counter would settle it on. Callers must stamp BEFORE creating the
+// stream_count row — the open-surplus R2 rule voids any surplus whose row was
+// touched AFTER the count was filed, and a later stamp would void our own.
+export const touchInventoryLastUpdated = async (productId, locationId) => {
+  const { error } = await supabase
+    .from('inventory')
+    .update({ last_updated: new Date().toISOString() })
+    .eq('product_id', productId)
+    .eq('location_id', locationId)
+  if (error) throw error
+}
+
 export const fetchInventoryForRoom = async (locationId) => {
   // Zero rows STAY on the count sheet for 48h after their last write (Gary
   // 2026-08-21 "假设api不对的情况下…还是应该留着 48小时内没有补货一直保持0
