@@ -1,5 +1,14 @@
 # LV Inventory — 作业手册 brief (2026-08-20)
 
+## 🔴 8/20 「Journey 在 eBay 均价多少」——答案是查不出,而查不出的原因就是 daily 结算该补的那条腿(Gary:「只能看 transcript 去看 ebay 这就是我们 daily 结算要带的 看 ebay 的数字准不准和 tiktok 一样 然后看消耗以及销售」)
+- **钱有、货名没有。** eBay 发货 CSV 每一笔都有实际净额(item sales / 各项费 / 实收),但 **32,646 条 eBay 订单标题里「Journey」出现 0 次** —— 70% 的订单标题是场次名(`#156 - EBAY LIVE AUCTION- 8/9 W/CARLOS`),**`#N` 是坑位号**。Journey 853 包全走 `$1 START PACK RIPS` 混场,**从来没有过自己的具名 listing**。
+- **对照:有具名 listing 的套一查就有** —— Abyss Eye 14 个标题 / 1,445 单 / 均 $64.93 · Mega 8/491/$133.63 · Storm Emeralda 7/427/$74.34。
+- **连接线早就设计好了,从没接上**:`lv-finance/LIVE_TRANSCRIPT_CONTRACT.md`(8/16)写明 transcript 的 `lot 45` ↔ 订单标题 `#45 -`。**Producer 是 Gary 的监控机,`live_transcripts/` 目录至今不存在 —— 一个文件都没投过。** 消费侧(daily_close)和数据侧(订单/CSV)都在,缺的只有投递。
+- **Gary 定的 daily 结算逻辑(8/20)**:① transcript ↔ eBay 订单按 lot 号 join ② **先验 eBay 的数字准不准,和 TikTok 那套一样**(盘点写掉 vs 订单,**只在干净窗口断言**)③ 再看消耗 vs 销售。**eBay 侧今天没有任何一个窗口是干净的**(每一单都是坑位),所以这条检查在 transcript 落地之前会永远报「比不了」—— 不提前建一个只会喊比不了的检查器,transcript 一落地就接。
+- **🔴 两个「自洽但不能用」的巧合,写下来防止以后有人拿去当均价**:8/15 写掉 81 包、e2 恰好 81 单均 $101.84(**那场是 MYSTERY SLABS,一包 Journey 不可能 $102**);8/16 写掉 215 包、唯一拆包场 141 单均 $34.33。**和 8/19 那个 2.3 倍同一形状。**
+- **✅ 顺带修了 Journey 的成本(Gary:「成本你看 weighted average」)**:两行进货是 **FB03 同款「单价打进总价栏」**——`2faff15a` 400 包记 $5.50、`d34d7775` 150 包记 $5.75(= $0.01/包;而 $5.50/$5.75 作为单价是钉价市价 $6.56 的 84–88%,**签名完全吻合**,且两行都在 6/24 开关上线前)。已改 $2,200.00 / $862.50,notes 打 `FIXED_UNIT_AS_TOTAL`。**加权平均 $3,085.50 ÷ 555 = $5.56/包**,四个在库房的 basis 5.00→5.56(备份 `data/journey_cost_backup.json`,乐观锁 + 回读;**一行 qty=0 basis=4.66 的被锁正确拦下没动**)。COGS 少记的 ~$3,051 已回到进货账上。
+- **⏳ 等监控机开始投 transcript**(契约在,格式在,落文件即接)。**Frank 那条均价消息没发** —— 按 Gary 的逻辑,数字要从 transcript join 里出,现在发就只能发一个「查不出」。
+
 ## 🔴 8/20 Frank 的 Telegram 转库:权限是给了的,卡在四层,第一层是一个词(Gary:「是没给他权限吗 卡在哪里」)
 - **是 Frank,而且时间对得分毫不差。** `member_inbox.jsonl` 里他的原话:
   ```
