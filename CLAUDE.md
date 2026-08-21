@@ -11,6 +11,11 @@
 - ⏳ Gary 提的第二步「按数量/货况给 streamer 出精简点货名单」没做——那是另一个功能,等分品类先落地。
 - 🔴 JV「SKU 搞错」假设已排除:记串的话总量守恒,该有别的行 +17/+13/+10,实际全表正差只有 +22(Marvel 已破案)+6+1,五个龙珠兄弟行原封不动。FB10/JP OP-13/Storm 三行是干净的 0,更像「货不在视线里被空行=0」或真消耗(待问 JV)。
 
+## ✅ 8/21 日本 tracking 已挂进 05:40 日巡(Gary:「日本的tracking 你更新在alert里面」)
+- **`jp_shipment_watch.py` 从 8/12 写好起 `--telegram` 就从来没发出去过**:`from notify_telegram import send` —— 模块在 lv-finance,日巡脚本加了那个 path 而它没加,ModuleNotFoundError 被 except 吞成一行 stderr。**又一个「装好了但从来没响过」**。已修(补 sys.path),实测 `已发 Telegram`。
+- **在途也进消息**(原来只发「送达没人收」):箱子在路上就 1-2 天,日巡里的在途是信号不是墙纸;`IN_TRANSIT` 不计入 urgent,发送闸门单独判。已写进 `run_inventory_watch.cmd`(排日巡之后,失败不影响日巡)。
+- 当日实况:**在途 4 票**,含两箱 `THE WORLD'S STRONGEST WARRIORS (Case)` 合计 **$43,684**(8/19 + 8/21 发出)+ 袋装小票 + 39 件混装;送达未入库仅 3 件/$0。老的部分收货尾巴(6 月三票差 9-15 件)照常列出。
+
 ## 🔴 8/21 Vercel 转户核查:部署管道健康,但公网上还挂着一个 7 月老版本的化石项目
 - **新管道健康**:GitHub deployments API(匿名可查)显示最近每笔 push 都触发 Production 部署且 `success`;部署专属 URL 带 Vercel SSO 保护。**生产自定义域名仍不知道**——`.vercel.app` 项目名域名 404,常见子域名 DNS 全无 Vercel CNAME;k1bkorhr 浏览器 Vercel/GitHub 都没登录,进不了后台。
 - **🔴 化石:`luckyvault-inventory.vercel.app` 还在公网服务一个 7 月下旬之前的老 build**(585KB bundle 实测:房间名还是 `Stream Room - TikTok Whatnot`、无 PokeCasino 改名、无 stock_adjust/盲盘修复/preflight/查重守卫,连 7/29 的 shows 渠道都没有)。**它连的是同一个生产 Supabase(anon key 打包在内),登录也走同一张 users 表** —— 谁书签了这个网址,就在用几个月前的逻辑直写生产数据。近期盘点/销售数据形态都是新版行为,**暂无证据有人在用**,但这是把上了膛的枪。多半是 William 时代的原项目(账号断开后冻结),这次转户转的可能就是它。
