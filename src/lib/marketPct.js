@@ -67,11 +67,13 @@ export function marketFor(productId, marketMap) {
 // getting it right.
 export function judgeLine(unitUsd, entry) {
   const unit = Number(unitUsd) || 0
-  if (!(unit > 0)) return { state: 'no_cost' }
+  // Non-finite in = garbage out: Infinity survives every > comparison and
+  // would render "Infinity% of the market" (Codex 8/21).
+  if (!Number.isFinite(unit) || !(unit > 0)) return { state: 'no_cost' }
   if (!entry) return { state: 'unknown' }
 
   const market = Number(entry.market) || 0
-  if (!(market > 0)) {
+  if (!Number.isFinite(market) || !(market > 0)) {
     return { state: 'no_market', matched: entry.matched || null, asOf: entry.asOf || null }
   }
 

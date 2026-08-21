@@ -1457,6 +1457,11 @@ function buildMessage(body) {
 // number you can check.
 function marketClause(item) {
   const state = item?.marketState
+  if (state === 'feed_down') {
+    // The price source being unreachable is its own answer — it must never
+    // read as "no market price" (the 130point lesson, LOCKED).
+    return ' — market feed unreachable, not checked'
+  }
   if (state === 'unit_mismatch') {
     // Never print the ratio here. "3,750% of market" is arithmetically true
     // for a 30-pack bag against a single-pack price and tells the reader the
@@ -1466,10 +1471,26 @@ function marketClause(item) {
   const pct = Number(item?.marketPct)
   const market = Number(item?.market)
   if (!Number.isFinite(pct) || !(pct > 0) || !Number.isFinite(market) || !(market > 0)) return ''
+  // Re-check the unit band HERE, not just in the browser. This endpoint takes
+  // whatever the client sent; a buggy or stale client labeling 3750% as
+  // "under" would otherwise sail straight onto the card (Codex 8/21).
+  if (pct < 20 || pct > 300) {
+    return ' — our unit and the market unit may not be the same thing, check what one unit is'
+  }
   const price = `$${market.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-  if (state === 'above') return ` — ${Math.round(pct)}% of the ${price} market, ABOVE market`
-  if (state === 'at') return ` — ${Math.round(pct)}% of the ${price} market, at market`
-  return ` — ${Math.round(pct)}% of the ${price} market`
+  let clause
+  if (state === 'above') clause = ` — ${Math.round(pct)}% of the ${price} market, ABOVE market`
+  else if (state === 'at') clause = ` — ${Math.round(pct)}% of the ${price} market, at market`
+  else clause = ` — ${Math.round(pct)}% of the ${price} market`
+  // Same honesty markers the form shows: a fuzzy match is evidence, not a
+  // verdict, and an old reading must say how old it is.
+  if (item?.marketPinned === false) clause += ' (match not verified yet)'
+  const asOf = item?.marketAsOf ? Date.parse(item.marketAsOf) : NaN
+  if (Number.isFinite(asOf)) {
+    const days = Math.floor((Date.now() - asOf) / 86400000)
+    if (days >= 7) clause += `, market read ${days} days ago`
+  }
+  return clause
 }
 
 function formatCost(amount, currency) {

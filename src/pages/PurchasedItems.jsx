@@ -86,7 +86,7 @@ export default function PurchasedItems() {
   // Market prices for the "% of market" readout under each cost field. Empty
   // map until the feed resolves, and empty forever if it fails — every consumer
   // below renders "no market price on file" for a miss, never a percentage.
-  const marketPrices = useMarketPrices()
+  const { prices: marketPrices, feedDown: marketFeedDown } = useMarketPrices()
 
   const [productFilters, setProductFilters] = useState({
     brand: '',
@@ -233,6 +233,10 @@ export default function PurchasedItems() {
   // caught by a guard is not the same as being right.
   const marketNoteFor = (item) => {
     if (!item?.product_id) return null
+    // A down feed is its own answer. "Unreachable" must never read as
+    // "this product has no price" (LOCKED: source_down never folds into
+    // unpriced — the 130point lesson).
+    if (marketFeedDown) return { tone: 'muted', text: 'market feed unreachable — not checked' }
     const unitUsd = unitCostOf(item, (n) => convertToUSD(n, header.currency))
     return describeMarket(judgeLine(unitUsd, marketFor(item.product_id, marketPrices)))
   }
@@ -463,9 +467,14 @@ export default function PurchasedItems() {
             ? `${product.brand} | ${launchName} | ${product.category} | ${product.language}`
             : 'Unknown product',
           quantity: parseInt(item.quantity),
-          marketState: mj.state,
+          marketState: marketFeedDown ? 'feed_down' : mj.state,
           marketPct: mj.pct != null ? Math.round(mj.pct) : null,
           market: mj.market ?? null,
+          // The card must carry the same honesty markers the form shows:
+          // pinned=false renders "(match not verified yet)", asOf drives the
+          // "market read N days ago" staleness note (Codex 8/21).
+          marketPinned: mj.pinned ?? null,
+          marketAsOf: mj.asOf ?? null,
         })
         totalCostOriginal += costNum
         totalCostUSD += costUSD

@@ -151,5 +151,34 @@ ok('a yen purchase still shows yen and the USD conversion',
 ok('...and the market percent is still in USD terms',
    jpy.includes('85% of the $644.78 market'))
 
+// --- Codex 8/21 round: server-side honesty guards -------------------------
+ok('feed_down clause says unreachable',
+  marketClause({ marketState: 'feed_down' }).includes('market feed unreachable'))
+ok('feed_down never prints a percent',
+  !/%/.test(marketClause({ marketState: 'feed_down', marketPct: 85, market: 100 })))
+ok('forged under-state at 3750% is caught server-side',
+  marketClause({ marketState: 'under', marketPct: 3750, market: 2.5 }).includes('may not be the same thing'))
+ok('...and prints no ratio', !/3750|%/.test(marketClause({ marketState: 'under', marketPct: 3750, market: 2.5 })))
+ok('forged at-state at 350% is caught too',
+  marketClause({ marketState: 'at', marketPct: 350, market: 10 }).includes('may not be the same thing'))
+ok('19% is below the band and prints no ratio',
+  !/%/.test(marketClause({ marketState: 'under', marketPct: 19, market: 100 })))
+ok('20% exactly is inside the band',
+  marketClause({ marketState: 'under', marketPct: 20, market: 100 }).includes('20% of the'))
+ok('pinned=false appends match-not-verified',
+  marketClause({ marketState: 'under', marketPct: 85, market: 100, marketPinned: false }).includes('match not verified yet'))
+ok('pinned=true has no caveat',
+  !marketClause({ marketState: 'under', marketPct: 85, market: 100, marketPinned: true }).includes('match not verified'))
+ok('pinned missing has no caveat (never guess)',
+  !marketClause({ marketState: 'under', marketPct: 85, market: 100 }).includes('match not verified'))
+const OLD = new Date(Date.now() - 10 * 86400000).toISOString()
+const FRESH = new Date(Date.now() - 1 * 86400000).toISOString()
+ok('a 10-day-old reading is dated',
+  marketClause({ marketState: 'under', marketPct: 85, market: 100, marketAsOf: OLD }).includes('market read 10 days ago'))
+ok('a fresh reading is not stamped',
+  !marketClause({ marketState: 'under', marketPct: 85, market: 100, marketAsOf: FRESH }).includes('days ago'))
+ok('garbage asOf is ignored, clause survives',
+  marketClause({ marketState: 'under', marketPct: 85, market: 100, marketAsOf: 'not-a-date' }).includes('85% of the'))
+
 console.log(`\n${fails.length ? 'FAILURES:\n  ' + fails.join('\n  ') : 'ALL PASS'}  (${pass} passed, ${fails.length} failed)`)
 process.exit(fails.length ? 1 : 0)
