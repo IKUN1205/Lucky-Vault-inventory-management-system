@@ -365,7 +365,7 @@ export default function StreamCounts() {
     // inventory, which had to be retracted). blank=0 stays for partial
     // sheets; a 100%-blank submit is refused outright.
     if (inventory.length > 0 && blanks.length === inventory.length) {
-      addToast('一格都没填 — 无法提交。如果输入框打不进字,刷新页面或重启浏览器再试。 / Every box is blank — nothing to submit. If typing does nothing, refresh the page or restart the browser and try again.', 'error')
+      addToast('Every box is blank — nothing to submit. If typing does nothing, refresh the page or restart the browser and try again.', 'error')
       return
     }
     if (blanks.length > 0) {
@@ -374,9 +374,7 @@ export default function StreamCounts() {
         .join('\n  · ')
       const more = blanks.length > 8 ? `\n  · …+${blanks.length - 8} more` : ''
       const proceed = confirm(
-        `${blanks.length} 个产品没填数，提交后按 0（全部卖完）记录：\n  · ${names}${more}\n\n` +
-        `${blanks.length} product(s) left blank — they will be recorded as 0 (sold out).\n\n` +
-        `没货 → 按 OK 提交；架上还有 → 按 Cancel 返回补数。\n` +
+        `${blanks.length} product(s) left blank — they will be recorded as 0 (sold out):\n  · ${names}${more}\n\n` +
         `Gone? press OK. Still on the shelf? press Cancel and count them.`
       )
       if (!proceed) return
@@ -858,16 +856,16 @@ export default function StreamCounts() {
             <li>Select <span className="text-vault-gold">Streamer</span> — <em className="text-gray-400 not-italic">the person who ran the PREVIOUS session (whose sales we're recording)</em></li>
             <li>Select <span className="text-vault-gold">Counted By</span> (you — the one doing the count right now)</li>
             <li>Click <span className="text-vault-gold">Start Count</span></li>
-            <li>Physically count <span className="text-vault-gold">every product</span> in the room and type the quantity you see（数一下房间里每个产品，填看到的数量）</li>
-            <li>Sold out = enter <span className="text-vault-gold">0</span> or leave it blank（卖完的填 0 或留空 — 空格按 0 记）</li>
-            <li>Click <span className="text-vault-gold">Submit Count</span> — it will list any blank boxes and ask you to confirm（提交时会列出空格让你确认）</li>
+            <li>Physically count <span className="text-vault-gold">every product</span> in the room and type the quantity you see</li>
+            <li>Sold out = enter <span className="text-vault-gold">0</span> or leave it blank</li>
+            <li>Click <span className="text-vault-gold">Submit Count</span> — it will list any blank boxes and ask you to confirm</li>
           </ol>
           <div className="mt-4 p-3 bg-vault-surface rounded border border-vault-border">
-            <p className="font-medium text-white mb-2">This is a blind count / 盲数：</p>
+            <p className="font-medium text-white mb-2">This is a blind count:</p>
             <ul className="space-y-1">
-              <li>You will <span className="text-white">not</span> see the system's expected numbers while counting — just enter what you physically count.（看不到系统数字，数到多少填多少）</li>
-              <li>A <span className="text-vault-gold">blank</span> box is recorded as <span className="text-vault-gold">0 — sold out</span>. If the product is still on the shelf, you must count it.（空格=卖完；架上还有的必须填数）</li>
-              <li>After you submit, the <span className="text-vault-gold">report</span> shows what sold and flags any discrepancies for the manager to review.（提交后报告显示卖了什么）</li>
+              <li>You will <span className="text-white">not</span> see the system's expected numbers while counting — just enter what you physically count.</li>
+              <li>A <span className="text-vault-gold">blank</span> box is recorded as <span className="text-vault-gold">0 — sold out</span>. If the product is still on the shelf, you must count it.</li>
+              <li>After you submit, the <span className="text-vault-gold">report</span> shows what sold and flags any discrepancies for the manager to review.</li>
             </ul>
           </div>
           <p className="text-amber-400 text-xs mt-3">⚠️ Count BEFORE your stream starts — do it as soon as you arrive at the room.</p>
@@ -1112,11 +1110,10 @@ export default function StreamCounts() {
           <div className="mb-4 p-3 rounded border border-amber-500/40 bg-amber-500/10 text-sm text-amber-200">
             <p>
               <span className="font-semibold text-amber-300">Not in your room? Leave it blank or type 0 — that's normal.</span>
-              {' '}/ 房间里没有的<span className="font-semibold">留空或填 0</span>，正常现象不用慌；数到多少填多少。
+              {' '}Count what you physically see.
             </p>
             <p className="mt-1 text-amber-200/80">
-              Grouped by family — finish one, then the next. 🆕 = recently restocked/sold.
-              / 按品类数完一类再数下一类；🆕 = 最近补货或有动销。
+              Grouped by family — finish one family, then the next. 🆕 = recently restocked/sold.
             </p>
           </div>
 
@@ -1166,7 +1163,7 @@ export default function StreamCounts() {
                             <tr className="bg-vault-surface/80 border-t border-vault-gold/30">
                               <td colSpan={4} className="py-2 text-sm font-bold tracking-wide text-vault-gold">
                                 {categoryLabel(inv._cat)}
-                                <span className="ml-2 text-xs font-normal text-gray-400">{catCount} products · 数完这一类再数下一类</span>
+                                <span className="ml-2 text-xs font-normal text-gray-400">{catCount} products — finish this family, then the next</span>
                               </td>
                             </tr>
                           )}
@@ -1182,7 +1179,7 @@ export default function StreamCounts() {
                                 <span className="hidden sm:inline-flex"><BrandChip brand={inv.product?.brand} /></span>
                                 <span>{launchName}<LangChip lang={inv.product?.language} /></span>
                                 {inv._fresh && (
-                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-400" title="Recently restocked / sold · 最近补货或有动销">🆕</span>
+                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-400" title="Recently restocked / sold">🆕</span>
                                 )}
                               </span>
                               {/* phone layout: type rides under the name */}
@@ -1245,7 +1242,7 @@ export default function StreamCounts() {
                   maxLength={1000}
                   value={countNotes}
                   onChange={(e) => setCountNotes(e.target.value)}
-                  placeholder={"XXX product in the room but NOT on this list / XXX产品在房间里 但不在这个清单上\nOne item per line · 一行写一条\ne.g. 1 box Gem Vol.5 not on list / 有一箱Gem Vol.5不在清单上 · damaged box 外盒破损"}
+                  placeholder={"XXX product in the room but NOT on this list\nOne item per line\ne.g. 1 box Gem Vol.5 not on list · damaged box"}
                 />
               </div>
 
@@ -1261,7 +1258,7 @@ export default function StreamCounts() {
                     </p>
                     {countedProducts < totalProducts && (
                       <p className="text-xs text-amber-400 mt-1">
-                        空格提交时按 0（卖完）记 · blank boxes will be recorded as 0 (sold out)
+                        blank boxes will be recorded as 0 (sold out)
                       </p>
                     )}
                   </div>
