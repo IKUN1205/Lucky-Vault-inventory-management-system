@@ -162,7 +162,7 @@
 ### ✅ 8/20 百分比已做进「录入的当下」(Gary:「可以给他们 buy record 的时候可以给个%」)
 - **不是事后播报,是买手在 Purchased Items 打价的那一刻就看到**。和现有制度一致 —— 买入和转库是唯一有人真的拿着实物的时刻;事后只剩一个没人能核的数字。
 - **是提示不是闸门**。旁边那个 `costSanity`(1/3–3x 硬拦)问的是「这是不是打错了」,**99% 市价不是打错,是买贵了,一个阈值答不了两个问题**。真会拦货的上限仍然只在 `buy_price_rules.json`,是 Gary 一个产品一个产品定的。
-- **落地三件**(分支 `feat/buy-market-pct` `9202455`,**未过 Codex 未发版**):`src/lib/marketPct.js`(纯函数)· `src/lib/useMarketPrices.js` · `api/market-prices.js` · `PurchasedItems.jsx` 成本框下面一行。
+- **✅ 8/21 已发版(Gary:「buy request = buy record please show % in the report」;`5c6cbae` 推 main)**:`src/lib/marketPct.js` · `useMarketPrices.js` · `api/market-prices.js` · `PurchasedItems.jsx` 成本框下一行 + **Lark 卡片 marketClause**。**Codex 三轮**:一轮 6 条(2 条真 blocker:①价源挂掉被压成「没有市价」——已改 `feedDown` 独立状态,表单/卡片都印「market feed unreachable, not checked」,**source_down 永不并进 unpriced** ②Lark 卡丢了 pinned/asOf——模糊匹配现在带「(match not verified yet)」上卡、超 7 天印「market read N days ago」;另修 Infinity 防护 + **服务端自己复核 [20,300] 区间,不信客户端的 state 标签**);二轮 2 条(**pct 改传原始值**——取整后 19.6→20 会溜进区间;mismatch 分支也带 not-verified 标注);三轮 SHIP。测试 40→57+69。⚠️ 一轮里「unit_mismatch 印了句中百分比」不是缺陷——「either 3750% or 装了它 38 个」的二选一句式正是 8/20 定的设计,是我在审查提示里把不变量说过头了。
 - **必须走 `costSanity.unitCostOf(item, toUsd)`** —— 它同时处理**「每件/总价」开关**和**币种**。少了换汇,¥18,000 一盒对 $153 的市价会读成 **11,765%**。
 - **🔴 单位那道闸门和 Python 那边是同一套**(`[20%, 300%]`),而且**测试直接读 `buy_market_check.py` 校验常数有没有漂**。变异测试:关掉闸门 → **12 条红**,而且买手会看到 **「3752% of the $2.50 market — above market」**(垃圾袋)· **「2% of the $90.00 market」**(散包对盒,读起来像捡到宝)· **「11760% — above market」**(忘了换汇,告诉买手他巨亏而他没有)。
 - **🔴🔴 顺带查出一个存在很久的洞:`lv-slabs.luckyvault.us` 一个 CORS 头都没有。** 用无头 Chromium 实测,跨域 fetch 直接 `TypeError: Failed to fetch`,原始响应里也确实没有 `Access-Control-Allow-Origin`。
