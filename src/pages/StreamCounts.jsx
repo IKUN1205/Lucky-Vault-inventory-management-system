@@ -17,6 +17,7 @@ import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { BrandChip, LangChip } from '../components/ProductChips'
 import ProductThumb from '../components/ProductThumb'
+import { categoryOf, categoryLabel, categoryRank } from '../lib/countCategories'
 import { 
   ClipboardList, 
   Play, 
@@ -207,16 +208,26 @@ export default function StreamCounts() {
       // restocks + items that sold recently), then everything by inventory VALUE descending
       // (qty x market/cost) so the money sits at the top of each group. This exposes no system
       // quantities — the count stays blind; it only changes ROW ORDER.
+      // 2026-08-21 (Gary "第一件事是分品类 op/pokemon/weiss/marvel 这种大品类"):
+      // the PRIMARY grouping is now the product family, so a counter can walk
+      // the room one shelf-family at a time instead of hunting through one
+      // long mixed list. Within a family the old order stands: recently
+      // active first, then by value. Category comes from the NAME, not the
+      // brand column — brand is mislabeled on at least one SKU.
       const FRESH_MS = 7 * 24 * 3600 * 1000
       const decorated = invData.map(inv => ({
         ...inv,
+        _cat: categoryOf(inv.product),
         _fresh: Boolean(inv.last_updated && (Date.now() - new Date(inv.last_updated).getTime()) < FRESH_MS),
-        _value: (Number(inv.quantity) || 0) *
-                (Number(inv.current_market_price) || Number(inv.avg_cost_basis) || 0),
       })).sort((a, b) =>
+        (categoryRank(a._cat) - categoryRank(b._cat)) ||
         (Number(b._fresh) - Number(a._fresh)) ||
-        (b._value - a._value) ||
         (a.product?.name || '').localeCompare(b.product?.name || ''))
+      // Inside a family: recently-active first, then NAME. The old value
+      // ordering (qty x price) is gone — with known prices a value order
+      // lets a counter infer relative stock, which chips at the blind rule,
+      // and a name order is stable session to session so the sheet reads
+      // the same way every night.
       setInventory(decorated)
       
       // Blind count: initialize every product's count to blank ('') so the
@@ -356,7 +367,7 @@ export default function StreamCounts() {
     // inventory, which had to be retracted). blank=0 stays for partial
     // sheets; a 100%-blank submit is refused outright.
     if (inventory.length > 0 && blanks.length === inventory.length) {
-      addToast('一格都没填 — 无法提交。如果输入框打不进字,刷新页面或重启浏览器再试。 / Every box is blank — nothing to submit. If typing does nothing, refresh the page or restart the browser and try again.', 'error')
+      addToast('Every box is blank — nothing to submit. If typing does nothing, refresh the page or restart the browser and try again.', 'error')
       return
     }
     if (blanks.length > 0) {
@@ -365,9 +376,7 @@ export default function StreamCounts() {
         .join('\n  · ')
       const more = blanks.length > 8 ? `\n  · …+${blanks.length - 8} more` : ''
       const proceed = confirm(
-        `${blanks.length} 个产品没填数，提交后按 0（全部卖完）记录：\n  · ${names}${more}\n\n` +
-        `${blanks.length} product(s) left blank — they will be recorded as 0 (sold out).\n\n` +
-        `没货 → 按 OK 提交；架上还有 → 按 Cancel 返回补数。\n` +
+        `${blanks.length} product(s) left blank — they will be recorded as 0 (sold out):\n  · ${names}${more}\n\n` +
         `Gone? press OK. Still on the shelf? press Cancel and count them.`
       )
       if (!proceed) return
@@ -849,16 +858,16 @@ export default function StreamCounts() {
             <li>Select <span className="text-vault-gold">Streamer</span> — <em className="text-gray-400 not-italic">the person who ran the PREVIOUS session (whose sales we're recording)</em></li>
             <li>Select <span className="text-vault-gold">Counted By</span> (you — the one doing the count right now)</li>
             <li>Click <span className="text-vault-gold">Start Count</span></li>
-            <li>Physically count <span className="text-vault-gold">every product</span> in the room and type the quantity you see（数一下房间里每个产品，填看到的数量）</li>
-            <li>Sold out = enter <span className="text-vault-gold">0</span> or leave it blank（卖完的填 0 或留空 — 空格按 0 记）</li>
-            <li>Click <span className="text-vault-gold">Submit Count</span> — it will list any blank boxes and ask you to confirm（提交时会列出空格让你确认）</li>
+            <li>Physically count <span className="text-vault-gold">every product</span> in the room and type the quantity you see</li>
+            <li>Sold out = enter <span className="text-vault-gold">0</span> or leave it blank</li>
+            <li>Click <span className="text-vault-gold">Submit Count</span> — it will list any blank boxes and ask you to confirm</li>
           </ol>
           <div className="mt-4 p-3 bg-vault-surface rounded border border-vault-border">
-            <p className="font-medium text-white mb-2">This is a blind count / 盲数：</p>
+            <p className="font-medium text-white mb-2">This is a blind count:</p>
             <ul className="space-y-1">
-              <li>You will <span className="text-white">not</span> see the system's expected numbers while counting — just enter what you physically count.（看不到系统数字，数到多少填多少）</li>
-              <li>A <span className="text-vault-gold">blank</span> box is recorded as <span className="text-vault-gold">0 — sold out</span>. If the product is still on the shelf, you must count it.（空格=卖完；架上还有的必须填数）</li>
-              <li>After you submit, the <span className="text-vault-gold">report</span> shows what sold and flags any discrepancies for the manager to review.（提交后报告显示卖了什么）</li>
+              <li>You will <span className="text-white">not</span> see the system's expected numbers while counting — just enter what you physically count.</li>
+              <li>A <span className="text-vault-gold">blank</span> box is recorded as <span className="text-vault-gold">0 — sold out</span>. If the product is still on the shelf, you must count it.</li>
+              <li>After you submit, the <span className="text-vault-gold">report</span> shows what sold and flags any discrepancies for the manager to review.</li>
             </ul>
           </div>
           <p className="text-amber-400 text-xs mt-3">⚠️ Count BEFORE your stream starts — do it as soon as you arrive at the room.</p>
@@ -1098,18 +1107,15 @@ export default function StreamCounts() {
           
           {/* Count-process note pinned above the sheet (Gary 2026-07-05: streamers panic when
               they see 0s / items they don't have — say loudly that blank/0 is normal). */}
+          {/* Two short rules, not three paragraphs: on a phone the old banner
+              filled a whole screen before the first product row. */}
           <div className="mb-4 p-3 rounded border border-amber-500/40 bg-amber-500/10 text-sm text-amber-200">
-            <p className="font-semibold text-amber-300 mb-1">
-              Seeing items you don't have? That's normal — don't panic. / 单子上有、房间里没有？正常现象，不用慌。
-            </p>
             <p>
-              Count what you physically see. If a listed item is <span className="font-semibold">not in your room</span> (sold
-              out / moved), just <span className="font-semibold">leave it blank or type 0</span> — the system expects that.
-              / 数到多少填多少；房间里没有的产品<span className="font-semibold">留空或填 0</span> 即可（卖完或移走了），系统就是这么设计的。
+              <span className="font-semibold text-amber-300">Not in your room? Leave it blank or type 0 — that's normal.</span>
+              {' '}Count what you physically see.
             </p>
             <p className="mt-1 text-amber-200/80">
-              List order: recently restocked / recently sold items first, then by inventory value.
-              / 排序：最近补货或有动销的在最上面，其余按库存价值从高到低。
+              Grouped by family — finish one family, then the next. 🆕 = recently restocked/sold.
             </p>
           </div>
 
@@ -1127,58 +1133,98 @@ export default function StreamCounts() {
                 <table>
                   <thead>
                     <tr>
-                      <th className="w-12 text-center" aria-label="Image">📷</th>
+                      <th className="hidden sm:table-cell w-12 text-center" aria-label="Image">📷</th>
                       <th>Product</th>
-                      <th>Product Type</th>
-                      <th className="text-right w-32">Actual Count</th>
+                      {/* On phones the type moves under the product name so the
+                          table fits 390px with NO horizontal scroll. With a 4th
+                          column the sheet was wider than the screen; tapping an
+                          input auto-scrolled the container right and the counter
+                          typed numbers with the product names OFF-SCREEN. */}
+                      <th className="hidden sm:table-cell">Product Type</th>
+                      <th className="text-right w-24 sm:w-32">Count</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {inventory.map((inv, idx) => {
+                    {(() => { const catCounts = {}; inventory.forEach(x => { catCounts[x._cat] = (catCounts[x._cat] || 0) + 1 }); return inventory.map((inv, idx) => {
                       // Blind count: no expected / diff is computed or rendered
                       // here so the streamer cannot see or derive the system's
                       // quantity. The only editable value is their own count.
                       // (_fresh/_value drive ROW ORDER + the NEW badge only.)
                       const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
                       const prev = inventory[idx - 1]
-                      const groupBreak = idx === 0 || Boolean(prev?._fresh) !== Boolean(inv._fresh)
+                      // Section header per product family (Gary 8/21). The
+                      // fresh/older split used to be the section break; it
+                      // survives as the 🆕 chip on individual rows so the
+                      // list has ONE level of grouping, not two.
+                      const groupBreak = idx === 0 || prev?._cat !== inv._cat
 
                       return (
                         <React.Fragment key={inv.id}>
                           {groupBreak && (
-                            <tr className="bg-vault-surface/60">
-                              <td colSpan={4} className="py-1.5 text-xs font-semibold tracking-wide uppercase text-gray-400">
-                                {inv._fresh
-                                  ? '🆕 Recently restocked / sold — count these first · 最近补货/有动销 — 先数这些'
-                                  : 'Older stock (by value) · 其余库存（按价值排序）'}
+                            <tr className="bg-vault-surface/80 border-t border-vault-gold/30">
+                              <td colSpan={4} className="py-2 text-sm font-bold tracking-wide text-vault-gold">
+                                {categoryLabel(inv._cat)}
+                                <span className="ml-2 text-xs font-normal text-gray-400">{catCounts[inv._cat]} products — finish this family, then the next</span>
                               </td>
                             </tr>
                           )}
                           <tr>
                             {/* Display-only thumbnail so counters can identify the
                                 box by sight. Does NOT touch the blind-count logic. */}
-                            <td className="w-12"><ProductThumb productId={inv.product_id} /></td>
+                            <td className="hidden sm:table-cell w-12"><ProductThumb productId={inv.product_id} /></td>
                             <td className="font-medium text-white">
                               <span className="inline-flex items-center gap-2">
-                                <BrandChip brand={inv.product?.brand} />
+                                {/* On phones the family header row already names the
+                                    brand — the per-row chip was ~120px of duplication
+                                    that kept the sheet from fitting the screen. */}
+                                <span className="hidden sm:inline-flex"><BrandChip brand={inv.product?.brand} /></span>
                                 <span>{launchName}<LangChip lang={inv.product?.language} /></span>
+                                {inv._fresh && (
+                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-400" title="Recently restocked / sold">🆕</span>
+                                )}
                               </span>
+                              {/* phone layout: type rides under the name */}
+                              <span className="block text-xs text-gray-500 sm:hidden">{inv.product?.category}</span>
                             </td>
-                            <td className="text-gray-400">{inv.product?.category}</td>
+                            <td className="hidden sm:table-cell text-gray-400">{inv.product?.category}</td>
                             <td className="text-right">
                               <input
                                 type="number"
                                 min="0"
+                                inputMode="numeric"
+                                enterKeyHint="next"
+                                data-count-idx={idx}
                                 value={counts[inv.product_id] ?? ''}
                                 onChange={(e) => handleCountChange(inv.product_id, e.target.value)}
-                                placeholder="0"
-                                className="w-24 text-right"
+                                // Enter walks to the next row so a counter can
+                                // type-next-type-next down a shelf without
+                                // re-aiming their thumb after every product.
+                                onKeyDown={(e) => {
+                                  if (e.key !== 'Enter') return
+                                  e.preventDefault()
+                                  const next = document.querySelector(`input[data-count-idx="${idx + 1}"]`)
+                                  if (next) {
+                                    next.focus()
+                                    next.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                                  } else {
+                                    e.target.blur()
+                                  }
+                                }}
+                                // A mouse wheel over a focused number input
+                                // increments it — scrolling the page could
+                                // silently corrupt a typed count.
+                                onWheel={(e) => e.target.blur()}
+                                // Deliberately NO "0" placeholder: a grey 0 in
+                                // an untouched box reads like a typed 0, and
+                                // blank-vs-zero is exactly the distinction the
+                                // submit confirm needs the counter to make.
+                                className="w-16 sm:w-24 text-right"
                               />
                             </td>
                           </tr>
                         </React.Fragment>
                       )
-                    })}
+                    }) })()}
                   </tbody>
                 </table>
               </div>
@@ -1197,7 +1243,7 @@ export default function StreamCounts() {
                   maxLength={1000}
                   value={countNotes}
                   onChange={(e) => setCountNotes(e.target.value)}
-                  placeholder={"XXX product in the room but NOT on this list / XXX产品在房间里 但不在这个清单上\nOne item per line · 一行写一条\ne.g. 1 box Gem Vol.5 not on list / 有一箱Gem Vol.5不在清单上 · damaged box 外盒破损"}
+                  placeholder={"XXX product in the room but NOT on this list\nOne item per line\ne.g. 1 box Gem Vol.5 not on list · damaged box"}
                 />
               </div>
 
@@ -1213,7 +1259,7 @@ export default function StreamCounts() {
                     </p>
                     {countedProducts < totalProducts && (
                       <p className="text-xs text-amber-400 mt-1">
-                        空格提交时按 0（卖完）记 · blank boxes will be recorded as 0 (sold out)
+                        blank boxes will be recorded as 0 (sold out)
                       </p>
                     )}
                   </div>
