@@ -1,5 +1,12 @@
 # LV Inventory — 作业手册 brief (2026-08-21)
 
+## 🔴 8/21「JV count has problem one more time」——查完:JV 没错,错在一笔纸面转库和一行抄出来的 0 差(Gary:「我们俩看看是系统错误还是什么错误」)
+- **JV 8/21 04:42 PT 的 Packheads 盘点被收银机逐行验证是准的**:Lorcana `38−卖13=25=实点25` · Freedom Ascension `44−17=27=27` · OP-13 blister `25−11=14=14` —— **三条链分毫不差**。OP-16 `240−卖25≈215 vs 实点205`,差 10 在直播拆包误差内。**报警是铁律2 的已知盲区**(sold 124 里含整盒,盒被拆播永远没有订单行)。
+- **🔴 真正的问题①:Aldo 8/20 16:44 PT 记的转库(Master→PK:OP-16 ×212 + Kami ×98)只动了账,实物没到货架。** 证据链:Polar 14:50 实点 286 → 窗口内收银机只卖 44 → Trey 20:02 实点 **240 ≈ 286−44**(Trey 这行数得很准);Kami 窗口 0 销售、Trey 实点 0。Trey 的表是新快照(exp 502/98),于是 **−262/−98 当场写库把纸面包抹掉**;Master 那头也已扣(OP-16 只剩 15、Kami 0)。**如果那 310 包实物还躺在 Master,它们现在两头都不在账上(≈$2,945),下次 Master 盘点报 +310 又会被正差规则丢弃 —— 单向棘轮的又一次咬合。要问 Aldo 实物搬没搬、搬到了哪,再复点 Master 的 OP-16 和 Kami。**
+- **🔴 真正的问题②:四行整盒一夜消失、收银机零销售**(Trey 20:02 → JV 04:42):`FB10 散包 17→0` · `[JP] OP-13 盒 13→0` · `Uma Musume 盒 43→33` · `Ayakashi 盒 60→54`。**昨晚恰好没有 TT 转录**(TikTok 转录停在 8/19 s10,8/20 起没投)——查不了直播,只能问 JV 当晚拆了什么/搬了什么。⚠️ 其中 Trey 对这四行报的全是 exp=act 的完美 0 差,下一条说明为什么可疑。
+- **🔴 Marvel Allegiance 定案:货架 ~24-25 件,账上 3 件,而「3」全部来自 Trey。** 读数序列 27(Yaz)/3(Trey)/26(JV)/3/3/3(Trey)/24(Polar)/**25(JV 8/21)** —— **只有 Trey 永远读出和账面完全一致的 3**。收银机显示昨晚又卖了 2 件(从账上只有 3 件的货架上)。**Trey 的 0 差行不能全信是数过的** —— 但也不能一杆子打死:他的 Lorcana 38/38 被后续链条证明是真的准。至少 Marvel 这行是抄的 expected,违反盲盘。
+- **处置(待 Gary 定,均未动库)**:① 问 Aldo 那 212+98 实物在哪 ② 问 JV 昨晚四行整盒的去向 ③ 复点 Master OP-16/Kami + PK 的 Marvel Allegiance ④ Marvel 账 3→实数要走过审调整,顺带把 8/20 那个「没有散包 SKU」的坑一起处理。
+
 ## ✅ 8/21 转录库 v2 落地 + vahe 把 e1 的卖法改对了 + 首个「账 vs 转录消耗」对照(Gary:「本地我们更新了转录的库…可以查到每个 lot 卖多少 以及消耗情况对比」)
 - **转录库目录 v2(8/21)**:Drive `live_transcripts/` 的转录文件挪进 `ebay/`、`tiktok/` 子目录,`MANIFEST.csv` 的 filename 列=相对路径;根级四件(MANIFEST / README_handshake / products_catalog / _auction_log)不动。**消费侧铁律:路径以 manifest 为准或递归扫,绝不根目录 glob `*.jsonl`(v2 下静默拿到 0 个转录不报错)。** 现 **41 场(eBay 31 + TikTok PK 10)**,覆盖到 8/21 凌晨;转录机每 30 分钟自动推。**TikTok Packheads 转录是全新的一条线**(s1–s10,8/16–8/19,含 `_meta` 头带 clock_offset)。
 - **✅ 新 `lv-finance/pull_transcripts.py`**:SA(`slab-inventory/data/sheets_sa.json`)走 Drive API 的无头拉取器 —— 这正是 finance 侧 handshake 文档里欠的那个「常驻拉取器」(MCP 是交互会话,cron 里没有)。按 MANIFEST 驱动、尺寸比对增量、manifest 行缺文件时报错退出(投递缺口≠没数据)。本机镜像已重构成 v2 并补齐 14 场。
