@@ -3,11 +3,23 @@
 ## 🔴 8/20 「Journey 在 eBay 均价多少」——答案是查不出,而查不出的原因就是 daily 结算该补的那条腿(Gary:「只能看 transcript 去看 ebay 这就是我们 daily 结算要带的 看 ebay 的数字准不准和 tiktok 一样 然后看消耗以及销售」)
 - **钱有、货名没有。** eBay 发货 CSV 每一笔都有实际净额(item sales / 各项费 / 实收),但 **32,646 条 eBay 订单标题里「Journey」出现 0 次** —— 70% 的订单标题是场次名(`#156 - EBAY LIVE AUCTION- 8/9 W/CARLOS`),**`#N` 是坑位号**。Journey 853 包全走 `$1 START PACK RIPS` 混场,**从来没有过自己的具名 listing**。
 - **对照:有具名 listing 的套一查就有** —— Abyss Eye 14 个标题 / 1,445 单 / 均 $64.93 · Mega 8/491/$133.63 · Storm Emeralda 7/427/$74.34。
-- **连接线早就设计好了,从没接上**:`lv-finance/LIVE_TRANSCRIPT_CONTRACT.md`(8/16)写明 transcript 的 `lot 45` ↔ 订单标题 `#45 -`。**Producer 是 Gary 的监控机,`live_transcripts/` 目录至今不存在 —— 一个文件都没投过。** 消费侧(daily_close)和数据侧(订单/CSV)都在,缺的只有投递。
+- ~~**Producer 是 Gary 的监控机,`live_transcripts/` 目录至今不存在 —— 一个文件都没投过**~~ **← 这句是错的,Gary 当场纠正(「这个应该有啊 你看 shared drive」)。投递一直在,投在 Google Drive**(`live_transcripts` 文件夹,help@luckyvault.us,8/17 建):**24 场 eBay(8/11 起)+ 10 场 TikTok(8/16 起)+ `_auction_log.jsonl`(逐 lot 拍锤:坑位号+买家+价格+时间戳,8/16 起 1,247 锤)+ MANIFEST.csv**。**我只查了本机目录就断言「没投递」—— 投递点和契约文件写的不一样,但东西在。查「有没有」要查到所有已知的存放处。** 已镜像到本机 `lv-finance/data/live_transcripts/`。
 - **Gary 定的 daily 结算逻辑(8/20)**:① transcript ↔ eBay 订单按 lot 号 join ② **先验 eBay 的数字准不准,和 TikTok 那套一样**(盘点写掉 vs 订单,**只在干净窗口断言**)③ 再看消耗 vs 销售。**eBay 侧今天没有任何一个窗口是干净的**(每一单都是坑位),所以这条检查在 transcript 落地之前会永远报「比不了」—— 不提前建一个只会喊比不了的检查器,transcript 一落地就接。
 - **🔴 两个「自洽但不能用」的巧合,写下来防止以后有人拿去当均价**:8/15 写掉 81 包、e2 恰好 81 单均 $101.84(**那场是 MYSTERY SLABS,一包 Journey 不可能 $102**);8/16 写掉 215 包、唯一拆包场 141 单均 $34.33。**和 8/19 那个 2.3 倍同一形状。**
 - **✅ 顺带修了 Journey 的成本(Gary:「成本你看 weighted average」)**:两行进货是 **FB03 同款「单价打进总价栏」**——`2faff15a` 400 包记 $5.50、`d34d7775` 150 包记 $5.75(= $0.01/包;而 $5.50/$5.75 作为单价是钉价市价 $6.56 的 84–88%,**签名完全吻合**,且两行都在 6/24 开关上线前)。已改 $2,200.00 / $862.50,notes 打 `FIXED_UNIT_AS_TOTAL`。**加权平均 $3,085.50 ÷ 555 = $5.56/包**,四个在库房的 basis 5.00→5.56(备份 `data/journey_cost_backup.json`,乐观锁 + 回读;**一行 qty=0 basis=4.66 的被锁正确拦下没动**)。COGS 少记的 ~$3,051 已回到进货账上。
-- **⏳ 等监控机开始投 transcript**(契约在,格式在,落文件即接)。**Frank 那条均价消息没发** —— 按 Gary 的逻辑,数字要从 transcript join 里出,现在发就只能发一个「查不出」。
+- **✅ transcript ↔ 拍锤 join 首次跑通,Journey 的真实均价出来了,已发 Frank**:
+  ```
+  60 包核实(8/16–8/19,20 锤,每锤带主播原话):
+    08-16  2-3包一组定价起拍        18 包   $6.49/包
+    08-17  Brandon 10包一组          10 包   $7.60/包
+    08-18  Vahe $1 起拍小包组        12 包   $2.92/包
+    08-19  Vahe $1 起拍小包组        20 包   $4.65/包
+    合计                             60 包   锤价 $5.35/包 · 扣费(6.7% CSV 实测)≈ $4.99/包
+  ```
+  - **🔴 结论:Journey 在 eBay 平均卖在成本($5.56)之下,锤价 = TCG 市价($6.56)的 82%。** 但均值掩盖了真信号:**结构化的 lot(10 连包 / 定价起拍)卖到市价,$1 起拍的两连包卖到市价一半** —— 同一批包、同一周,差 2.6 倍。**这不是谁卖得差,是 lot 结构决定价格。** 另有 penny drop($0.06/2包)和白送的 free pack 在 transcript 里都有据可查 —— **零收入消耗真实存在,正是盘点缺口对不上销售的一部分。**
+  - **方法(照 TikTok 那套的纪律)**:语音里的**开拍宣告句**(「N packs of journey going live / dollar start」)→ 同场 `_auction_log` 的下一锤 → 锤价 ÷ 包数;**菜单式吆喝、拆包吐槽、宣告的是别的套的一律剔除**(剔了 9 个:白火 / Storm / 151 串场)。29 个强信号 → 人工逐个核 → 留 20。6 个 lot 在发货 CSV 里对到**实际净额**,量出费率 6.66%。存底 `lv-finance/data/journey_ebay_lots.json`。
+  - **⚠️ 覆盖有洞,别当全量销量用**:8/15 一场都没录(MANIFEST 里 8/14 直接跳 8/16),拍锤日志 8/16 才开始;所以 8/16 写掉的 215 包对不满是**覆盖问题**,不能反推「只卖了 60 包」。
+  - **⏳ 下一步**:把这条 join 做成 daily_close 的常规腿(按 Gary 8/20 定的三步:join → 先验 eBay 数字准不准(干净窗口)→ 消耗 vs 销售)。lot 号 ↔ 发货 CSV `#N -` 的净额线已验通。
 
 ## 🔴 8/20 Frank 的 Telegram 转库:权限是给了的,卡在四层,第一层是一个词(Gary:「是没给他权限吗 卡在哪里」)
 - **是 Frank,而且时间对得分毫不差。** `member_inbox.jsonl` 里他的原话:
