@@ -1107,19 +1107,16 @@ export default function StreamCounts() {
           
           {/* Count-process note pinned above the sheet (Gary 2026-07-05: streamers panic when
               they see 0s / items they don't have — say loudly that blank/0 is normal). */}
+          {/* Two short rules, not three paragraphs: on a phone the old banner
+              filled a whole screen before the first product row. */}
           <div className="mb-4 p-3 rounded border border-amber-500/40 bg-amber-500/10 text-sm text-amber-200">
-            <p className="font-semibold text-amber-300 mb-1">
-              Seeing items you don't have? That's normal — don't panic. / 单子上有、房间里没有？正常现象，不用慌。
-            </p>
             <p>
-              Count what you physically see. If a listed item is <span className="font-semibold">not in your room</span> (sold
-              out / moved), just <span className="font-semibold">leave it blank or type 0</span> — the system expects that.
-              / 数到多少填多少；房间里没有的产品<span className="font-semibold">留空或填 0</span> 即可（卖完或移走了），系统就是这么设计的。
+              <span className="font-semibold text-amber-300">Not in your room? Leave it blank or type 0 — that's normal.</span>
+              {' '}/ 房间里没有的<span className="font-semibold">留空或填 0</span>，正常现象不用慌；数到多少填多少。
             </p>
             <p className="mt-1 text-amber-200/80">
-              The list is grouped by product family (One Piece / Pokemon / Weiss…) — finish one
-              family before moving to the next. 🆕 marks recently restocked or recently sold items.
-              / 清单按大品类分组，数完一类再数下一类；🆕 = 最近补货或有动销。
+              Grouped by family — finish one, then the next. 🆕 = recently restocked/sold.
+              / 按品类数完一类再数下一类；🆕 = 最近补货或有动销。
             </p>
           </div>
 
@@ -1137,10 +1134,15 @@ export default function StreamCounts() {
                 <table>
                   <thead>
                     <tr>
-                      <th className="w-12 text-center" aria-label="Image">📷</th>
+                      <th className="hidden sm:table-cell w-12 text-center" aria-label="Image">📷</th>
                       <th>Product</th>
-                      <th>Product Type</th>
-                      <th className="text-right w-32">Actual Count</th>
+                      {/* On phones the type moves under the product name so the
+                          table fits 390px with NO horizontal scroll. With a 4th
+                          column the sheet was wider than the screen; tapping an
+                          input auto-scrolled the container right and the counter
+                          typed numbers with the product names OFF-SCREEN. */}
+                      <th className="hidden sm:table-cell">Product Type</th>
+                      <th className="text-right w-24 sm:w-32">Count</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1171,25 +1173,54 @@ export default function StreamCounts() {
                           <tr>
                             {/* Display-only thumbnail so counters can identify the
                                 box by sight. Does NOT touch the blind-count logic. */}
-                            <td className="w-12"><ProductThumb productId={inv.product_id} /></td>
+                            <td className="hidden sm:table-cell w-12"><ProductThumb productId={inv.product_id} /></td>
                             <td className="font-medium text-white">
                               <span className="inline-flex items-center gap-2">
-                                <BrandChip brand={inv.product?.brand} />
+                                {/* On phones the family header row already names the
+                                    brand — the per-row chip was ~120px of duplication
+                                    that kept the sheet from fitting the screen. */}
+                                <span className="hidden sm:inline-flex"><BrandChip brand={inv.product?.brand} /></span>
                                 <span>{launchName}<LangChip lang={inv.product?.language} /></span>
                                 {inv._fresh && (
                                   <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-400" title="Recently restocked / sold · 最近补货或有动销">🆕</span>
                                 )}
                               </span>
+                              {/* phone layout: type rides under the name */}
+                              <span className="block text-xs text-gray-500 sm:hidden">{inv.product?.category}</span>
                             </td>
-                            <td className="text-gray-400">{inv.product?.category}</td>
+                            <td className="hidden sm:table-cell text-gray-400">{inv.product?.category}</td>
                             <td className="text-right">
                               <input
                                 type="number"
                                 min="0"
+                                inputMode="numeric"
+                                enterKeyHint="next"
+                                data-count-idx={idx}
                                 value={counts[inv.product_id] ?? ''}
                                 onChange={(e) => handleCountChange(inv.product_id, e.target.value)}
-                                placeholder="0"
-                                className="w-24 text-right"
+                                // Enter walks to the next row so a counter can
+                                // type-next-type-next down a shelf without
+                                // re-aiming their thumb after every product.
+                                onKeyDown={(e) => {
+                                  if (e.key !== 'Enter') return
+                                  e.preventDefault()
+                                  const next = document.querySelector(`input[data-count-idx="${idx + 1}"]`)
+                                  if (next) {
+                                    next.focus()
+                                    next.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                                  } else {
+                                    e.target.blur()
+                                  }
+                                }}
+                                // A mouse wheel over a focused number input
+                                // increments it — scrolling the page could
+                                // silently corrupt a typed count.
+                                onWheel={(e) => e.target.blur()}
+                                // Deliberately NO "0" placeholder: a grey 0 in
+                                // an untouched box reads like a typed 0, and
+                                // blank-vs-zero is exactly the distinction the
+                                // submit confirm needs the counter to make.
+                                className="w-16 sm:w-24 text-right"
                               />
                             </td>
                           </tr>
