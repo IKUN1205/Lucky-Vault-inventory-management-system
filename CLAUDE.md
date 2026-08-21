@@ -817,6 +817,7 @@
 - PostgREST 坑:1000 行必分页;空格用 `quote(p, safe="?&=.,*()-")` 勿双重编码;uuid 列无 like;products 列叫 `type`;**写完必 readback,批量写前备份 JSON**。`tps.sq`(tiktok_push_stock)自带完整分页**勿再套 offset 循环**、且不编码要先 quote。
 - 表:`products` · `inventory`(数量原地覆盖**无变更 log** — audit-log SQL 待 William)· `locations` · `movements`(Transfer/Intake)· `box_breaks`(拆盒:sealed−N / pack+3N 全在 Master,pack 成本=盒成本÷packs_per_box,照 BreakBox.jsx 语义)· `stream_counts`+items · `acquisitions` · `slabs`(软删字段全:deleted/at/reason)。
 - 房间:Master `1f68249f` · PH=Packheads `c995d0a6` · RocketsHQ `eeff0769` · LVUS `12293f16` · SlabbiePatty `04b32948` · **PokeCasino(原Whatnot,channel/sale_channel 存库值仍 'Whatnot'/'whatnot')**`ac9c06c4` · PokeAuctionHouse `1028e0f9` · Front Store `c4cf3dab`;共 23 locations(Sold 虚拟房有遗留怪名,勿用)。
+- **🔴 分工:eBay 两个直播房(e1/e2)的运营/盘点安排找 Mario,不找 Frank**(Gary 8/21:「不该给frank提醒 ebay给mario」—— 我把 e1 没点货的提醒发给了 Frank,已补作废并转发 Mario)。
 - **团队口头叫法 ≠ 房间名,推不出来只能问**(Gary 8/17 定):**`ebay1` = `Stream Room - eBay LuckyVaultUS` `12293f16`** · **`ebay2` = `Stream Room - eBay SlabbiePatty` `04b32948`**(Gary 8/18 确认)。库里没有任何房间叫 "ebay1"/"ebay2",而带 ebay 的有四个(两个直播房 + 两个 Sold 虚拟房)—— **猜错就是把货记进另一个直播间**。Gary 8/17:"你下次可以提问他" = 叫法对不上时直接问下单的人,别挑一个。**8/18 我按排除法推出 ebay2=SlabbiePatty 是对的,但仍然先摊开假设让 Gary 确认才写 —— 推得对不等于可以自己定。** 两个号已钉进 `lv-finance/tg_move.py` 的 `ALIAS`(`ebay2` 不钉的话直接解析不到,裸 `ebay` 则命中 4 个房)。
 
 ## 盘点与审计制度(Gary 7/22 定版)
