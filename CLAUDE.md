@@ -1,4 +1,147 @@
-# LV Inventory — 作业手册 brief (2026-08-20)
+# LV Inventory — 作业手册 brief (2026-08-21)
+
+## ✅ 8/21 点货页按大品类分组 —— **已发版**(`80cfe93` 推 main,Vercel 自动部署;Codex 两轮:一轮 2 P1 全修,二轮 SHIP;Gary:「只需要英文就行 可以发」)
+- **发版内容五合一**:大品类分组 · 手机零横滑(名字滑出屏幕那个雷)· 回车跳下一行 + 滚轮防误改 + 去灰色 0 占位 · **整页纯英文**(横幅/品类条/空行确认/说明书/placeholder 全去中文;日本团队导航区中文不动,受众不同)· Codex 两条 P1 修复。
+- **Codex 一轮抓的两条 P1(都核实为真)**:① 组内按「数量×价格」排序会让人从顺序反推相对库存,削弱盲盘 → 改成 品类→最近动销→名字(顺带得到会话间稳定的顺序,点货员每晚看到同一张表);② `Limit Over Collection ×2 / Ghost from the Past` 是游戏王(Yugipedia 查证)但 brand=Other,落进 Other 桶 → 补进名字规则,Other 37→34。**Codex 顺带点名两条既有 P1(未修,另立项)**:库存加载失败被吞掉仍进第二步(可能把上一房的表写进新房)· 提交写库中途失败不回滚(重试会重复扣)。
+- 新 `src/lib/countCategories.js`:品类从**名字**判,不从 brand 判(brand 有已知错标;One Piece 规则排最前,正好救回 Kami 那个错标行)。规则拿全部 786 个活跃产品校准过:Other 桶只剩 37 个、全是真杂项;当场修了两个错(`Rarity Collection Quarter` 是游戏王不是宝可梦;`m4（fire）` 系列是宝可梦 M 系列)。
+- 点货表排序变为 **品类 → 最近动销 → 价值**,每个品类一条金色横条(`One Piece · 5 products · 数完这一类再数下一类`);原「新到/旧货」两段式降级为行内 🆕 角标,**只保留一层分组**。盲盘规则一字未动。
+- 44 项测试跑真函数 + 变异测试(关掉 One Piece 规则 → 7 条红);`npx vite build` 通过;**桌面+手机截图逐个看过**(无横向溢出;控制台仅剩既有的 CORS/400 两个老错)——截图当场抓到说明横幅还写着旧排序规则,已改。
+- **🔴 8/21 以点货员身份手机实走一遍(Gary:「你自己打开页面看看 以团队的角度」),抓到一个真会让人数错行的缺陷并修掉(`7b4b145`)**:390px 手机上表格比屏幕宽,**点进输入框的瞬间容器自动右滑、产品名整个滑出屏幕**——数的人只看得见「Booster Box / 205」,不知道在给哪行填数。**这可能就是历史上部分「数字填错行」的来源。** 修法:手机上 type 挪到名字下方一行、BrandChip 隐藏(品类横条已经写着 One Piece,行内 chip 是 120px 的纯重复)、空缩略图列隐藏、输入框收窄 → **390px 零横滑实测(360px 仅剩 1px 取整)**。同批:**回车跳下一行**(type-enter-type-enter 顺着货架数)· **滚轮不再能悄悄改动焦点里的数字**(桌面数据完整性)· **去掉灰色 placeholder「0」**(空白必须看起来是空白,空/0 之分正是提交确认要人做的判断)· 三段话横幅压成两行(原来手机上第一行产品前要滚一整屏)。
+- **✅ 网页版也全尺寸实走过(Gary:「可以试试网页版」)**:1380 桌面 / 1024 笔记本 / **720 半屏窗口(直播间电脑常态)** / 390 手机全部零横滑(360 小安卓仅 1px 取整)。走到了提交那步:**空行确认弹窗双语、逐个点名没填的产品、Cancel=中止**(用对话框拦截实测,零写入);底部有 `Counted: 0/20` 进度 + 「空格按 0 记」提示。**遗留小项(没做)**:进度只在页底,数到中段看不见——可考虑吸底;品类横条上加「已填 n/m」小计。
+- ⏳ Gary 提的第二步「按数量/货况给 streamer 出精简点货名单」没做——那是另一个功能,等分品类先落地。
+- 🔴 JV「SKU 搞错」假设已排除:记串的话总量守恒,该有别的行 +17/+13/+10,实际全表正差只有 +22(Marvel 已破案)+6+1,五个龙珠兄弟行原封不动。FB10/JP OP-13/Storm 三行是干净的 0,更像「货不在视线里被空行=0」或真消耗(待问 JV)。
+
+## ✅ 8/21 日本 tracking 已挂进 05:40 日巡(Gary:「日本的tracking 你更新在alert里面」)
+- **`jp_shipment_watch.py` 从 8/12 写好起 `--telegram` 就从来没发出去过**:`from notify_telegram import send` —— 模块在 lv-finance,日巡脚本加了那个 path 而它没加,ModuleNotFoundError 被 except 吞成一行 stderr。**又一个「装好了但从来没响过」**。已修(补 sys.path),实测 `已发 Telegram`。
+- **在途也进消息**(原来只发「送达没人收」):箱子在路上就 1-2 天,日巡里的在途是信号不是墙纸;`IN_TRANSIT` 不计入 urgent,发送闸门单独判。已写进 `run_inventory_watch.cmd`(排日巡之后,失败不影响日巡)。
+- **🔴 8/21 追更(Gary:「876032526966 its out for delivery 其实应该用fedex直接查?」→ 对,两点都对)**:那票 **17track(钉了 FedEx)完全查不到,而 fedex.com 直连看得一清二楚** —— 配達中、今日 ~10:30 前送达、已在洛杉矶、**3 个包裹之一**。**8/4「fedex.com 已废」的结论过时了**:现在能用,只是藏在 OneTrust cookie 墙后面(点掉横幅再等 ~11 秒才渲染;页面按发件地区出日文)。已升级 `web_track.py`:fedex 路径自动点 cookie 横幅 + `_classify` 认日文状态词(配達中→OutForDelivery,配達済み→Delivered,輸送中→InTransit),两票实测读对。**口径:FedEx 号直连优先,17track 钉承运商做备胎 —— 两个源各有瞎区,谁都不能独任。** ⚠️ 又踩一次 heredoc 退格符坑(`` 进 Python 变 U+0008,replace 静默不匹配),这次用逐行定位 + chr(92) 绕开 —— 手册那条「这条管道里的反斜杠一律用 chr(92) 构造」是铁的。
+- 当日实况(Gary:「日本应该有两个快递 一个今天到」→ 17track 钉 FedEx 逐票实查后**他说得对**):**真在途 = 2 票,正是两箱 `THE WORLD'S STRONGEST WARRIORS (Case)`** —— `876087907291`(12 件 $26,612,8/21 晚离成田,**今天到的就是它**)+ `876032526966`(7 件 $17,072,8/19 发出,**17track 重试后仍查无数据 —— 要么还没进系统要么号录错,要让 Hwa 核号**)。「在途 4 票」里另两票其实**早已送达且基本收完**(`875850110456` 8/18 到、38/39;`875974095783` 8/20 到、18/19,各差 1 件)——账上 `tracking_delivered_at` 没人写才被分错桶,已用**承运商扫描日期**补上 9 行(备份 `jp_delivered_backup_0821.json`,回读通过),alert 已按修正分桶重发。**教训重申:watch 读的是 DB 字段,而没人写送达日期,分桶就永远停在「在途」—— 送达日期以后由谁写要定**(inbound_notify 只更新自己的 state 文件,不写 acquisitions)。
+
+## 🔴 8/21 Vercel 转户核查:部署管道健康,但公网上还挂着一个 7 月老版本的化石项目
+- **新管道健康**:GitHub deployments API(匿名可查)显示最近每笔 push 都触发 Production 部署且 `success`;部署专属 URL 带 Vercel SSO 保护。**生产自定义域名仍不知道**——`.vercel.app` 项目名域名 404,常见子域名 DNS 全无 Vercel CNAME;k1bkorhr 浏览器 Vercel/GitHub 都没登录,进不了后台。
+- **🔴 化石:`luckyvault-inventory.vercel.app` 还在公网服务一个 7 月下旬之前的老 build**(585KB bundle 实测:房间名还是 `Stream Room - TikTok Whatnot`、无 PokeCasino 改名、无 stock_adjust/盲盘修复/preflight/查重守卫,连 7/29 的 shows 渠道都没有)。**它连的是同一个生产 Supabase(anon key 打包在内),登录也走同一张 users 表** —— 谁书签了这个网址,就在用几个月前的逻辑直写生产数据。近期盘点/销售数据形态都是新版行为,**暂无证据有人在用**,但这是把上了膛的枪。多半是 William 时代的原项目(账号断开后冻结),这次转户转的可能就是它。
+- **待 Gary 在后台做(30 秒)**:① 看 dashboard 里是一个项目还是两个;② 化石项目要么重新连回 GitHub repo(它会重新部署最新 main,`luckyvault-inventory.vercel.app` 这个好记的域名就变成新版),要么删掉/暂停;③ 顺手建一个 Access Token(Settings→Tokens)存进 `inventory-sync/data/`,以后每次发版我能直接 API 验证生产、读部署日志、查真域名。
+
+——查完:JV 没错,错在一笔纸面转库和一行抄出来的 0 差(Gary:「我们俩看看是系统错误还是什么错误」)
+- **JV 8/21 04:42 PT 的 Packheads 盘点被收银机逐行验证是准的**:Lorcana `38−卖13=25=实点25` · Freedom Ascension `44−17=27=27` · OP-13 blister `25−11=14=14` —— **三条链分毫不差**。OP-16 `240−卖25≈215 vs 实点205`,差 10 在直播拆包误差内。**报警是铁律2 的已知盲区**(sold 124 里含整盒,盒被拆播永远没有订单行)。
+- **🔴 真正的问题①:Aldo 8/20 16:44 PT 记的转库(Master→PK:OP-16 ×212 + Kami ×98)只动了账,实物没到货架。** 证据链:Polar 14:50 实点 286 → 窗口内收银机只卖 44 → Trey 20:02 实点 **240 ≈ 286−44**(Trey 这行数得很准);Kami 窗口 0 销售、Trey 实点 0。Trey 的表是新快照(exp 502/98),于是 **−262/−98 当场写库把纸面包抹掉**;Master 那头也已扣(OP-16 只剩 15、Kami 0)。**如果那 310 包实物还躺在 Master,它们现在两头都不在账上(≈$2,945),下次 Master 盘点报 +310 又会被正差规则丢弃 —— 单向棘轮的又一次咬合。要问 Aldo 实物搬没搬、搬到了哪,再复点 Master 的 OP-16 和 Kami。**
+- **🔴 真正的问题②定案(Gary 8/21「这些产品是卖了还是没卖」):没卖,七个出口全部为零,$3,124 的货没有任何去向记录。** `FB10 散包 17→0($204)` · `[JP] OP-13 盒 13→0($2,340,大头)` · `Uma 盒 43→33($385)` · `Ayakashi 盒 60→54($195)`。证据:① TT 具名 listing 零订单(四个都有具名 listing,最近一次具名卖出停在 8/18)② 坑位行整夜只有 3 条,装不下 46 件 ③ `platform_sales` 0 ④ 门店 0 ⑤ 在线订单 0 ⑥ `movements` 0(账内没转走)⑦ **s11 转录(01:11–04:29,JV 场后半段)零拆零卖**。剩余可能:实物被无记录搬走(和 OP-13 blister 509 片同形状)或在 20:02–01:11 无转录时段被非卖出消耗;JV 在别的行被收银机逐行验证极准,数错概率低。**Gary 8/21 定:可能是数错,不追问,等下一个主播点(「可能会有点错的情况 等下一个主播点吧」)。** ⚠️ 但要知道等的局限:**FB10 和 JP OP-13 两行已归零,按 `.gt(0)` 规则不在下一张点货表上**——下一个主播看见货也没格子填,只能写进 notes(placeholder 里印着「product in the room but NOT on this list」那句,正是为这个);Uma(33)/Ayakashi(54)还在表上能自证。下一场 PK 盘点落地后做三明治对比,四行货若回来了按 A 类(总数对、房间对)补 Move。
+- **✅ Marvel Allegiance 谜题破了(Gary:「trey应该看不到expected 现在marvel就是一个谜题了」)——两个人都没数错,是一行账管着两种实物。**
+  - **先撤回我自己的指控**:我曾判「Trey 的 3 是抄 expected」。**代码证实盘点页全盲**(`StreamCounts.jsx` 注释明写「绝不预填 inv.quantity」「不渲染 expected」,空行=0 不再回落成 expected)——**看不到的数字抄不了**,那六行 exp=act 是他真数出来的。
+  - **铁证在收银机里:TikTok 那条 listing 叫 `Hobby Boxes & Packs`,本身就是双 SKU** —— `box $206.99` 和 `Pack $12.99` 挂在同一条 listing 下。**8/14 卖的 3 件是 Pack;8/21 03:16 + 03:40 PT(JV 窗口内)卖的 2 件是 box。** 货架上盒和散包并存,而 `products` 只有 Hobby Box 一行(breakable=True · ppb=32 · 无散包 SKU)。
+  - **所以两个稳定读数都是诚实的:Trey 数的是「盒」= 3;Yaz/JV/Polar 数的是「盒+散包」= 24–27。** 链条对得上:Yaz 27 = 3盒+24包 → 8/14 卖 3 包 → Polar 24 = 3盒+21包(分毫不差)→ JV 25(昨晚卖掉的 2 盒还没发货、仍在架上)。**盲盘没被违反,单位铁律又中一枪 —— 这是「一行两个单位」在盘点上的第一个实锤病例。**
+  - **⚠️ 昨晚那 2 盒 = $413.98 已卖出**,账上仍写 3、TikTok 销售不扣库存;发货后货架变 1 盒 + ~22 包,下一场盘点又会出一个「谁也解释不了」的差。
+- **处置(待 Gary 定,均未动库)**:① 问 Aldo 那 212+98 实物在哪 → 复点 Master OP-16/Kami ② 问 JV 昨晚 FB10 17 包 / [JP] OP-13 13 盒 / Uma 10 盒 / Ayakashi 6 盒的去向(**夜间三场 eBay 转录扫过,零拆包记录;JV 自己的 TT 场没有转录 —— TikTok 转录线停在 8/19,要让转录机重启**)③ **给 Allegiance 建散包 SKU + 走一笔 box_breaks**(3−2 已卖 = 1 盒 + 实点散包数),照单位铁律拆两行 ④ TikTok 映射的 key 必须 `(listing, sku_id)` —— 这条 listing 就是 8/19 那个论点的活例子。
+
+## ✅ 8/21 转录库 v2 落地 + vahe 把 e1 的卖法改对了 + 首个「账 vs 转录消耗」对照(Gary:「本地我们更新了转录的库…可以查到每个 lot 卖多少 以及消耗情况对比」)
+- **转录库目录 v2(8/21)**:Drive `live_transcripts/` 的转录文件挪进 `ebay/`、`tiktok/` 子目录,`MANIFEST.csv` 的 filename 列=相对路径;根级四件(MANIFEST / README_handshake / products_catalog / _auction_log)不动。**消费侧铁律:路径以 manifest 为准或递归扫,绝不根目录 glob `*.jsonl`(v2 下静默拿到 0 个转录不报错)。** 现 **41 场(eBay 31 + TikTok PK 10)**,覆盖到 8/21 凌晨;转录机每 30 分钟自动推。**TikTok Packheads 转录是全新的一条线**(s1–s10,8/16–8/19,含 `_meta` 头带 clock_offset)。
+- **✅ 新 `lv-finance/pull_transcripts.py`**:SA(`slab-inventory/data/sheets_sa.json`)走 Drive API 的无头拉取器 —— 这正是 finance 侧 handshake 文档里欠的那个「常驻拉取器」(MCP 是交互会话,cron 里没有)。按 MANIFEST 驱动、尺寸比对增量、manifest 行缺文件时报错退出(投递缺口≠没数据)。本机镜像已重构成 v2 并补齐 14 场。
+- **🔴 vahe 8/20(e1)当场把卖法改对了,钉死 8 个 lot / 34 包 / $223 = $6.56/包 = 市价的 100%**(8/18–19 他还是 $4.00 = 61%)。变化不是 2 连包卖好了(2 连包仍 $3–8/包,均 $5.33),是 **lot 结构变了**:上了 5 连包($37×2)、10 连包($76)、并反复用「packs are seven each」锚价 + 口头直卖(点着数出 10 包 = $70)。
+  - **三个 lot 的赢家名和主播喊的人逐个对上**(sportsguyty4145 / beda_35826「BEDA」/ jrboy808「JR boy」),外加一笔主播自己报数(「went for six bucks for two packs」= lot070)。
+  - **10 连包没人要 → 拆成两个 5 连包各 $37 当场卖掉** —— lot 结构决定价格的又一实证。
+  - **按 lot 大小切全部 129 包:10 连包永远 $7.50/包 = 114% 市价(MA 8/13 $73 · Brandon 8/17 $76 · vahe 8/20 $76,三个主播两个房完全一致);2-3 连包 84%、5 连包 85%。** 存底 `journey_ebay_lots.json` 已更新(34 lots,备份 `.bak_0821`)。
+- **🔴 拍锤日志的 ts 滞后真实落锤最多 ~3 分钟**(lot039:主播讨论 $4 结果比日志 ts 早 3 分钟)。宣告句→下一锤的 join 不受影响(滞后单向),但**不许拿日志 ts 当精确落锤时刻做窄窗口**。
+- **🔴 口头直卖不进拍锤日志**:8/20 那笔 10 包 $70 是主播点着数出来的,没有锤。只有订单能证——而 `ebay_buyer_orders.jsonl` 停在 8/20 10:59 UTC,**vahe 晚场订单还没进来,先记 observed_not_pinned**。白送又 3 包(18:09/19:08/21:38)。
+- **✅ 首个「账 vs 转录消耗」对照(Gary 要的那条,8/21 追问「vahe 今天晚上没点库存对吗」后修正基线)**:
+  - **对,没点**:e1 最后一次盘点是 **8/18 22:31 PT(Brandon,counted_by=streamer 自售自数)**,vahe 8/19、8/20 连播两场都没有下播盘点;e2 也停在 8/17 15:53 PT。
+  - **那次盘点把 Journey 数到 159(账 130,+29 正差按铁律丢弃)** —— 比「130 − 当日已消耗 12」的应有值还高 41。三种可能(转库少记 / e1 六七月 475 包时代的无账存货 / 数错),数据分不出。**基线以实数 159 为准,不以账 130 为准**(盘点是观测,账在 TikTok/eBay 销售上是瞎的)。
+  - 159 之后转录看到 **20(8/19)+ 34(8/20)钉死 + ~15 没钉死 ≈ 69–75 包消耗 → 真实在架 ≈ 84–90**。账上 expected 仍是 130,**下次 e1 盘点预计报 −40 到 −46 的负差 —— 不是丢货,每一包都能逐 lot 说清**(daily_close 公式:盘点净差 = 补货 − 场耗)。**如果实点落在 85 上下,盘点→转录这条链第一次闭环。**
+  - 对照组:**8/18 之后所有 e2 场次 0 次 Journey 开拍 → e2 的 190 应该还是准的**(但 e2 同样四天没点)。
+- **finance 侧已建好的(别重复造)**:拍锤×订单 join(Brandon 52/52=100%、锤→订单中位 +0.6min)· TT 双口径($1 池逐单 88%,置顶品场级 GMV 97%)· 逐笔毛利 v0(`scratchpad/lt/brandon_pnl.py`)· 口播别名表需求(op eleven→OP-11)· 盘点净差分解公式。三方验证目标:transcript ↔ orders ↔ stream_counts 三源互证。
+
+## 🔴 8/20 「Journey 在 eBay 均价多少」——答案是查不出,而查不出的原因就是 daily 结算该补的那条腿(Gary:「只能看 transcript 去看 ebay 这就是我们 daily 结算要带的 看 ebay 的数字准不准和 tiktok 一样 然后看消耗以及销售」)
+- **钱有、货名没有。** eBay 发货 CSV 每一笔都有实际净额(item sales / 各项费 / 实收),但 **32,646 条 eBay 订单标题里「Journey」出现 0 次** —— 70% 的订单标题是场次名(`#156 - EBAY LIVE AUCTION- 8/9 W/CARLOS`),**`#N` 是坑位号**。Journey 853 包全走 `$1 START PACK RIPS` 混场,**从来没有过自己的具名 listing**。
+- **对照:有具名 listing 的套一查就有** —— Abyss Eye 14 个标题 / 1,445 单 / 均 $64.93 · Mega 8/491/$133.63 · Storm Emeralda 7/427/$74.34。
+- ~~**Producer 是 Gary 的监控机,`live_transcripts/` 目录至今不存在 —— 一个文件都没投过**~~ **← 这句是错的,Gary 当场纠正(「这个应该有啊 你看 shared drive」)。投递一直在,投在 Google Drive**(`live_transcripts` 文件夹,help@luckyvault.us,8/17 建):**24 场 eBay(8/11 起)+ 10 场 TikTok(8/16 起)+ `_auction_log.jsonl`(逐 lot 拍锤:坑位号+买家+价格+时间戳,8/16 起 1,247 锤)+ MANIFEST.csv**。**我只查了本机目录就断言「没投递」—— 投递点和契约文件写的不一样,但东西在。查「有没有」要查到所有已知的存放处。** 已镜像到本机 `lv-finance/data/live_transcripts/`。
+- **Gary 定的 daily 结算逻辑(8/20)**:① transcript ↔ eBay 订单按 lot 号 join ② **先验 eBay 的数字准不准,和 TikTok 那套一样**(盘点写掉 vs 订单,**只在干净窗口断言**)③ 再看消耗 vs 销售。**eBay 侧今天没有任何一个窗口是干净的**(每一单都是坑位),所以这条检查在 transcript 落地之前会永远报「比不了」—— 不提前建一个只会喊比不了的检查器,transcript 一落地就接。
+- **🔴 两个「自洽但不能用」的巧合,写下来防止以后有人拿去当均价**:8/15 写掉 81 包、e2 恰好 81 单均 $101.84(**那场是 MYSTERY SLABS,一包 Journey 不可能 $102**);8/16 写掉 215 包、唯一拆包场 141 单均 $34.33。**和 8/19 那个 2.3 倍同一形状。**
+- **✅ 顺带修了 Journey 的成本(Gary:「成本你看 weighted average」)**:两行进货是 **FB03 同款「单价打进总价栏」**——`2faff15a` 400 包记 $5.50、`d34d7775` 150 包记 $5.75(= $0.01/包;而 $5.50/$5.75 作为单价是钉价市价 $6.56 的 84–88%,**签名完全吻合**,且两行都在 6/24 开关上线前)。已改 $2,200.00 / $862.50,notes 打 `FIXED_UNIT_AS_TOTAL`。**加权平均 $3,085.50 ÷ 555 = $5.56/包**,四个在库房的 basis 5.00→5.56(备份 `data/journey_cost_backup.json`,乐观锁 + 回读;**一行 qty=0 basis=4.66 的被锁正确拦下没动**)。COGS 少记的 ~$3,051 已回到进货账上。
+- **✅ transcript ↔ 拍锤 join 首次跑通,Journey 的真实均价出来了,已发 Frank**:
+  ```
+  60 包核实(8/16–8/19,20 锤,每锤带主播原话):
+    08-16  2-3包一组定价起拍        18 包   $6.49/包
+    08-17  Brandon 10包一组          10 包   $7.60/包
+    08-18  Vahe $1 起拍小包组        12 包   $2.92/包
+    08-19  Vahe $1 起拍小包组        20 包   $4.65/包
+    合计                             60 包   锤价 $5.35/包 · 扣费(6.7% CSV 实测)≈ $4.99/包
+  ```
+  - **🔴 结论:Journey 在 eBay 平均卖在成本($5.56)之下,锤价 = TCG 市价($6.56)的 82%。** 但均值掩盖了真信号:**结构化的 lot(10 连包 / 定价起拍)卖到市价,$1 起拍的两连包卖到市价一半** —— 同一批包、同一周,差 2.6 倍。**这不是谁卖得差,是 lot 结构决定价格。** 另有 penny drop($0.06/2包)和白送的 free pack 在 transcript 里都有据可查 —— **零收入消耗真实存在,正是盘点缺口对不上销售的一部分。**
+  - **方法(照 TikTok 那套的纪律)**:语音里的**开拍宣告句**(「N packs of journey going live / dollar start」)→ 同场 `_auction_log` 的下一锤 → 锤价 ÷ 包数;**菜单式吆喝、拆包吐槽、宣告的是别的套的一律剔除**(剔了 9 个:白火 / Storm / 151 串场)。29 个强信号 → 人工逐个核 → 留 20。6 个 lot 在发货 CSV 里对到**实际净额**,量出费率 6.66%。存底 `lv-finance/data/journey_ebay_lots.json`。
+  - **✅ 8/20 追问「其他的还有吗 ebay2 的有吗」→ 补齐后 95 包,而且按房一拆答案更利**:
+    ```
+    e2(结构化 lot:5-10 连包 / 定价起拍)   63 包  $6.73/包 = 市价的 103%
+    e1($1 起拍 2 连包,Vahe 8/18-19)      32 包  $4.00/包 = 市价的  61%
+    合计                                    95 包  $5.81/包 · 扣费 ≈$5.42 vs 成本 $5.56
+    ```
+    **e2 的卖法在赚钱,e1 现在的卖法在亏钱 —— 而 8/18 刚搬去 e1 的 130 包正用亏钱的卖法在卖。** 已补发 Frank。
+  - **sid → e1/e2 的映射方法(以后 daily_close 直接用)**:拍锤的 `买家名+价格` join `ebay_buyer_orders.jsonl` 的 `u+sub`,12 个场次几乎全票(如 153/153);**订单 `d` 字段是 UTC,和拍锤差中位 −95 秒** —— 所以**没有拍锤日志的场次可以用「宣告句时间 → 窗内唯一订单」补价**,8/13 MA(10 连包 $73)和 8/14 Brandon(五个 5 连包,**主播喊到的买家名和订单买家名逐个对上**:jobar $36 / nukeengineer $38 / alexroman16 $35 / funkohut $32 / elektronics $17)就是这么补的。**窗内不唯一、买家钉不死的不进均值**(记在 `observed_not_pinned`)。
+  - **8/11–8/13 其余六场(rob/carlos/backwall/gold star/mystery)0 次 Journey 开拍** —— 那几晚根本没跑这个货,不是漏检。
+  - **⚠️ 覆盖有洞,别当全量销量用**:8/15 一场都没录(MANIFEST 里 8/14 直接跳 8/16),拍锤日志 8/16 才开始;所以 8/16 写掉的 215 包对不满是**覆盖问题**,不能反推销量。**e1 六七月那波(475 包)完全在覆盖之前,永远补不了价。**
+  - **⏳ 下一步**:把这条 join 做成 daily_close 的常规腿(按 Gary 8/20 定的三步:join → 先验 eBay 数字准不准(干净窗口)→ 消耗 vs 销售)。lot 号 ↔ 发货 CSV `#N -` 的净额线已验通。
+
+## 🔴 8/20 Frank 的 Telegram 转库:权限是给了的,卡在四层,第一层是一个词(Gary:「是没给他权限吗 卡在哪里」)
+- **是 Frank,而且时间对得分毫不差。** `member_inbox.jsonl` 里他的原话:
+  ```
+  15:29 PT  I forgot to transfer the 146 op16 booster packs to packheads from master
+  15:30 PT  Move 146 op16 booster packs to packheads
+  15:32 PT  Okay i just did it manually
+  ```
+  而 `movements` 那笔是 **22:31:16 UTC = 15:31 PT**。**他等了两分钟,没等到,自己去网页做了。**
+- **⚠️ 那笔在库里记在 Eric 名下,但它是 Frank 的。** 这是**第二次**出现「Frank 的动作记成 Eric」(8/18 那 35 片 blister 是第一次)。**按人算的表要当心这一条**,`moved_by_id` 是下拉框选的,不是身份。
+- **① 真正卡住他的是一个词:`room_transfers.ROOM_ALIASES` 里没有 `master`。** 只有 `e2/e1/PK/RK/VA/store/office` 七个 —— **而 master 是几乎每一笔转库的出发地**。他写 "from master" → 解析器不认 → `from_room: null` → `status: unparsed` → 收到「没解析全」→ 换个说法再发 → 还是不行。
+  - **`tg_move.py` 那张表一直是全的**(Gary 8/18 逐个确认过)。**两张别名表,而面对团队打字的那张是残缺的那张。**
+  - ✅ 已补 `master / casino / PAH / japan`(含中文 `总仓 / 日本仓`)+ `ph / lvus / front / rocketshq`。**新测试 `test_room_aliases.py` 断言 `tg_move.ALIAS` 的每一个别名都必须在聊天解析器里解析得出来** —— 补一个词治不了下一次,让两张表不能再漂才治得了。
+- **② 就算解析成功,它也不会动库存。** `room_transfers.handle_message` 只往 `data/room_transfers.jsonl` 追加一行,然后回一句 **"📦 Transfer noted (burn calc will offset it)"**。**它从不写 `movements` 或 `inventory`。**
+- **③ 而那句承诺是假的:`room_transfers.jsonl` 全仓库没有任何东西读它**(grep lv-finance + inventory-sync + slab-inventory,只有它自己)。**所以 burn calc 也不会冲销。** ✅ 已改成明写「这只是留档,系统库存还没有动,请到 app 的 Move Inventory 里做一笔,否则下次盘点会报成差异」。**说 noted 而其实什么都没动,和批次报 DONE 却给一个空 PDF 是同一个病。**
+- **④ 🔴 `tg_move.py` 没有 `if __name__ == "__main__"` 守卫,argparse 在 import 时就跑 —— 所以它根本 import 不了。** 这就是「昨天写好的写库工具没有任何东西调用它」的字面原因:**不是没接,是接不上。** ✅ 已包进 `main()`(备份 `tg_move.py.bak_0820`),**CLI 行为逐条实测不变**(不给身份仍然拒绝),现在 `import tg_move` 通了。
+### ✅ 8/20 已接通并通知到人(Gary:「可以接 然后让 mario frank 以及 aldo 都知道」)
+- 新 `lv-finance/tg_move_bridge.py`,挂在 `telegram_command_listener` 的成员中继里,**排在 `room_transfers` 之前**(顺序是硬要求:留档那条会先把消息吃掉然后回一句 "noted",而库存一动没动 —— 那正是让 Frank 白等两分钟的路径)。
+- **流程永远是四步,绝不跳:`解析 → 定房定 SKU → 出计划 → 回 YES 才写`。** 计划带着 `tg_move` 的 token(SKU+房间+数量+**写完之后的库存**的哈希);**期间货架动过,token 就对不上,一个字不写。过期的 YES 落不了地。**
+- **🔴 真数据当场推翻了我第一版的排序,而测试夹具看不见**:候选原来**按库存量排**,于是 Frank 那句 "op16 booster packs" 排出来第一个是 **sleeved(Master 有 1,216)**,而他要的散包(227)在第二 —— **顺手点「1」就搬错货**。改成**按「你打的词之外还剩几个词」排,最贴的排第一**;库存只用来打平手和把源房没货的沉下去。**读编号列表的人只会认真读第一行,第一行必须是最贴的那个,不是最大的那堆。**
+- **🔴 而且候选里混着 `(RETIRED DUPLICATE)`** —— 已按 `active=false` 过滤(5 个候选 → 2 个)。**把合并掉的 SKU 当搬运目标提供出去,等于把刚清理掉的重复又灌回来。**
+- **拒绝清单**(每一条都实测过「拒绝了,而且零写入」):**没登记的 chat**(身份只认 chat id,不认消息里打的名字)· **`app_user_id` 为空**(Gaoyuan)· **名字对上多个 SKU/房间** → 列出来问 · **源房不够** → 永不写负库存 · **超过 15 分钟的 YES** / **第二次 YES**(计划一次性,写之前就清掉)· **`VA` / `office` 两个房不给映射**(VaultTcgAuction 在 `tg_move.ALIAS` 里没有别名,裸 `va` 会子串命中好几个房 —— **宁可交回人做,也不猜房间**)。
+- **数量检查排在查库之前**:`room_transfers` 对 5 位数返回 `qty=None` 却仍标 `ok=True`,不先拦就会报成「找不到 SKU」,**拿名字背数字的锅**。
+- 测试 `test_tg_move_bridge.py`(桩掉 HTTP 层,**桩会记录每一次写请求**,所以「拒绝了」是靠零写入证明的,不是靠打印一句拒绝)+ `test_room_aliases.py`。**真库端到端跑过一遍,`dry=True` 只读,真实写入尝试 0 次。**
+- ✅ **已 Telegram 通知 Frank / Mario / Aldo**(三条都回 `sent: True`),Frank 那条额外说明了今天下午为什么没通、以及那是我们的问题。
+
+## ✅ 8/20 「+163 discrepancies」拆开:一个是转库,一个是没人认同货架上有什么(Gary:「是转库了呢还是什么情况」/「自售自数其实可以通过 api 对应上」)
+- **`⚠️ +163` 是 25 行里的 2 行,其余 23 行分毫不差。** 那个数把 2 行分歧印成了 163 个错误 —— **`buildStreamCountBrief` 印的是件数求和,应该印行数并点名最大的那行。**
+- **① OP-16 散包 +142 = 转库,已证实。** `movements` 里 **`2026-08-20T22:31:16 Master → Packheads x146 by Eric type=Transfer`** —— **Polar 21:50 报数,Eric 22:31 补记,差 41 分钟。** Master 373→227,Packheads 144→290,账已平。**货一直在,只是搬在前、记在后。**
+- **② Marvel Allegiance +21 = 不是转库,也不可能是** —— 全系统只有 3 件、Master 是 0,**没有任何地方能转出 21 件**。
+  - **🔴 收银机把这条钉死了:8/13–8/20 八天 Packheads 只卖过 3 件 Marvel Allegiance,全在 8/14,之后一件没卖。所以货架自 8/14 起没动过。** 而同期盘点读数是 `27 / 3 / 26 / 3 / 3 / 3 / 24`(Yaz/Trey/JV/Trey/Yaz/Trey/Polar)。
+  - **同一个不动的货架,两个稳定读数。这不是漂移,是分歧。数据分不出来,只有看货的人能分 —— 一张照片的事。**
+  - **⚠️ 我先猜「是散包在往下掉」,被收银机证伪了(没有销售可以解释下降),已撤回。**
+  - **结构上的坑还在**:`breakable=True` · `packs_per_box=32` · **没有对应的散包 SKU**。**盒可以拆,拆出来的 32 个包没有任何地方可以记** —— 如果货架上真有散包,盘点表上只有一行可写。这正是 unit 那条铁律的第二个作业。
+- **③ 自售自数可以用 API 校,Gary 说得对,而且有数。** Polar 那一场(08-20 04:57→21:50,16.9 小时)实测:
+  ```
+  Freedom Ascension sleeved   盘点写掉 12   收银机 12   差  0
+  OP-16 sleeved               盘点写掉 15   收银机 19   差 −4
+  窗口 34 条订单行,拍卖坑位 0 条 —— 干净
+  ```
+  **所以 Polar 这一场数得好**;看起来吓人的 +163 一个是转库、一个是读数分歧,**销售那一侧 31 件里只差 4 件**。
+- **🔴 但只有 38% 的场次能这样验**:最近 24 个 Packheads 盘点窗口,**9 个坑位行为 0(可验)· 15 个被拍卖坑位污染(永远归不到 SKU)**。**所以规则必须是「干净才断言,不干净就明说比不了、并说清是什么挡住了」** —— 和今天日巡铁律2 的修法同一条。
+- **⏳ 建议(待 Gary 定)**:① 盘点消息**在发送时就分类**(`fetchStockElsewhere` 8/12 就有了,多出消息在用,盘点简报没用)② **给告警一个 2 小时的宽限再复查** —— Eric 那笔 41 分钟就补上了,宽限一下这条根本不该响 ③ 把这个窗口的收银机核对**附在盘点消息里**。
+
+## 🔴 8/20「为什么 Rockets 这么多错误」——它其实是最干净的一个房,但一行归零就永远数不回来了
+- **前提要先纠正:按每一个能算的指标,RocketsHQ 都是四个直播间里最好的那个。**
+  ```
+                      有差%(全期)  7天    14天   30天   离群率   数成0的次数/件数
+  eBay SlabbiePatty      56.0%    62%    71%    71%    0.7%     134 / 3,680
+  eBay LuckyVaultUS      53.3%    74%    85%    68%    0.6%     183 / 8,604
+  TikTok Packheads       35.9%    50%    58%    58%    0.8%      98 / 3,993
+  TikTok RocketsHQ       31.5%    45%    37%    41%    0.3%      50 /   983   ← 全部最低
+  ```
+- **但它在「多出点名」那张表上占 13 项里的 6 项(46%),而件数只占 418 里的 60 件(14%)。** 看起来错得多的是**条数**,不是量。**这就是 Gary 看到的那个印象的来源。**
+- **条数下不去是因为多出根本没有出口**:正差从 7/24 起不写库,所以同一项每盘一次就再报一次 —— **Ayakashi 从 8/05 到今天报了 6 次,Perfect Order 4 次**。Rockets 盘得勤(46 场),于是报得也勤。**报的次数是「有人在数」的证据,不是「错得多」的证据。**
+- **🔴 真正的事故只有一件,而且是一场**:**Polar 8/17 19:27 在 Rockets 的首盘**,20 行里 7 行负差,**一场写掉 90 件**。
+  - **两条可以证明是数错的**(前后两次互相吻合、中间和两边都不合):`Ayakashi 盒 23 → 12 → 21`、`Enchant 散包 8 → 5 → 8`。这两个现在还在每天报多出。
+  - **两条是直接记成 0**:`151 Booster Pack 账上 63 → 记 0`、`Shining Legends 账上 9 → 记 0`。
+- **🔴🔴 归零的 SKU 会从盘点表上消失,所以再也没有人能把它数回来。** `fetchInventoryForRoom` 用 `.gt('quantity', 0)` —— 实测 Polar 之后 Rockets 又盘了 2 场(Sue,8/18 两次),**`151` 和 `Shining Legends` 两次都不在表上**;而被写成 12(不是 0)的 Ayakashi 两次都在,并且继续报多出。
+  - **写成 12 会被后续盘点纠正,写成 0 是永久的。** 这是这条规则最贵的地方,和「多出永不写库」加在一起构成一个**单向棘轮**。
+- **🔴 而「记成 0」这个动作全库都在发生,Rockets 反而是最少的**:`actual=0 且 expected>=5` 共 **465 行 / 17,260 件**,eBay LuckyVaultUS 一家占 183 行 / 8,604 件。**盲盘规则「空行=0」让「跳过这一行」和「一件都没有」在系统里长得一模一样,而后者直接写库。**
+  - **⚠️ 不能把这 17,260 件都算成错** —— 直播间真卖光是常事,那正是盘点要抓的。**能证明是错的只有前后夹住的那种**;其余是**风险敞口不是损失**。
+- **⏳ 该做的一件事:让 Rockets 复点 `151 Booster Pack` 和 `Shining Legends Booster Pack`。** 两个都记在 0,五天前分别是 63 和 9,中间没有 Move、没有销售行能解释(**TikTok 卖出不扣库存,所以也可能真卖光了 —— 只有实物能定**)。而且**它们已经不在盘点表上,不专门去看就永远不会被发现**。
+- **⚠️ Polar 8/20 21:50 又在 Packheads 盘了一场,写掉 27 件。** 新人的头几场值得复核。
 
 ## ✅ 8/20 进货消息加「买入价 = 市价的百分之几」(Gary:「这个消息我们再价格对比 market 的%可以吗」)
 - **触发它的那条**:`🛍️ New Purchase Logged / Frank / Discord (USA) / [EN] OP-11 A Fist of Divine Speed Booster Box × 6 / $3,300`。现在这一行读作 **「$550 each — 85% of the $644.78 market」**。两分钟后 Frank 又下了一单 12 盒 @ $579.17 = **90%**;同批 PRB2 盒 $340 = **87%**。
@@ -15,7 +158,22 @@
 - **🔴 我 8/19 那条撤回本身是错的,现在改回来**:我曾报「OP-16 散包按市价 141% 买的」,后来撤回,理由是「$9.50 是拆盒推导出来的成本不是买入价」。**8/20 的取证已经证明拆盒那个前提不成立**(7 条 $9.50 的行 vendor 全是 **Discord**,而且包比盒早进门 9 天)。**所以 $9.50 是真买入价,128–142% 是真的。**
   - **但这个比值对这个货没有意义,而这才是重点**:同样这些包我们**实卖 $12.16–12.59 = 同一个 TCG 市价的 168%**。**TCG 不是我们成交的那个市场。** 所以 ≥105% 那句话已经改成「除非这也是我们卖得高于 TCG 的货」——**一句会误描述自己那个数的提示,会教人以后不看它**。
 - **判定分四种,「查不到」永远不算通过**:`priced` / `ceiling`(`buy_rules` 有规则才给结论)/ `unit_mismatch` / `unpriced`(点名要钉哪个) / **`source_down`**(TCG 连不上 —— **绝不并进 unpriced**,「没查到」读成「没有」正是 130point 把 $36 的盒报成 $11,922 的来路)。
-- **⏳ 要 Gary 定的一件事**:百分比是**进 app 那条消息本身**(要发版;市价可以照 `useProductImages.js` 的先例发一份 JSON 给 app 读,**不需要 DDL**),还是**服务端过几分钟补一条**(不用发版,而且能覆盖 jp_vendor 那些 app 看不见的行)。
+
+### ✅ 8/20 百分比已做进「录入的当下」(Gary:「可以给他们 buy record 的时候可以给个%」)
+- **不是事后播报,是买手在 Purchased Items 打价的那一刻就看到**。和现有制度一致 —— 买入和转库是唯一有人真的拿着实物的时刻;事后只剩一个没人能核的数字。
+- **是提示不是闸门**。旁边那个 `costSanity`(1/3–3x 硬拦)问的是「这是不是打错了」,**99% 市价不是打错,是买贵了,一个阈值答不了两个问题**。真会拦货的上限仍然只在 `buy_price_rules.json`,是 Gary 一个产品一个产品定的。
+- **落地三件**(分支 `feat/buy-market-pct` `9202455`,**未过 Codex 未发版**):`src/lib/marketPct.js`(纯函数)· `src/lib/useMarketPrices.js` · `api/market-prices.js` · `PurchasedItems.jsx` 成本框下面一行。
+- **必须走 `costSanity.unitCostOf(item, toUsd)`** —— 它同时处理**「每件/总价」开关**和**币种**。少了换汇,¥18,000 一盒对 $153 的市价会读成 **11,765%**。
+- **🔴 单位那道闸门和 Python 那边是同一套**(`[20%, 300%]`),而且**测试直接读 `buy_market_check.py` 校验常数有没有漂**。变异测试:关掉闸门 → **12 条红**,而且买手会看到 **「3752% of the $2.50 market — above market」**(垃圾袋)· **「2% of the $90.00 market」**(散包对盒,读起来像捡到宝)· **「11760% — above market」**(忘了换汇,告诉买手他巨亏而他没有)。
+- **🔴🔴 顺带查出一个存在很久的洞:`lv-slabs.luckyvault.us` 一个 CORS 头都没有。** 用无头 Chromium 实测,跨域 fetch 直接 `TypeError: Failed to fetch`,原始响应里也确实没有 `Access-Control-Allow-Origin`。
+  - **所以 `useProductImages.js` 那 319 条一直在返回 `{}`** —— 它**故意静默降级**(「pages render unchanged, with no thumbnails」),所以没人会发现。而**另一半 `products.image_url` 这一列根本不存在**(PostgREST 400,那条 DDL 还在积压里)。**两半都是死的,全库产品缩略图现在一张都不显示。** 这条在页面控制台里直接看得到,截图那一轮打出来了。
+  - **修法没有去碰 8081(slabs)**,而是在本仓库加了 `api/market-prices.js` 服务端代理(服务器对服务器没有 CORS),照 `singles-price-detail.js` 的边缘缓存写法。**缩略图那条一行就能一起修好(把 URL 指过来),故意没做** —— 那是另一个功能,夹带进来就没法单独判断这次改动。
+- **🔴 截图当场抓到一条断言看不见的**:140% 那条警告原来用琥珀色,**而这个页面从头到尾都是金色**(每件/总价开关、总价、提交按钮),它读起来不像警告,像又一个强调标签。**已改成红色 chip。** 这就是 8/13 那条「发版前必须自己打开截图看」的第二次兑现。
+- **五个状态在真页面上逐个验过**(`scratchpad/shot_purchased_items.py`,vite preview + 真 feed):`85%` · `90%` · 垃圾袋 **「no market price — not checked」不给百分比** · OP-13 blister **97% 且没有「match not verified」**(它是钉过价的)· 140% 红条。**控制台零错误**(除了上面那两个既有的 CORS/400)。
+- **feed 是 `buy_market_check.py --publish stocked` 写的**,落在 `slab-inventory/data/kaitori_board/market_prices.json`(**实测和公网那份 `product_images.json` 字节完全相同,确认就是被服务的那个目录**)。280 个产品 / 178 个有市价(64%)。**已挂进 05:40 日巡**(排在日巡前面、失败不影响日巡 —— 价旧了只是提示降级,日巡挂了是瞎一天)。缓存增量:第二次跑 **0 次取价**。
+- **陈旧不许冒充实时**:超过 7 天的价会印 **「market read N days ago」** 并降掉「确认」的绿色。**这是汇率那个 bug 的教训写成代码** —— `convertToUSD` 四个月没人发现,就是因为从来没有东西说这个数多老了。
+- **⚠️ 而 `convertToUSD` 现在仍是写死汇率**(8/13 那个修复至今未发版,`api/fx-rate.js` 在 main 上根本不存在),所以**日元线的百分比会带 6.7% 偏差**。Frank 买的是美元,这个表单上基本不咬人,但要知道。
+- **⚠️ 36% 的产品没有市价** —— 这些行明写「no market price for this product — not checked」,**绝不印 0%**,也绝不让一行看起来被核过而其实没有。
 
 ## 🚨 铁律:**每个 SKU 必须写明「一件是什么」**(Gary 8/19:「sku 需要 unit」)
 **这三天每一起事故都是同一个病根:行上有一个数,但没有任何地方说这个数在数什么。**
@@ -692,6 +850,7 @@
 - PostgREST 坑:1000 行必分页;空格用 `quote(p, safe="?&=.,*()-")` 勿双重编码;uuid 列无 like;products 列叫 `type`;**写完必 readback,批量写前备份 JSON**。`tps.sq`(tiktok_push_stock)自带完整分页**勿再套 offset 循环**、且不编码要先 quote。
 - 表:`products` · `inventory`(数量原地覆盖**无变更 log** — audit-log SQL 待 William)· `locations` · `movements`(Transfer/Intake)· `box_breaks`(拆盒:sealed−N / pack+3N 全在 Master,pack 成本=盒成本÷packs_per_box,照 BreakBox.jsx 语义)· `stream_counts`+items · `acquisitions` · `slabs`(软删字段全:deleted/at/reason)。
 - 房间:Master `1f68249f` · PH=Packheads `c995d0a6` · RocketsHQ `eeff0769` · LVUS `12293f16` · SlabbiePatty `04b32948` · **PokeCasino(原Whatnot,channel/sale_channel 存库值仍 'Whatnot'/'whatnot')**`ac9c06c4` · PokeAuctionHouse `1028e0f9` · Front Store `c4cf3dab`;共 23 locations(Sold 虚拟房有遗留怪名,勿用)。
+- **🔴 分工:eBay 两个直播房(e1/e2)的运营/盘点安排找 Mario,不找 Frank**(Gary 8/21:「不该给frank提醒 ebay给mario」—— 我把 e1 没点货的提醒发给了 Frank,已补作废并转发 Mario)。
 - **团队口头叫法 ≠ 房间名,推不出来只能问**(Gary 8/17 定):**`ebay1` = `Stream Room - eBay LuckyVaultUS` `12293f16`** · **`ebay2` = `Stream Room - eBay SlabbiePatty` `04b32948`**(Gary 8/18 确认)。库里没有任何房间叫 "ebay1"/"ebay2",而带 ebay 的有四个(两个直播房 + 两个 Sold 虚拟房)—— **猜错就是把货记进另一个直播间**。Gary 8/17:"你下次可以提问他" = 叫法对不上时直接问下单的人,别挑一个。**8/18 我按排除法推出 ebay2=SlabbiePatty 是对的,但仍然先摊开假设让 Gary 确认才写 —— 推得对不等于可以自己定。** 两个号已钉进 `lv-finance/tg_move.py` 的 `ALIAS`(`ebay2` 不钉的话直接解析不到,裸 `ebay` 则命中 4 个房)。
 
 ## 盘点与审计制度(Gary 7/22 定版)
