@@ -45,8 +45,12 @@ const CASES = [
   ['m4（fire） Single Pack', 'pokemon'],
   ['m2a（fire） Single Pack', 'pokemon'],
   ['[CN] Pokemon 5.0 Poke Ball', 'pokemon'],
-  // yugioh — the JP Rarity Collection saga must NOT land in pokemon
+  // yugioh — the JP Rarity Collection saga must NOT land in pokemon;
+  // Limit Over / Ghost from the Past carry brand=Other in the DB (Codex 8/21)
   ['[JP] Rarity Collection Quarter Century Booster Box', 'yugioh'],
+  [{ name: 'Limit Over Collection Heroes Booster Box', brand: 'Other' }, 'yugioh'],
+  [{ name: 'Limit Over Collection The Rivals Booster Box', brand: 'Other' }, 'yugioh'],
+  [{ name: 'Ghost from the Past Booster Box', brand: 'Other' }, 'yugioh'],
   // other — and the near-miss traps
   ['Azuki Gates Awakened Booster Box', 'other'],
   ['DanDaDan Booster Box Booster Box', 'other'],

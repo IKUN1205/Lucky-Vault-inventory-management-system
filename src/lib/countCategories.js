@@ -55,7 +55,7 @@ const RULES = [
   ['lorcana', /lorcana|disney/i],
   ['hololive', /hololive|ayakashi|enchant regalia/i],
   ['gundam', /gundam|freedom ascension/i],
-  ['yugioh', /yu-?gi-?oh|yugioh|chaos origins|rarity collection quarter/i],
+  ['yugioh', /yu-?gi-?oh|yugioh|chaos origins|rarity collection quarter|limit over collection|ghost from the past/i],
   // Pokemon LAST among the named rules: its set list is long and the loosest.
   ['pokemon', POKE_SET_RX],
   ['pokemon', /pok[eé]mon/i],

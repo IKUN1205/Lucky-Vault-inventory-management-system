@@ -219,13 +219,15 @@ export default function StreamCounts() {
         ...inv,
         _cat: categoryOf(inv.product),
         _fresh: Boolean(inv.last_updated && (Date.now() - new Date(inv.last_updated).getTime()) < FRESH_MS),
-        _value: (Number(inv.quantity) || 0) *
-                (Number(inv.current_market_price) || Number(inv.avg_cost_basis) || 0),
       })).sort((a, b) =>
         (categoryRank(a._cat) - categoryRank(b._cat)) ||
         (Number(b._fresh) - Number(a._fresh)) ||
-        (b._value - a._value) ||
         (a.product?.name || '').localeCompare(b.product?.name || ''))
+      // Inside a family: recently-active first, then NAME. The old value
+      // ordering (qty x price) is gone — with known prices a value order
+      // lets a counter infer relative stock, which chips at the blind rule,
+      // and a name order is stable session to session so the sheet reads
+      // the same way every night.
       setInventory(decorated)
       
       // Blind count: initialize every product's count to blank ('') so the
@@ -1143,7 +1145,7 @@ export default function StreamCounts() {
                     </tr>
                   </thead>
                   <tbody>
-                    {inventory.map((inv, idx) => {
+                    {(() => { const catCounts = {}; inventory.forEach(x => { catCounts[x._cat] = (catCounts[x._cat] || 0) + 1 }); return inventory.map((inv, idx) => {
                       // Blind count: no expected / diff is computed or rendered
                       // here so the streamer cannot see or derive the system's
                       // quantity. The only editable value is their own count.
@@ -1155,7 +1157,6 @@ export default function StreamCounts() {
                       // survives as the 🆕 chip on individual rows so the
                       // list has ONE level of grouping, not two.
                       const groupBreak = idx === 0 || prev?._cat !== inv._cat
-                      const catCount = inventory.filter(x => x._cat === inv._cat).length
 
                       return (
                         <React.Fragment key={inv.id}>
@@ -1163,7 +1164,7 @@ export default function StreamCounts() {
                             <tr className="bg-vault-surface/80 border-t border-vault-gold/30">
                               <td colSpan={4} className="py-2 text-sm font-bold tracking-wide text-vault-gold">
                                 {categoryLabel(inv._cat)}
-                                <span className="ml-2 text-xs font-normal text-gray-400">{catCount} products — finish this family, then the next</span>
+                                <span className="ml-2 text-xs font-normal text-gray-400">{catCounts[inv._cat]} products — finish this family, then the next</span>
                               </td>
                             </tr>
                           )}
@@ -1223,7 +1224,7 @@ export default function StreamCounts() {
                           </tr>
                         </React.Fragment>
                       )
-                    })}
+                    }) })()}
                   </tbody>
                 </table>
               </div>
