@@ -1,6 +1,14 @@
 # LV Inventory — 作业手册 brief (2026-08-21)
 
-## ✅ 8/21 POS「卡不在系统」手动卖出入口(Gary:「加一个手动输入的界面 直接输入名字以及卡号 以及卖了多少钱 对我们后面可以补账」;**分支 `feat/counter-manual-card`,Codex 4 轮 SHIP,等 Gary 说「发」**)
+## 🔴🔴 8/21 深夜 Journey 定案被 Brandon 实数推翻——今早的「纸面幽灵」判断是错的,已按实数恢复
+- **Brandon 下播盘点 e1:Journey `exp 11 → act 275(+264)`,账当场闭合:11 + 今天转入 309 − 275 = 44 包今晚场耗。** 这个算术只有「309 包转移是真实物」才成立 → **e2 的 190 和 Master 的 119 一直是真货**,今天随 Aldo 的转库实际到了 e1;今早按 Gary「其实库存里现在没有JT pack」移除的 309 包不是幽灵。已恢复 e1 Journey **11→275**、顺带 Ascended **170→230**(= Aldo 没人看懂的「ASc packs: 180」+ 转入 50,和 Brandon 实数分毫不差——他那句话是对的,当时没敢写)。备份 `e1_brandon_restore_backup_0821.json`,乐观锁+回读。
+- **教训(第 3 次同型)**:口头「没货」是那一刻某个视角的快照,**盘点才是观测**;「8/18 搬运幽灵」理论全靠那句话支撑,一个盲盘就推翻了。连带修正:8/18 那次搬运的 130 包记录**本来就是准的**,e2/Master 的账没错过;今早「~94 包 vahe 口头直卖」的推断仍然成立(它只依赖 e1 自己的 159→11 链)。
+- **⏳ Brandon 这张表还剩三个小问号(要问 Aldo/Brandon,均未写)**:① Gem Pack Vol 6 +3(账 10 实 13,Master 有 190——像今天补货没记的一笔,确认来源房再补 Move)② Prismatic ETB 同名双行**都数到 1**(实物到底 1 盒还是 2 盒?我今天刚把重复行清零,zero-grace 又让它回到表上)③ Ascended「12」那半句(疑 Two Packs ×12,目录有 SKU,没确认不写)。
+
+## ✅ 8/21 POS「卡不在系统」手动卖出入口 —— **已发版**(`7907f21` 推 main,Vercel success;Codex 4 轮 SHIP;群通告已发)
+- **✅ 之前的卡已按同一标记补账(Gary:「之前的卡 我们能补吗」→ 补了 5 行,`backfill_gaps_0821.json`)**:Luna 8/21 $20 现金(新建交易:货行+收款行)· 8/17 `64951833` +$40(Dendra 老案)· 8/17 `84a35fa2` +$48 · 8/17 `10cb5a45` +$19.71 · 8/19 `f9331fbf` +$151.54 —— 四笔挂回**原交易**(钱早已入账,只补缺的货行),身份全部 `name=-` 待认领,五条都在 `manual_card_pending` 队列里天天点名。**收款对账 19→15 笔差额,剩的全是 trade/buy 语义 + $14 小额**(+$1/+$3/+$10 疑似税或小费,不敢断言没写)。
+- **✅ 英文通告已发 STOREFRONT CHATS**(附问 Luna 卡名)。⚠️ lark_send 踩了三个新坑,记死:① **多块草稿要用 `Ctrl+End`(文档末尾)再 `Ctrl+Shift+Home` 全选**——旧的 plain `End` 只到行尾,后面每轮只删一个字符 ② **清空后 textContent 是占位符 `Message <chat>`,把它当内容会误判「清不掉」** ③ 失败中止会把打了一半的字留成新草稿、且服务端同步回来——**同一会话内清完立刻发,别分两次跑**。
+### 原始需求与实现(8/21)
 - **入口两个**:Sale/Trade 模式购物车工具条 `+ Card not in system`;扫码查无此码的横幅上直接给按钮(**12/13 位 UPC 形状的码不给**——那是没登记条码的 sealed,走卡片路径会跳过扣库存,只留 Product Barcodes 注册提示)。弹窗三个字段:卡名*(必填)· 卡号(选填)· 卖价*(>0);Enter = Add & next(连录一摞卡)。
 - **落库**:`single_manual` 行 → `storefront_sales`,notes 带可 grep 标记 `MANUAL_CARD_PENDING_RECONCILE | name=… | number=… | sold_for=…`。**零库存写入**;补账时**绝不回改这行**(卖出铁律)——正确记账后在新建的 singles 行 sale_notes 打 `RECONCILED_FROM_COUNTER:<行id>`,队列自动销案(状态是推导的不是存的,和 open-surplus R1 同哲学)。
 - **服务端队列 `inventory-sync/manual_card_pending.py` 已挂日巡**:列出每条待补账(按**行 id** 判销案,不按 transaction——同单多卡补了一张不能把兄弟藏掉,Codex 三轮抓的)。
