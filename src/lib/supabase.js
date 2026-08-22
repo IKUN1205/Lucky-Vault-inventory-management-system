@@ -5037,10 +5037,35 @@ const _sellManualLine = async ({
   locationIds,    // { frontStore }
   saleDate,
   txMeta = {},
+  // Not-in-system card sale (Gary 2026-08-21 "加一个手动输入的界面…对我们
+  // 后面可以补账"): the cashier typed the card's identity off its price
+  // sticker because no table has a row for it. The identity + a greppable
+  // marker go into notes so the back office can find every pending line
+  // with one query. Reconciling later means booking the card properly in a
+  // NEW record — this sale row is never edited (卖出铁律).
+  cardName = null,
+  cardNumber = null,
+  pendingReconcile = false,
+  soldFor = null,
 }) => {
   const qty = Number(quantity) || 1
   const lineTotal = (Number(unitPrice) || 0) * qty
   const desc = (description || '').trim() || '(no description)'
+  // The marker's fields are split on '|' and '=' by the reconcile queue, so
+  // those characters must never survive inside a typed value — a card named
+  // "A | number=9" would forge a second field (Codex 8/21). Human-typed text
+  // loses nothing readable by mapping them to '/'.
+  const mfield = (v) => (String(v ?? '').trim() || '-').replace(/[|=]/g, '/')
+  // sold_for records the price the cashier actually typed, verbatim. In
+  // total-price mode the row's sale_price is the DISTRIBUTED share of the
+  // cart total, which can differ — the reconcile queue needs the number the
+  // customer really paid for this card, not the weighting result.
+  // The description is sanitized too on the marker path — it sits BEFORE the
+  // marker in the same notes string, so delimiters inside it could forge
+  // fields just as well as ones inside name/number (Codex 8/21 r2).
+  const notes = pendingReconcile
+    ? `SALE (manual): ${subKind} — ${mfield(desc)} | MANUAL_CARD_PENDING_RECONCILE | name=${mfield(cardName)} | number=${mfield(cardNumber)} | sold_for=${mfield(Number(soldFor ?? unitPrice) || 0)}`
+    : `SALE (manual): ${subKind} — ${desc}`
 
   const sale = await createStorefrontSale({
     date: saleDate,
@@ -5058,7 +5083,7 @@ const _sellManualLine = async ({
     trade_in_value_usd: txMeta.tradeInValue ?? null,
     net_cash_usd: txMeta.netCash ?? null,
     trade_in_notes: txMeta.tradeInNotes || null,
-    notes: `SALE (manual): ${subKind} — ${desc}`,
+    notes,
   })
 
   return { sale, note: 'Recorded only — cards inventory NOT updated.' }
@@ -5517,6 +5542,16 @@ export const submitStorefrontTransaction = async ({
           locationIds: { frontStore: frontStoreId },
           saleDate,
           txMeta,
+          // Not-in-system sale (Gary 2026-08-21): cashier-typed identity of a
+          // stickered card no table knows about. Carried through to the sale
+          // row's notes as a greppable pending-reconcile marker.
+          cardName: line.card_name || null,
+          cardNumber: line.card_number || null,
+          pendingReconcile: !!line.notInSystem,
+          // The price the cashier TYPED in the modal. line.price may be a
+          // total-mode distributed share by now; our_price survives
+          // distributeCartTotal untouched.
+          soldFor: line.sold_for ?? line.our_price ?? line.price ?? null,
         }
         const result = isBuy
           ? await _buyManualLine(manualArgs)
@@ -5897,6 +5932,16 @@ export const fetchStorefrontDailySummary = async (from, to) => {
       } else if (/^BUY:\s*single/i.test(n)) {
         kind = 'single_manual'
         name = n.replace(/^BUY:\s*single\s*[—-]\s*/i, '') || '(manual single buy)'
+      } else if (/^SALE \(manual\):\s*slab/i.test(n)) {
+        kind = 'slab_manual'
+        name = n.replace(/^SALE \(manual\):\s*slab\s*[—-]\s*/i, '')
+      } else if (/^SALE \(manual\):\s*single/i.test(n)) {
+        // Not-in-system sales carry the reconcile marker after the readable
+        // description — the marker is plumbing for the back-office queue,
+        // never something to print at the register (Workflow review 8/21).
+        kind = 'single_manual'
+        name = n.replace(/^SALE \(manual\):\s*single\s*[—-]\s*/i, '')
+          .split('| MANUAL_CARD_PENDING_RECONCILE')[0].trim() || '(manual sale)'
       } else {
         name = n
       }

@@ -1,5 +1,12 @@
 # LV Inventory — 作业手册 brief (2026-08-21)
 
+## ✅ 8/21 POS「卡不在系统」手动卖出入口(Gary:「加一个手动输入的界面 直接输入名字以及卡号 以及卖了多少钱 对我们后面可以补账」;**分支 `feat/counter-manual-card`,Codex 4 轮 SHIP,等 Gary 说「发」**)
+- **入口两个**:Sale/Trade 模式购物车工具条 `+ Card not in system`;扫码查无此码的横幅上直接给按钮(**12/13 位 UPC 形状的码不给**——那是没登记条码的 sealed,走卡片路径会跳过扣库存,只留 Product Barcodes 注册提示)。弹窗三个字段:卡名*(必填)· 卡号(选填)· 卖价*(>0);Enter = Add & next(连录一摞卡)。
+- **落库**:`single_manual` 行 → `storefront_sales`,notes 带可 grep 标记 `MANUAL_CARD_PENDING_RECONCILE | name=… | number=… | sold_for=…`。**零库存写入**;补账时**绝不回改这行**(卖出铁律)——正确记账后在新建的 singles 行 sale_notes 打 `RECONCILED_FROM_COUNTER:<行id>`,队列自动销案(状态是推导的不是存的,和 open-surplus R1 同哲学)。
+- **服务端队列 `inventory-sync/manual_card_pending.py` 已挂日巡**:列出每条待补账(按**行 id** 判销案,不按 transaction——同单多卡补了一张不能把兄弟藏掉,Codex 三轮抓的)。
+- **两轮外部审查共 11 条真缺陷全修**(Codex 4 轮 7 条 + 21-agent workflow 对抗审查 6 条确认、4 条驳回为已修旧账):qty 钉死 1(一个身份=一张卡,第二张开新行各带各的标记)· Buy 模式购物车里有此行拒绝提交(会把钱记成流出)· `|`/`=` 在录入处和 desc 上双重转义(自由文本不能伪造标记字段)· **`sold_for` 记柜员打的原价**(total 模式分摊会改 sale_price;行内价格编辑会同步 sold_for)· 横幅按钮 submit 中禁用(提交竞态会静默丢行)· **文案不许说「recorded now」**(Complete Sale 才落库——和 room_transfers「Transfer noted」同病)· 当日汇总组件学会解析 `SALE (manual)` 行(不再按 sealed 渲染、不再把标记串原样吐给柜员)。
+- 测试:writer 18 项(跑真函数,含变异测试和注入测试)+ preflight 2 项;截图验过 UPC 隐藏/卡形显示两个方向、弹窗、购物车行,控制台零新错。**`our_price` 特意保留手输价**——价签价就是我们的要价,total 模式权重靠它,行上就写着 ⚠ NOT in system。
+
 ## 🔴 8/21 深夜 Luna「Sold 20 cash, stickered but not in system」→ 挖出 9 个从没入库的标签批次,已全部补入(Gary:「store群聊里说有卡没有not in system 你看看」)
 - **病根:8/12 定的「每批必跑 `singles_intake_batch.py`」是手工步骤,6 个批次只跑过 1 次** —— 和 GTS commit 三个月跑 2/20 同一个病(「没人做的第二步不是保险,是漏点」)。8/11–8/21 累计 **9 个批次 ≈ 542 张贴了价签的实体卡**没入 Supabase:80 个 tcg_id **扫码查无此卡**(Luna 中的就是这个,里面有 $1,094 的 Grey Felt Hat Pikachu、$1,001 的 Mew ex)、91 个只剩 sold 行(扫出 Already sold,走覆盖恢复卖出、成本全 null)、76 个有活行但数量没加。
 - **✅ 9 批全部补入(记成本 $15,338 = 市价×80%),247+114 个 tcg_id 复核:0 absent**。两张已通过收银覆盖卖掉的实体卡(Meowth ex $128、Mr. Mime $23.73,sale_notes 带 `RECOVERED_AT_COUNTER`)**从 TSV 副本里预先摘行再入库,不造幽灵**;normal 卖出走的是活行池、账自洽,不用扣。**Mr. Mime 同时出现在 441f 和 5c2b 两批里,同一笔卖出只许扣一次。**

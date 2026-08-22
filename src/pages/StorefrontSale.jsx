@@ -571,7 +571,21 @@ export default function StorefrontSale() {
   //                   same as a regular single_manual buy, so Cards Scan
   //                   intake later is on a parallel track that doesn't
   //                   touch the singles inventory table from here.
-  const openManualLine = (subKind /* 'slab' | 'single' | 'bulk_single' */) => {
+  const openManualLine = (subKind /* 'slab' | 'single' | 'bulk_single' | 'not_in_system' */) => {
+    // 'not_in_system' (Gary 2026-08-21): SALE-side manual card. The card is
+    // physically at the counter with a price sticker but has no row anywhere
+    // (nine label batches proved this happens; Luna sold one for $20 cash
+    // with nowhere to record it). Cashier types name + number + price; the
+    // sale row carries a greppable pending-reconcile marker so the money is
+    // never lost while the card's identity gets booked properly later.
+    if (subKind === 'not_in_system') {
+      setManualLineDraft({
+        subKind: 'single', bulk: false, notInSystem: true,
+        description: '', cardName: '', cardNumber: '', price: '',
+        quantity: 1,
+      })
+      return
+    }
     const isBulk = subKind === 'bulk_single'
     setManualLineDraft({
       subKind: isBulk ? 'single' : subKind,
@@ -584,6 +598,51 @@ export default function StorefrontSale() {
     const draft = manualLineDraft
     if (!draft) return
     const qty = Math.max(1, parseInt(draft.quantity) || 1)
+    if (draft.notInSystem) {
+      // '|' and '=' are the reconcile marker's field delimiters. Strip them
+      // HERE, not just in the writer — the raw name is also embedded in the
+      // line's description, which precedes the marker in the sale notes, so
+      // an unsanitized "A | name=X" there could forge a field (Codex 8/21 r2).
+      const clean = (s) => (s || '').trim().replace(/[|=]/g, '/')
+      const name = clean(draft.cardName)
+      const number = clean(draft.cardNumber)
+      const price = Number(draft.price)
+      if (!name) { addToast('Card name is required', 'error'); return }
+      // The whole point is capturing the money — a 0 here would record a
+      // giveaway that looks like a sale nobody priced.
+      if (!Number.isFinite(price) || price <= 0) { addToast('Enter what it sold for (must be > 0)', 'error'); return }
+      const desc = `Not in system: ${name}${number ? ` #${number}` : ''}`
+      const key = `single_manual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      setCart(prev => [
+        ...prev,
+        {
+          // qty is pinned to 1: one typed identity = one physical card. Two
+          // copies = two lines, each with its own reconcile marker (Codex
+          // 8/21: an editable qty would double the money in per-line mode
+          // while the marker still names a single card).
+          kind: 'single_manual', key, description: desc, quantity: 1,
+          notInSystem: true, card_name: name, card_number: number || null,
+          // price drives per-line mode directly. our_price doubles as the
+          // "Our:" reference (the sticker price IS our asking price, not a
+          // fake system match) and as this line's weight when total-mode
+          // distribution runs in reference-weighted form — which it only
+          // does when EVERY cart line has an our_price; mixed carts fall
+          // back to equal-per-unit, and the row's sale_price is then a
+          // distributed share. That is why sold_for exists: the number the
+          // cashier typed goes into the reconcile marker verbatim, whatever
+          // the distribution does. It follows per-line price edits (see the
+          // updateLine call in the price input).
+          price, our_price: price, sold_for: price,
+        },
+      ])
+      addToast(`Added: ${desc} — $${price.toFixed(2)}`, 'success')
+      if (stayOpen) {
+        setManualLineDraft({ subKind: 'single', bulk: false, notInSystem: true, description: '', cardName: '', cardNumber: '', price: '', quantity: 1 })
+      } else {
+        setManualLineDraft(null)
+      }
+      return
+    }
     let desc
     if (draft.bulk) {
       // Bulk buy — description is auto-derived from qty. Cashier just
@@ -669,6 +728,12 @@ export default function StorefrontSale() {
       }
       if ((line.kind === 'slab_manual' || line.kind === 'single_manual') && !(line.description || '').trim()) {
         return 'Manual line missing description'
+      }
+      // A not-in-system line is a SALE record. Switching the transaction to
+      // Buy would route it through _buyManualLine — money OUT instead of in,
+      // and the reconcile marker silently dropped (Codex 8/21).
+      if (line.notInSystem && transactionType === 'buy') {
+        return 'Remove the "not in system" card line first — it records a sale, not a buy'
       }
     }
     if (transactionType === 'trade') {
@@ -759,9 +824,18 @@ export default function StorefrontSale() {
                 price: Number(line.price) || 0,
               }
             }
-            // Buy-mode manual lines (slab_manual / single_manual) — Lark
-            // gets the kind + description as-is so the feed clearly says
-            // "this was hand-typed for a buy, not a system match".
+            // Manual lines (slab_manual / single_manual) — Lark gets the
+            // kind + description as-is so the feed clearly says "this was
+            // hand-typed, not a system match". A not-in-system SALE line is
+            // made loud: it is the trigger for someone to reconcile it.
+            if (line.notInSystem) {
+              return {
+                kind: line.kind,
+                name: `${line.card_name || line.description}${line.card_number ? ` #${line.card_number}` : ''} — NOT IN SYSTEM, needs reconcile`,
+                quantity: Number(line.quantity) || 1,
+                price: Number(line.price) || 0,
+              }
+            }
             return {
               kind: line.kind,
               name: line.description || '(no description)',
@@ -1097,6 +1171,21 @@ export default function StorefrontSale() {
                 📦 Sealed → register UPC on <a href="/product-barcodes" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Product Barcodes</a>.
                 {' '}💎 Slab / 🎴 Single → ask the storefront team to intake it first.
               </div>
+              {/* 12/13 digits = a UPC/EAN, i.e. a SEALED product with an
+                  unregistered barcode. Selling a box through the card path
+                  would skip its inventory decrement and hand the reconcile
+                  queue a "card" that is a box — so for UPC-shaped codes the
+                  registration hint above is the only path offered. */}
+              {transactionType !== 'buy' && !/^\d{12,13}$/.test(unknownCode) && (
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => { setUnknownCode(null); openManualLine('not_in_system') }}
+                  className="mt-2 text-xs px-2.5 py-1 border border-blue-500/40 text-blue-300 rounded hover:bg-blue-500/10 disabled:opacity-50"
+                >
+                  🎴 Selling it right now? Record it manually (name + number + price)
+                </button>
+              )}
             </div>
             <button onClick={() => setUnknownCode(null)} className="p-1 text-gray-400 hover:text-white">
               <X size={14} />
@@ -1261,6 +1350,23 @@ export default function StorefrontSale() {
                 + Bulk Buy
               </button>
             </>
+          )}
+
+          {/* Sale/trade: the card is physically here with a sticker but has
+              no row anywhere (un-intaken batch, lost row). Record the sale
+              with typed name + number so the money is captured now and the
+              identity can be reconciled later — the alternative is a chat
+              message and $0 recorded (Luna, 2026-08-21). */}
+          {transactionType !== 'buy' && (
+            <button
+              type="button"
+              onClick={() => openManualLine('not_in_system')}
+              disabled={submitting}
+              className="text-xs px-2.5 py-1 border border-blue-500/40 text-blue-300 rounded hover:bg-blue-500/10 disabled:opacity-50"
+              title="Card has a sticker but the scan finds nothing — type name + number + price"
+            >
+              + Card not in system
+            </button>
           )}
 
           <div className="flex-1" />
@@ -1618,6 +1724,95 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
   if (!draft) return null
   const isSlab = draft.subKind === 'slab'
   const isBulk = !!draft.bulk
+  const isNotInSystem = !!draft.notInSystem
+  if (isNotInSystem) {
+    return (
+      <div
+        className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+        onClick={onCancel}
+      >
+        <form
+          onSubmit={(e) => { e.preventDefault(); onSave({ stayOpen: true }) }}
+          className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-md w-full p-5 shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Layers size={18} className="text-blue-300" />
+            <h3 className="font-semibold text-base text-white">Card not in system — record the sale</h3>
+          </div>
+          <p className="text-xs text-gray-500 mb-3">
+            Copy the name + number straight off the price sticker. This goes
+            into the cart — the sale is recorded when you press Complete Sale,
+            and the back office matches the card up later. Inventory is not
+            touched.
+          </p>
+
+          <label className="block text-xs text-gray-400 mb-1">
+            Card name <span className="text-red-400">*</span>
+          </label>
+          <input
+            type="text"
+            value={draft.cardName}
+            onChange={(e) => onChange({ cardName: e.target.value })}
+            placeholder="e.g. Eevee"
+            autoFocus
+            className="w-full mb-3"
+          />
+
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Card number</label>
+              <input
+                type="text"
+                value={draft.cardNumber}
+                onChange={(e) => onChange({ cardNumber: e.target.value })}
+                placeholder="e.g. 101/149"
+                className="w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Sold for $ <span className="text-red-400">*</span>
+              </label>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={draft.price}
+                onChange={(e) => onChange({ price: e.target.value })}
+                placeholder="20.00"
+                className="w-full"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center gap-2 mt-4">
+            <button type="button" onClick={onCancel} className="px-3 py-2 text-sm text-gray-300 hover:text-white">
+              Cancel
+            </button>
+            <div className="flex gap-2">
+              {/* Enter = Add & next: a stack of unscannable cards is the
+                  common case now that qty is pinned to one line per card. */}
+              <button
+                type="submit"
+                className="px-3 py-2 text-sm border border-vault-border text-gray-200 hover:bg-vault-darker rounded-lg"
+                title="Or press Enter"
+              >
+                Add &amp; next
+              </button>
+              <button
+                type="button"
+                onClick={() => onSave({ stayOpen: false })}
+                className="px-3 py-2 text-sm bg-vault-gold/20 border border-vault-gold/60 text-vault-gold hover:bg-vault-gold/30 rounded-lg"
+              >
+                Add &amp; close
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    )
+  }
   return (
     <div
       className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
@@ -2510,12 +2705,16 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
     qtyEditable = false
   } else if (line.kind === 'single_manual') {
     title = line.description || '(no description)'
-    sub = line.bulk
-      ? 'Bulk buy — Cards Scan team will intake individually from Lark photo'
-      : 'Manual buy — not yet in singles inventory (intake separately via Cards Scan)'
+    sub = line.notInSystem
+      ? '⚠ NOT in system — records at checkout for later reconciliation, inventory untouched'
+      : line.bulk
+        ? 'Bulk buy — Cards Scan team will intake individually from Lark photo'
+        : 'Manual buy — not yet in singles inventory (intake separately via Cards Scan)'
     // No DB-side cap for manual singles — qty is whatever cashier typed.
-    available = 999
-    qtyEditable = true
+    // EXCEPT a not-in-system sale: one typed identity = one card; a second
+    // copy gets its own line so each carries its own reconcile marker.
+    available = line.notInSystem ? 1 : 999
+    qtyEditable = !line.notInSystem
   } else {
     title = '(unknown line kind)'
     sub = ''
@@ -2581,7 +2780,13 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
               min="0"
               step="0.01"
               value={line.price ?? ''}
-              onChange={(e) => onUpdate({ price: e.target.value === '' ? '' : Number(e.target.value) })}
+              onChange={(e) => {
+                const v = e.target.value === '' ? '' : Number(e.target.value)
+                // A not-in-system line's reconcile marker records sold_for —
+                // it must follow a per-line edit, or the marker keeps the
+                // modal price while the row books the edited one (Codex r2).
+                onUpdate(line.notInSystem ? { price: v, sold_for: v } : { price: v })
+              }}
               placeholder={ourPrice > 0 ? ourPrice.toFixed(2) : '0.00'}
               disabled={disabled}
               className={`w-full pl-5 pr-1 py-1 text-sm text-right font-mono ${
