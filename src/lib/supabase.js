@@ -5046,12 +5046,22 @@ const _sellManualLine = async ({
   cardName = null,
   cardNumber = null,
   pendingReconcile = false,
+  soldFor = null,
 }) => {
   const qty = Number(quantity) || 1
   const lineTotal = (Number(unitPrice) || 0) * qty
   const desc = (description || '').trim() || '(no description)'
+  // The marker's fields are split on '|' and '=' by the reconcile queue, so
+  // those characters must never survive inside a typed value — a card named
+  // "A | number=9" would forge a second field (Codex 8/21). Human-typed text
+  // loses nothing readable by mapping them to '/'.
+  const mfield = (v) => (String(v ?? '').trim() || '-').replace(/[|=]/g, '/')
+  // sold_for records the price the cashier actually typed, verbatim. In
+  // total-price mode the row's sale_price is the DISTRIBUTED share of the
+  // cart total, which can differ — the reconcile queue needs the number the
+  // customer really paid for this card, not the weighting result.
   const notes = pendingReconcile
-    ? `SALE (manual): ${subKind} — ${desc} | MANUAL_CARD_PENDING_RECONCILE | name=${(cardName || '').trim() || '-'} | number=${(cardNumber || '').trim() || '-'}`
+    ? `SALE (manual): ${subKind} — ${desc} | MANUAL_CARD_PENDING_RECONCILE | name=${mfield(cardName)} | number=${mfield(cardNumber)} | sold_for=${mfield(Number(soldFor ?? unitPrice) || 0)}`
     : `SALE (manual): ${subKind} — ${desc}`
 
   const sale = await createStorefrontSale({
@@ -5535,6 +5545,10 @@ export const submitStorefrontTransaction = async ({
           cardName: line.card_name || null,
           cardNumber: line.card_number || null,
           pendingReconcile: !!line.notInSystem,
+          // The price the cashier TYPED in the modal. line.price may be a
+          // total-mode distributed share by now; our_price survives
+          // distributeCartTotal untouched.
+          soldFor: line.our_price ?? line.price ?? null,
         }
         const result = isBuy
           ? await _buyManualLine(manualArgs)

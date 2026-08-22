@@ -611,7 +611,11 @@ export default function StorefrontSale() {
       setCart(prev => [
         ...prev,
         {
-          kind: 'single_manual', key, description: desc, quantity: qty,
+          // qty is pinned to 1: one typed identity = one physical card. Two
+          // copies = two lines, each with its own reconcile marker (Codex
+          // 8/21: an editable qty would double the money in per-line mode
+          // while the marker still names a single card).
+          kind: 'single_manual', key, description: desc, quantity: 1,
           notInSystem: true, card_name: name, card_number: number || null,
           // price drives per-line mode directly; our_price makes total-mode
           // distribution weight this line by what the cashier actually typed.
@@ -711,6 +715,12 @@ export default function StorefrontSale() {
       }
       if ((line.kind === 'slab_manual' || line.kind === 'single_manual') && !(line.description || '').trim()) {
         return 'Manual line missing description'
+      }
+      // A not-in-system line is a SALE record. Switching the transaction to
+      // Buy would route it through _buyManualLine — money OUT instead of in,
+      // and the reconcile marker silently dropped (Codex 8/21).
+      if (line.notInSystem && transactionType === 'buy') {
+        return 'Remove the "not in system" card line first — it records a sale, not a buy'
       }
     }
     if (transactionType === 'trade') {
@@ -2669,8 +2679,10 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
         ? 'Bulk buy — Cards Scan team will intake individually from Lark photo'
         : 'Manual buy — not yet in singles inventory (intake separately via Cards Scan)'
     // No DB-side cap for manual singles — qty is whatever cashier typed.
-    available = 999
-    qtyEditable = true
+    // EXCEPT a not-in-system sale: one typed identity = one card; a second
+    // copy gets its own line so each carries its own reconcile marker.
+    available = line.notInSystem ? 1 : 999
+    qtyEditable = !line.notInSystem
   } else {
     title = '(unknown line kind)'
     sub = ''
