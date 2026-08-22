@@ -11,7 +11,8 @@ import {
   fetchStreamCounts,
   fetchStreamCountItems,
   fetchOpenSurplus,
-  fetchStockElsewhere
+  fetchStockElsewhere,
+  touchInventoryLastUpdated
 } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
@@ -465,6 +466,23 @@ export default function StreamCounts() {
         })
       })
       
+      // A zero-grace row the counter found goods on: restart its 48h clock so
+      // the row stays on the next sheet while the dispute is open (the found
+      // units themselves are NOT written — positive diffs never are). Must
+      // happen BEFORE createStreamCount or the R2 rule reads the stamp as
+      // "book touched after the count" and voids this count's own surplus.
+      // Best-effort: a failed stamp only means the row ages out on the old
+      // clock — never block the count over it.
+      for (const it of items) {
+        if (it.expected_qty === 0 && it.actual_qty > 0) {
+          try {
+            await touchInventoryLastUpdated(it.product_id, form.location_id)
+          } catch (touchErr) {
+            console.warn('[zero-grace] last_updated stamp failed (row will age out on the old clock):', touchErr)
+          }
+        }
+      }
+
       // Create stream count record
       const streamCount = await createStreamCount({
         location_id: form.location_id,
