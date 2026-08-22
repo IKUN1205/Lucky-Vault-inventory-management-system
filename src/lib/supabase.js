@@ -5060,8 +5060,11 @@ const _sellManualLine = async ({
   // total-price mode the row's sale_price is the DISTRIBUTED share of the
   // cart total, which can differ — the reconcile queue needs the number the
   // customer really paid for this card, not the weighting result.
+  // The description is sanitized too on the marker path — it sits BEFORE the
+  // marker in the same notes string, so delimiters inside it could forge
+  // fields just as well as ones inside name/number (Codex 8/21 r2).
   const notes = pendingReconcile
-    ? `SALE (manual): ${subKind} — ${desc} | MANUAL_CARD_PENDING_RECONCILE | name=${mfield(cardName)} | number=${mfield(cardNumber)} | sold_for=${mfield(Number(soldFor ?? unitPrice) || 0)}`
+    ? `SALE (manual): ${subKind} — ${mfield(desc)} | MANUAL_CARD_PENDING_RECONCILE | name=${mfield(cardName)} | number=${mfield(cardNumber)} | sold_for=${mfield(Number(soldFor ?? unitPrice) || 0)}`
     : `SALE (manual): ${subKind} — ${desc}`
 
   const sale = await createStorefrontSale({
@@ -5548,7 +5551,7 @@ export const submitStorefrontTransaction = async ({
           // The price the cashier TYPED in the modal. line.price may be a
           // total-mode distributed share by now; our_price survives
           // distributeCartTotal untouched.
-          soldFor: line.our_price ?? line.price ?? null,
+          soldFor: line.sold_for ?? line.our_price ?? line.price ?? null,
         }
         const result = isBuy
           ? await _buyManualLine(manualArgs)

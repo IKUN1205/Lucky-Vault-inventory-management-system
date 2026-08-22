@@ -599,8 +599,13 @@ export default function StorefrontSale() {
     if (!draft) return
     const qty = Math.max(1, parseInt(draft.quantity) || 1)
     if (draft.notInSystem) {
-      const name = (draft.cardName || '').trim()
-      const number = (draft.cardNumber || '').trim()
+      // '|' and '=' are the reconcile marker's field delimiters. Strip them
+      // HERE, not just in the writer — the raw name is also embedded in the
+      // line's description, which precedes the marker in the sale notes, so
+      // an unsanitized "A | name=X" there could forge a field (Codex 8/21 r2).
+      const clean = (s) => (s || '').trim().replace(/[|=]/g, '/')
+      const name = clean(draft.cardName)
+      const number = clean(draft.cardNumber)
       const price = Number(draft.price)
       if (!name) { addToast('Card name is required', 'error'); return }
       // The whole point is capturing the money — a 0 here would record a
@@ -618,8 +623,12 @@ export default function StorefrontSale() {
           kind: 'single_manual', key, description: desc, quantity: 1,
           notInSystem: true, card_name: name, card_number: number || null,
           // price drives per-line mode directly; our_price makes total-mode
-          // distribution weight this line by what the cashier actually typed.
-          price, our_price: price,
+          // distribution weight this line by what the cashier actually typed
+          // (the sticker price IS our asking price for this card, so the
+          // "Our:" reference display is honest, not a fake system match).
+          // sold_for is the number the reconcile marker records — it follows
+          // per-line price edits (see updateLine call in the price input).
+          price, our_price: price, sold_for: price,
         },
       ])
       addToast(`Added: ${desc} — $${price.toFixed(2)}`, 'success')
@@ -2748,7 +2757,13 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
               min="0"
               step="0.01"
               value={line.price ?? ''}
-              onChange={(e) => onUpdate({ price: e.target.value === '' ? '' : Number(e.target.value) })}
+              onChange={(e) => {
+                const v = e.target.value === '' ? '' : Number(e.target.value)
+                // A not-in-system line's reconcile marker records sold_for —
+                // it must follow a per-line edit, or the marker keeps the
+                // modal price while the row books the edited one (Codex r2).
+                onUpdate(line.notInSystem ? { price: v, sold_for: v } : { price: v })
+              }}
               placeholder={ourPrice > 0 ? ourPrice.toFixed(2) : '0.00'}
               disabled={disabled}
               className={`w-full pl-5 pr-1 py-1 text-sm text-right font-mono ${
