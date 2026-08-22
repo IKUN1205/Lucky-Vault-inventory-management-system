@@ -622,12 +622,16 @@ export default function StorefrontSale() {
           // while the marker still names a single card).
           kind: 'single_manual', key, description: desc, quantity: 1,
           notInSystem: true, card_name: name, card_number: number || null,
-          // price drives per-line mode directly; our_price makes total-mode
-          // distribution weight this line by what the cashier actually typed
-          // (the sticker price IS our asking price for this card, so the
-          // "Our:" reference display is honest, not a fake system match).
-          // sold_for is the number the reconcile marker records — it follows
-          // per-line price edits (see updateLine call in the price input).
+          // price drives per-line mode directly. our_price doubles as the
+          // "Our:" reference (the sticker price IS our asking price, not a
+          // fake system match) and as this line's weight when total-mode
+          // distribution runs in reference-weighted form — which it only
+          // does when EVERY cart line has an our_price; mixed carts fall
+          // back to equal-per-unit, and the row's sale_price is then a
+          // distributed share. That is why sold_for exists: the number the
+          // cashier typed goes into the reconcile marker verbatim, whatever
+          // the distribution does. It follows per-line price edits (see the
+          // updateLine call in the price input).
           price, our_price: price, sold_for: price,
         },
       ])
@@ -1167,11 +1171,17 @@ export default function StorefrontSale() {
                 📦 Sealed → register UPC on <a href="/product-barcodes" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Product Barcodes</a>.
                 {' '}💎 Slab / 🎴 Single → ask the storefront team to intake it first.
               </div>
-              {transactionType !== 'buy' && (
+              {/* 12/13 digits = a UPC/EAN, i.e. a SEALED product with an
+                  unregistered barcode. Selling a box through the card path
+                  would skip its inventory decrement and hand the reconcile
+                  queue a "card" that is a box — so for UPC-shaped codes the
+                  registration hint above is the only path offered. */}
+              {transactionType !== 'buy' && !/^\d{12,13}$/.test(unknownCode) && (
                 <button
                   type="button"
+                  disabled={submitting}
                   onClick={() => { setUnknownCode(null); openManualLine('not_in_system') }}
-                  className="mt-2 text-xs px-2.5 py-1 border border-blue-500/40 text-blue-300 rounded hover:bg-blue-500/10"
+                  className="mt-2 text-xs px-2.5 py-1 border border-blue-500/40 text-blue-300 rounded hover:bg-blue-500/10 disabled:opacity-50"
                 >
                   🎴 Selling it right now? Record it manually (name + number + price)
                 </button>
@@ -1722,7 +1732,7 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
         onClick={onCancel}
       >
         <form
-          onSubmit={(e) => { e.preventDefault(); onSave({ stayOpen: false }) }}
+          onSubmit={(e) => { e.preventDefault(); onSave({ stayOpen: true }) }}
           className="bg-vault-surface border border-vault-gold/40 rounded-xl max-w-md w-full p-5 shadow-2xl"
           onClick={(e) => e.stopPropagation()}
         >
@@ -1731,9 +1741,10 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
             <h3 className="font-semibold text-base text-white">Card not in system — record the sale</h3>
           </div>
           <p className="text-xs text-gray-500 mb-3">
-            Copy the name + number straight off the price sticker. The sale is
-            recorded now (money never gets lost); the back office matches the
-            card up later. Inventory is not touched.
+            Copy the name + number straight off the price sticker. This goes
+            into the cart — the sale is recorded when you press Complete Sale,
+            and the back office matches the card up later. Inventory is not
+            touched.
           </p>
 
           <label className="block text-xs text-gray-400 mb-1">
@@ -1779,12 +1790,24 @@ function ManualLineModal({ draft, onChange, onSave, onCancel }) {
             <button type="button" onClick={onCancel} className="px-3 py-2 text-sm text-gray-300 hover:text-white">
               Cancel
             </button>
-            <button
-              type="submit"
-              className="px-3 py-2 text-sm bg-vault-gold/20 border border-vault-gold/60 text-vault-gold hover:bg-vault-gold/30 rounded-lg"
-            >
-              Add to cart
-            </button>
+            <div className="flex gap-2">
+              {/* Enter = Add & next: a stack of unscannable cards is the
+                  common case now that qty is pinned to one line per card. */}
+              <button
+                type="submit"
+                className="px-3 py-2 text-sm border border-vault-border text-gray-200 hover:bg-vault-darker rounded-lg"
+                title="Or press Enter"
+              >
+                Add &amp; next
+              </button>
+              <button
+                type="button"
+                onClick={() => onSave({ stayOpen: false })}
+                className="px-3 py-2 text-sm bg-vault-gold/20 border border-vault-gold/60 text-vault-gold hover:bg-vault-gold/30 rounded-lg"
+              >
+                Add &amp; close
+              </button>
+            </div>
           </div>
         </form>
       </div>
@@ -2683,7 +2706,7 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
   } else if (line.kind === 'single_manual') {
     title = line.description || '(no description)'
     sub = line.notInSystem
-      ? '⚠ NOT in system — sale recorded for later reconciliation, inventory untouched'
+      ? '⚠ NOT in system — records at checkout for later reconciliation, inventory untouched'
       : line.bulk
         ? 'Bulk buy — Cards Scan team will intake individually from Lark photo'
         : 'Manual buy — not yet in singles inventory (intake separately via Cards Scan)'

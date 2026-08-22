@@ -5932,6 +5932,16 @@ export const fetchStorefrontDailySummary = async (from, to) => {
       } else if (/^BUY:\s*single/i.test(n)) {
         kind = 'single_manual'
         name = n.replace(/^BUY:\s*single\s*[—-]\s*/i, '') || '(manual single buy)'
+      } else if (/^SALE \(manual\):\s*slab/i.test(n)) {
+        kind = 'slab_manual'
+        name = n.replace(/^SALE \(manual\):\s*slab\s*[—-]\s*/i, '')
+      } else if (/^SALE \(manual\):\s*single/i.test(n)) {
+        // Not-in-system sales carry the reconcile marker after the readable
+        // description — the marker is plumbing for the back-office queue,
+        // never something to print at the register (Workflow review 8/21).
+        kind = 'single_manual'
+        name = n.replace(/^SALE \(manual\):\s*single\s*[—-]\s*/i, '')
+          .split('| MANUAL_CARD_PENDING_RECONCILE')[0].trim() || '(manual sale)'
       } else {
         name = n
       }
