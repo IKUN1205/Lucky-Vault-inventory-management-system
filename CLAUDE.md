@@ -4,7 +4,8 @@
 - **病根:8/12 定的「每批必跑 `singles_intake_batch.py`」是手工步骤,6 个批次只跑过 1 次** —— 和 GTS commit 三个月跑 2/20 同一个病(「没人做的第二步不是保险,是漏点」)。8/11–8/21 累计 **9 个批次 ≈ 542 张贴了价签的实体卡**没入 Supabase:80 个 tcg_id **扫码查无此卡**(Luna 中的就是这个,里面有 $1,094 的 Grey Felt Hat Pikachu、$1,001 的 Mew ex)、91 个只剩 sold 行(扫出 Already sold,走覆盖恢复卖出、成本全 null)、76 个有活行但数量没加。
 - **✅ 9 批全部补入(记成本 $15,338 = 市价×80%),247+114 个 tcg_id 复核:0 absent**。两张已通过收银覆盖卖掉的实体卡(Meowth ex $128、Mr. Mime $23.73,sale_notes 带 `RECOVERED_AT_COUNTER`)**从 TSV 副本里预先摘行再入库,不造幽灵**;normal 卖出走的是活行池、账自洽,不用扣。**Mr. Mime 同时出现在 441f 和 5c2b 两批里,同一笔卖出只许扣一次。**
 - **甄别时排掉的**:`dd863a3dffbe` / `7d721e740004` 是 8/11 写入器重建时的**自测批**(自家卡重贴,入了就是重复);FAILED 的 `e47ba141b12c` 和成功批 md5 相同(误重交,零产出);FAILED 的 `bca2c792e6ab` **有 29 张真卡**(状态失败≠没产出,标签当天手工补渲过)。
-- **✅ 新哨兵 `singles_intake_watch.py` 已挂进 05:40 日巡**:比对 jobs.db(DONE + **FAILED 但 TSV 有行**)vs intake 台账,漏一批点名一批,只在有欠账时发 Telegram。变异测试:空台账 → 10 个 job 全部报出。
+- **✅ 已全自动(Gary 8/21「一定要自动」)**:`singles_intake_watch.py --apply` **自己跑 intake 而不是喊人**,新任务 `LV_Singles_Intake_Auto` 每小时一跑(wscript+run_hidden.vbs 模式,实测 exit 0),05:40 日巡同一条做备份。三层安全:① 批次工具自己的台账拒绝二次执行(实测:重触发已入批次 → 拒绝零写入)② **已通过收银覆盖卖掉的贴签卡自动从 TSV 扣行**(`RECOVERED_AT_COUNTER` + sale_date≥批次日),每笔卖出行记入 `singles_intake_recovered_claimed.json` 认领台账,**同一张卡出现在两个批次也只扣一次**(Mr. Mime 就是这个形状,已预置 2 行)③ 检查挂了报「查不了」,不报平安。
+- **🔴 recovery 卖出全景(8/20–21 共 8 笔 / $340.66,全部成本 null)**:除批次里的 Meowth ex/Mr. Mime 外,**Poliwrath $120 · Nidoking · Kangaskhan · Trubbish/Sigilyph/Woobat(White Flare IR)6 张不在任何标签批次里** —— 是**门店买入那条断轨**的卡(买入记了钱、卡没建行,扫出 Already sold 走覆盖)。库存无需修正(它们从没在库),**成本 null 是 8/7 Codex 定的设计**(clone 连市价都不带),要补 COGS 得逐卡查市价×80%,待 Gary 点头才动(卖出行永不回改是铁律,改前必须明示)。
 - **⏳ Luna 那 $20 仍未入账**:三张表零记录,候选卡好几张(~$18–22 的贴签卡)。**群聊金额不能直接改库存** —— 要 Luna 说清卖的是哪张(价签上印着卡名+编号),定了再按正常流程记卖出。
 - ⚠️ 顺带发现:`api/sync-singles-sheet` 的「新 tcg_id 会自动插入」这个兜底**对这 9 批基本没生效**(80 个 absent 里大量是全新 id)——小时级 cron 是否还在跑没查,反正**不能再指望它当入库通道**。
 
