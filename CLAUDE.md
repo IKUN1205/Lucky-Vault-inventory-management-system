@@ -1,5 +1,10 @@
 # LV Inventory — 作业手册 brief (2026-08-22)
 
+## ✅ 8/22 批发通道首单闭环:小马 13 盒 $926 现金(问价→锚点→成交→一句话入账)
+- **流程原型**:Mario TG 问「Mega Brave/Symphonia 買取价」→ 回了三个锚点(**買取=地板 · TCG 市价=天花板 · 建议批发=成本+20%+**,附精确汇率 158.95 和我们的落地成本)→ 他当天按锚谈成 6 Brave + 7 Symphonia = $926 现金 → 「mark as sold」一句话入账。**以后批发就走这个节奏;任何人 TG 问价都答得出(kaitori_prices.json + market_price_cache + 实时汇率)。**
+- **入账**(tx `5b0d4ac1`,备份 `mario_wholesale_backup_0822.json`):收银台同套语义——storefront_sales 两行(Itemized,location=**Master**(货在哪记哪),cashier=Mario,分摊按批发参考价加权 $452.49/$473.51)+ 现金 payments 行 + Master 扣库存(Brave 11→5 · Symphonia 11→4,乐观锁+回读)。
+- **毛利实话**:按真实落地成本 $826 赚 ~$100 = **+12%**——高于日本店地板($861)、低于建议区间($984+),13 盒同日清掉可接受,已告知下次往区间顶。⚠️ 账面 COGS 用 149.3 汇率的 basis($880)会把毛利压成 5%——**又是写死汇率那 6.7%**,读毛利报表时要记得。
+
 ## ✅ 8/22 JP 买入 % 基准 = Runto 買取(Gary:「对比 runto 的%,相当于 tcg 买取比例一个概念」;**服务端已生效,app 分支 `feat/kaitori-buy-pct` Codex SHIP 等「发」**)
 - **服务端(已生效,无需发版)**:`buy_market_check.publish()` 加 kaitori 覆盖层——JP 品的 feed 价 = **Runto 買取 ÷ 实时汇率**(带 `source:"kaitori_runto"` + `jpy` + `fx`;汇率 80-250 保险带 + 上次好值兜底,取不到就跳过覆盖绝不编)。名字匹配**只认唯一精确命中**(kaitori key 去掉尾部 "Japanese" 对 products.name),46 条買取先映射上 5 条主力(Storm 盒 → Runto ¥16,500 = $103.80);**其余 41 条要靠别名扩展**(待做)。EN/CN 有真 TCG 价的不覆盖。
 - **app 端(分支)**:kaitori 来源渲染 **「X% of Runto buyback (¥16,500 ≈ $103.80)」**,100% = 「that is what the shop itself pays」,>105% = 「MORE than the buyback shop pays」——**买方价永不冒充卖方市价**;TCG 措辞逐字节不变(Codex 一轮抓的 unit_mismatch 文案回滚);[20,300] 单位带照管 kaitori 条目。测试 15 项跑真模块含变异。**旧版 app 在发版前会把 Runto 数按「market」字样渲染**——数字对、标签暂时不精确,发版即correct。
