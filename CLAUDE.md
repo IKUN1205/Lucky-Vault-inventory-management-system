@@ -1,5 +1,11 @@
 # LV Inventory — 作业手册 brief (2026-08-22)
 
+## ✅ 8/22 JP 买入 % 基准 = Runto 買取(Gary:「对比 runto 的%,相当于 tcg 买取比例一个概念」;**服务端已生效,app 分支 `feat/kaitori-buy-pct` Codex SHIP 等「发」**)
+- **服务端(已生效,无需发版)**:`buy_market_check.publish()` 加 kaitori 覆盖层——JP 品的 feed 价 = **Runto 買取 ÷ 实时汇率**(带 `source:"kaitori_runto"` + `jpy` + `fx`;汇率 80-250 保险带 + 上次好值兜底,取不到就跳过覆盖绝不编)。名字匹配**只认唯一精确命中**(kaitori key 去掉尾部 "Japanese" 对 products.name),46 条買取先映射上 5 条主力(Storm 盒 → Runto ¥16,500 = $103.80);**其余 41 条要靠别名扩展**(待做)。EN/CN 有真 TCG 价的不覆盖。
+- **app 端(分支)**:kaitori 来源渲染 **「X% of Runto buyback (¥16,500 ≈ $103.80)」**,100% = 「that is what the shop itself pays」,>105% = 「MORE than the buyback shop pays」——**买方价永不冒充卖方市价**;TCG 措辞逐字节不变(Codex 一轮抓的 unit_mismatch 文案回滚);[20,300] 单位带照管 kaitori 条目。测试 15 项跑真模块含变异。**旧版 app 在发版前会把 Runto 数按「market」字样渲染**——数字对、标签暂时不精确,发版即correct。
+- **无 SKU 的买入闭环(Gary 问「supabase 没有 sku 就要建立 sku 并且 map sku」——流程已通,不用新做)**:买入表单遇新品 → `createProductChecked`(查重守卫)建 SKU → **夜里 publish 的 stocked scope 自动含新 acquisitions** → TCG 严格名匹配或 kaitori 名匹配自动出价 → 都匹配不上的进 unpriced 点名清单等钉。唯一人工步 = 给对不上名的钉价源。
+- **背景(8/22 凌晨 Storm 定价链)**:¥17,000 买价 vs Runto ¥16,500 / Moto ¥17,000 / SNKRDUNK 实成交 ~¥16,300 / eBay 地板 $96.73 —— **买在日本市场顶端,唯一能撑住的通道是门店 $170**。SNKRDUNK 主页价格是客户端渲染,要 headless 渲染读(页面 innerText 里有逐笔成交历史,很好用);Storm 钉价页 apparels/846048。
+
 ## ✅ 8/22 e1 场结算首跑:eBay 版三源对账落地,当场抓到 Hidden Fates 零毛利(Gary:「ebay1 的库存报告和 tiktok 逻辑一样 看 transcript 对应 告诉我们赚了多少钱 什么产品在亏钱」)
 - **新 `lv-finance/ebay_session_pnl.py`**:场耗=下播盲盘负差 · 收入=拍锤日志(按 sid 定房)+ 转录宣告句归属(Journey 方法:单一产品句→窗内下一锤,菜单句剔除)· 成本=e1 basis;**未归属的锤绝不硬塞**。转录行时间戳字段是 **`epoch`**(不是 t0/ts,猜错=归属全灭)。今晚 Brandon 场(sid unVraCjFTq4Ckp4e,17:04–22:43 PT):**143 锤毛 $10,787,归属 73%;场耗 234 件 / sealed COGS $6,963;真毛利 ≈ +$429〜1,650(4–16%)** —— slab 按 **Gary 定的 30% 毛利假设**计成本(slab 全库无成本,这是显式口径不是数据),区间宽度=39 个未归属锤是 slab 还是已计成本的 bundle,订单 join 后收窄。
 - **🔴 Hidden Fates 散包 = 零毛利实锤(已发 Mario,Gary:「let mario know」)**:41 包 / 23 锤 $1,846 = $45.02/包,扣费 $42.02 vs 成本 $42.00 —— **一分不剩**。成本本身没错(Frank 8/17 Discord/PayPal 75包$3,150=$42,= 钉价市价 $48.38 的 87%,他的正常带;已发 TG 让他口头确认);**错在卖法**:$50 单包/两连 $90 全部贴成本,唯一赚钱的是 19:02-07 三锤 $185/135/130(chase 话术段,135%+ 市价)。**和 Journey 同构:lot 结构决定价格。** 建议:$55 底价或改 chase/定价形态。
