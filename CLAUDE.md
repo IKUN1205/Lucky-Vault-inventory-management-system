@@ -1,5 +1,10 @@
 # LV Inventory — 作业手册 brief (2026-08-22)
 
+## 🚨 新铁律:答成员问题前先读 `lv-finance/data/tg_chat_log.jsonl`(8/22 Frank OP-17 事件)
+- **成员发给 bot 的自由提问一直有人答**:处理链末尾的 `_spawn_chat` → `tg_chat_runner.py`(headless Claude,带角色简报),**Q/A 全文存档在 `data/tg_chat_log.jsonl`**(已 121 条)。Gary 中继给我看的只是问题,**看不到 runner 已经答了什么**。
+- **8/22 我栽了个跟头**:Gary 转来 Frank 三条 OP-17 定价问题问「你怎么回复的」,我以为没人回过,盲答了三条——①先按英文盒算(Frank 更早的消息里明说 japanese,我没看到)②让他「先卖掉剩下 13 盒 $331 的」——**runner 早就用 TT 订单数据证明那 12 盒已按 $409.99 卖掉了**(盘点没归零的 count lag)。runner 的回答质量很高(链路:识别 OP17=日本独占 → 案例成本 $2,438.80/箱 → $224.99 边际 → 地板 $217)。**两条教训:① 回成员问题前必读 QA 存档 ② runner 用账面汇率 149.3,真实边际要按实时汇率重算**(它算 +$8/盒,真实 +$27/盒)。
+- **OP-17(= THE WORLD'S STRONGEST WARRIORS,日本独占)整理**:`77d8f781 "(OP17) Booster Box"` 语言 **EN→JP 已修**(第 5 例错标;EN 版全球未发售,Frank 的 $325-333 是 day-one 日版 aftermarket,卖 $409.99 清仓 ✓)。家族:`71cc6ce5` JP盒(0库存)· `96a96f0a` Case(PK 7 箱)· 散包/切片。**⚠️ 两行盒 SKU 是同物异名待合并;Case ppb=10 vs Frank 说一箱 12 盒——已让他实物确认,错 20% 的每盒成本**;38 箱已购(¥320-370K/箱),12 箱 8/21 PO 未到。⚠️ 我给 Frank 的批发锚:case 货 $224.99 = 实时汇率下 +$27/盒(+15%),地板 $217。
+
 ## ✅ 8/22 批发通道首单闭环:小马 13 盒 $926 现金(问价→锚点→成交→一句话入账)
 - **流程原型**:Mario TG 问「Mega Brave/Symphonia 買取价」→ 回了三个锚点(**買取=地板 · TCG 市价=天花板 · 建议批发=成本+20%+**,附精确汇率 158.95 和我们的落地成本)→ 他当天按锚谈成 6 Brave + 7 Symphonia = $926 现金 → 「mark as sold」一句话入账。**以后批发就走这个节奏;任何人 TG 问价都答得出(kaitori_prices.json + market_price_cache + 实时汇率)。**
 - **入账**(tx `5b0d4ac1`,备份 `mario_wholesale_backup_0822.json`):收银台同套语义——storefront_sales 两行(Itemized,location=**Master**(货在哪记哪),cashier=Mario,分摊按批发参考价加权 $452.49/$473.51)+ 现金 payments 行 + Master 扣库存(Brave 11→5 · Symphonia 11→4,乐观锁+回读)。
