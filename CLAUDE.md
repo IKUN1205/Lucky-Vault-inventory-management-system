@@ -1,4 +1,12 @@
-# LV Inventory — 作业手册 brief (2026-08-22)
+# LV Inventory — 作业手册 brief (2026-08-23)
+
+## ✅ 8/23 对货日报上线:`inventory-sync/count_sales_recon.py` 已挂日巡(Gary:「先从对货开始做…卖的和少的库存对得上对不上…你和codex一起看看」)
+- **每场盘点一个判定**:`[OK ]`(消耗全有卖出证据)/ `[OK*]`(过但带保留,保留逐条印出)/ `[GAP]`(干净窗口下消耗多于证据,点名)/ `[N/C]`(比不了,每条说清为什么:坑位行/窗口内调入/无转录/baseline 可疑/源挂了——**源挂了永不当 0 卖**)。窗口=上一场盘点→本场(created_at);正差只展示永不断言。已挂 `run_inventory_watch.cmd` 末尾(先跑 pull_transcripts 再跑 recon,失败不拖垮日巡),暂只发 Gary Telegram;**发团队群的 `--lark "Inventory In&Out"` 等 Gary 定群名**。
+- **证据分房**:TT 房=订单 API 总量对铁律2 地板带(sold≤units×1.15+5;正向判定叫「no unexplained burn」——单边下限,不冒充双向一致;取消单独成桶「可能照样拆了」既不进地板也不丢);eBay 房=拍锤+转录家族归属(**共享 `ebay_session_pnl.py` 的函数,分类正则直接用 daily_inventory_watch 的对象,测试钉了 identity 防漂移**)。
+- **eBay session→房间是推断的,规则三层**:①家族重叠计分(≥2 个消耗家族各≥3 次提及,或单家族covering ≥50% 消耗——纯 Journey 场合法、slab 场聊两句 one piece 不行)②**同房并发互斥**(一房不能同时开两场;用拍锤全时段判重叠≥15min,跨盘点窗口也生效——8/22 深夜 slab 场就是这样被排掉的)③平手=contested 谁都不给。**真正的根治是转录机在采集端打 sid→room 标**,待做。
+- **Codex 两轮设计+两轮代码审查,要点全收**:锤是 lot 不是件(去掉 60% MATCH 阈值,eBay 判定=家族证据覆盖)· 转录证据必须裁到窗口(它抓到我测试的 epoch 写在窗口外还断言 OK)· baseline 可疑量级 > 消耗 25% → 不给任何判定(Brandon 8/21 场窗口里有我 690u 的手动恢复,正确地 N/C)· 无家族 SKU 不许从分母消失 · null 数量≠0。**17 项测试跑真函数+变异证红**(band 关掉→测试红)。
+- **首跑实况(8/21-22 四场)**:Vahe 8/22 15:24 PT e1 首次下播盘点 `[OK*]`——272 件消耗,精确匹配到 CNNPaaT9 一场(72 锤 $5,084,1 锤未归属),和人工取证结论一致;Yaz/Trey/Brandon 三场 `[N/C]` 各有真原因(坑位行/调入/手动恢复污染 baseline)。
+- **顺带修正 8/22 Vahe 场结算**:WSW 那 −11 是 **Box SKU $333 basis 的假 COGS**——纸面从 PK 转来的 12 盒是 TT 已按 $409.99 卖掉的 count-lag 幽灵,实物拆的是 case 货($203/盒),**PK 的 7 箱 case 账下次盘点会缺**(case→盒无 box_breaks 路径,unit 链作业);**CZ 散包成本 $22/包是真实进货**(8/03+8/17 两笔),锤价 $12.3/包=每包亏 $10,63 包亏 ~$630,要问 Frank;**Journey 提价生效**(主播喊 $11/包,曾 $7);ES 未提价(仍喊 $42,要求 $48-50)。`ebay_session_pnl.py` 重构成可导入函数库(load_hammers/load_announces/attribute/sids_in_window/fam_of),CLI 行为不变,家族表补了 WSW/OP17、Mega Brave、Symphonia、Inferno X。
 
 ## 🚨 新铁律:答成员问题前先读 `lv-finance/data/tg_chat_log.jsonl`(8/22 Frank OP-17 事件)
 - **成员发给 bot 的自由提问一直有人答**:处理链末尾的 `_spawn_chat` → `tg_chat_runner.py`(headless Claude,带角色简报),**Q/A 全文存档在 `data/tg_chat_log.jsonl`**(已 121 条)。Gary 中继给我看的只是问题,**看不到 runner 已经答了什么**。
