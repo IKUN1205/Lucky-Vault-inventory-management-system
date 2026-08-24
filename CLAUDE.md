@@ -1,5 +1,11 @@
 # LV Inventory — 作业手册 brief (2026-08-24)
 
+## 🔴 8/24 账号主权查清:Vercel 已是 Gary 的,Supabase 生产库还在 William 手里
+- **Vercel 转户坐实**:Gary 8/18 接受的那个邀请就是交接,现在是 `williamyu969716508-7854's projects`(Pro)团队 **Owner**。登录账号 **zhc091@gmail.com**;⚠️ 登录后默认落在他自己的**空 Hobby 空间**(zhc091-9477),看着零项目别慌,**切到 william 团队**才看得到生产项目。团队里只有一个项目 `lucky-vault-inventory-management-system`(prj_tufSRLZXtj02CTdaAnhj0fbrjfLL),唯一域名 **`lucky-vault-inventory-management-sy.vercel.app`,没有自定义域名**(8/21「真域名不知道」之谜的答案)。**Access Token 已建并验证**(无期限),存 `inventory-sync/data/vercel_token.json` —— 验部署/读日志/查 env 以后全走 API 不进浏览器。**坑:tokens 页 UI 的 SCOPE 下拉对合成事件免疫**(点了不提交,连试 4 版),正解是用登录会话在页面里 `fetch POST /api/v3/user/tokens` 一发即成(响应带一次性 bearerToken)。
+- **🔴 推翻 8/11 的假设:全世界不存在 service_role key。** Vercel env 全量 11 个(Lark webhooks ×6 · GOOGLE_SERVICE_ACCOUNT_JSON · TIKTOK_COOKIE · AFTERSHIP_API_KEY · VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY),**没有 service key、没有数据库连接串** —— api/ 路由全靠 anon + Google SA 在跑。**DDL 唯一路径 = Supabase dashboard,没有备选。**
+- **🔴 Supabase:生产库 `dqreqevbjszercgackuc` 挂在 William 的账号下,Gary 够不着。** Gary 的 Supabase(GitHub `lucky4707` / zhc091@gmail.com)只有一个空项目(gmtgoebxathyotgvsskc,0 GB)。**待办:让 William 花 2 分钟** —— supabase.com 登录 → 那个 org → Organization Settings → Team → Invite,邀 **zhc091@gmail.com** 当 **Owner**;Gary 点邮件接受即完成,**URL/keys 全不变、零停机**。audit log 和 9 张积压表全卡在这一步;William 不理会才走整库迁移(最后手段)。**这次 handover 比 Vercel 那次要紧:Supabase 是数据本身,org 主人能读能删全库。**
+- 化石项目 `luckyvault-inventory.vercel.app`(7 月老 build,连着生产库)**不在 Gary 团队里** → 在 William 个人 Vercel 账号下。让 William 顺手删,或以后轮换 anon key 让它失效(动静大,不急)。
+
 ## ✅ 8/24 周对账老板视图上线(Gary:「库存一周的变化能不能对应上直播的消耗 我作为老板比较需要知道」)
 - **`count_sales_recon.py --weekly 7`**:按房汇总一周——写掉多少件/多少钱(账面 basis)· 直播证据多少(TT 地板+GMV / eBay 锤数+$)· 一句周判定 · 丢弃的正差合计 · **「最后一次盘点是 N 天前——之后全是未验证的」**。复用逐场机器(`build(collect=)`),周报和日报永远不会打架。已挂 `LV_Weekly_Count_Recon`(周一 08:00,run_weekly_recon.bat,wscript 模式)发 Gary Telegram;首份 8/24 手动补发。
 - **首份周报实况(8/17-24)**:PK 11 场点/写掉 2,873 件 $86K 账面 vs TT 地板 1,883 件 $82K GMV(差 990 件但 662 行归不到 SKU,不断言损失);e1 5 场/1,019 件 $26K vs 1,578 锤 $71.8K 全有证据;RocketsHQ 112 件 vs 地板 1,156 无异常;**e2 6.7 天没盘 = 最大盲区**(上次盘点还丢弃了 +499 正差)。
