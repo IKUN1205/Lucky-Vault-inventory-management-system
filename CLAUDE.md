@@ -1,4 +1,10 @@
-# LV Inventory — 作业手册 brief (2026-08-23)
+# LV Inventory — 作业手册 brief (2026-08-24)
+
+## ✅ 8/24 周对账老板视图上线(Gary:「库存一周的变化能不能对应上直播的消耗 我作为老板比较需要知道」)
+- **`count_sales_recon.py --weekly 7`**:按房汇总一周——写掉多少件/多少钱(账面 basis)· 直播证据多少(TT 地板+GMV / eBay 锤数+$)· 一句周判定 · 丢弃的正差合计 · **「最后一次盘点是 N 天前——之后全是未验证的」**。复用逐场机器(`build(collect=)`),周报和日报永远不会打架。已挂 `LV_Weekly_Count_Recon`(周一 08:00,run_weekly_recon.bat,wscript 模式)发 Gary Telegram;首份 8/24 手动补发。
+- **首份周报实况(8/17-24)**:PK 11 场点/写掉 2,873 件 $86K 账面 vs TT 地板 1,883 件 $82K GMV(差 990 件但 662 行归不到 SKU,不断言损失);e1 5 场/1,019 件 $26K vs 1,578 锤 $71.8K 全有证据;RocketsHQ 112 件 vs 地板 1,156 无异常;**e2 6.7 天没盘 = 最大盲区**(上次盘点还丢弃了 +499 正差)。
+- **⚠️ 8/24 00:00 PT Brandon 又盘了 e1(写掉 322 件)**:White Flare **第三次正差(+28,前两次 +15/+9)——WF 账面偏低在累积证据,该复点定案**;还有 **WSW box +12 正差**——Vahe 昨天刚写掉 −11,实物盒其实在架上(case 拆出来的),幽灵在账面上来回震荡,**case→box 的 box_breaks 路径不建这个洞不会停**。
+- ⚠️ Bash heredoc 会吞 `\n` 转义级(f-string 里变真换行 → SyntaxError)——**往 .py 里写代码只用 Write/Edit 工具**,那条老家规连脚本生成脚本也适用。
 
 ## ✅ 8/23 对货日报上线:`inventory-sync/count_sales_recon.py` 已挂日巡(Gary:「先从对货开始做…卖的和少的库存对得上对不上…你和codex一起看看」)
 - **每场盘点一个判定**:`[OK ]`(消耗全有卖出证据)/ `[OK*]`(过但带保留,保留逐条印出)/ `[GAP]`(干净窗口下消耗多于证据,点名)/ `[N/C]`(比不了,每条说清为什么:坑位行/窗口内调入/无转录/baseline 可疑/源挂了——**源挂了永不当 0 卖**)。窗口=上一场盘点→本场(created_at);正差只展示永不断言。已挂 `run_inventory_watch.cmd` 末尾(先跑 pull_transcripts 再跑 recon,失败不拖垮日巡),暂只发 Gary Telegram;**发团队群的 `--lark "Inventory In&Out"` 等 Gary 定群名**。
