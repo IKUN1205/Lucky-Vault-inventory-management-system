@@ -1,5 +1,11 @@
 # LV Inventory — 作业手册 brief (2026-08-24)
 
+## ✅ 8/24 制度:挪库进出直播房 = 该房群里自动通知(Gary:「以后记成给他们在群里发他们 transfer inventory」)
+- 新 `inventory-sync/room_transfer_notify.py` 挂 `LV_Room_Transfer_Notify`(**每 10 分钟**):movements 里任何进/出直播房的转库,以该群现有 inventory bot 的 webhook 身份发进房间自己的群;`(Case)` SKU 自动附「SEALED CASES——按箱数,别数箱里的盒」——治的就是「货进了房、数货的人不知道」(Yaz 75 盒被擦 8/21 · Eric 转库晚记 41 分钟 · **8/24 中午 12 箱 WSW 进 PK 当晚被 Trey 连箱内盒数成 206**)。**Codex 连审 4 轮、11 条 P1 全修才 SHIP**:ingest 先落盘再发(崩溃最坏=重发一条,绝不丢)· 逐 (movement,group) 重试 3 次后放弃并 TG 点名 · 游标全精度 + 边界时间戳 id 全集(等值查询也分页)· 状态原子写 + 深度结构校验 + 损坏重播种(告警和状态变更同一笔落盘)· TG backlog 先持久化再发 + HTML 转义 · **Lark webhook 拒收是 HTTP 200 + body 错误码,只认 code==0**。
+- **房→群映射(Gary 定)**:PK=PACKHEADS · e2=SLABBIEPATTY · RocketsHQ=ROCKETS TIKTOK · e1=EBAY TEAM。前三个群的 bot webhook 已从群设置收割存 `data/lark_room_webhooks.json`(路径:群 → ⋯ → Settings → Bots → bot → Copy 按钮 → 读剪贴板;**「⋯」按钮 aria 检索不到,要按坐标点,页面 DPR 1.25 坐标要换算**)。**⚠️ e1/EBAY TEAM 没拿到:Gary 不是那个群的群主**,bot 详情只显示「Added by Peilin Yu」不露 URL、也没有加 bot 入口——**待 Peilin 把「LuckyVault Inventory Bot」的 webhook URL 发来**,填进 json 即通;缺口期間 e1 的转库会每天 TG 提醒 Gary 一次「该房没被通知」。
+- **顺带发现「US Buy Record」群**——8/19 读不到的 Frank 买取记录群就是它(侧边栏在),走 Gary 浏览器可读。
+- **⏳ 同日决定待做(Gary:「报告不需要这么多错误 用 api 理解一下对上就行」)**:日报差异先过四道解释器(①API 销售对上→不报 ②窗口内转库→标时差 ③CASE BREAK 签名(箱负差+同家族盒正差同场)→一条拆箱账 ④已知双单位行(Marvel 两行)→标「一行两种货」),剩下的才点名。
+
 ## 🔴 8/24 账号主权查清:Vercel 已是 Gary 的,Supabase 生产库还在 William 手里
 - **Vercel 转户坐实**:Gary 8/18 接受的那个邀请就是交接,现在是 `williamyu969716508-7854's projects`(Pro)团队 **Owner**。登录账号 **zhc091@gmail.com**;⚠️ 登录后默认落在他自己的**空 Hobby 空间**(zhc091-9477),看着零项目别慌,**切到 william 团队**才看得到生产项目。团队里只有一个项目 `lucky-vault-inventory-management-system`(prj_tufSRLZXtj02CTdaAnhj0fbrjfLL),唯一域名 **`lucky-vault-inventory-management-sy.vercel.app`,没有自定义域名**(8/21「真域名不知道」之谜的答案)。**Access Token 已建并验证**(无期限),存 `inventory-sync/data/vercel_token.json` —— 验部署/读日志/查 env 以后全走 API 不进浏览器。**坑:tokens 页 UI 的 SCOPE 下拉对合成事件免疫**(点了不提交,连试 4 版),正解是用登录会话在页面里 `fetch POST /api/v3/user/tokens` 一发即成(响应带一次性 bearerToken)。
 - **🔴 推翻 8/11 的假设:全世界不存在 service_role key。** Vercel env 全量 11 个(Lark webhooks ×6 · GOOGLE_SERVICE_ACCOUNT_JSON · TIKTOK_COOKIE · AFTERSHIP_API_KEY · VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY),**没有 service key、没有数据库连接串** —— api/ 路由全靠 anon + Google SA 在跑。**DDL 唯一路径 = Supabase dashboard,没有备选。**
