@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
+import { isLedgerRoomName } from '../lib/countRooms.js'
 import { fetchStreamCounts, fetchLocations } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
@@ -87,7 +88,10 @@ export default function StreamSessions() {
         fetchStreamCounts(null, null, null),
         fetchLocations(),
       ])
-      setCounts(countsData || [])
+      // Ledger rooms (Front Store / Master) count on the same blind page but
+      // this page is about SESSIONS and sales — their counts would show as
+      // phantom "Units sold" (countRooms.js, 2026-08-24).
+      setCounts((countsData || []).filter(c => !isLedgerRoomName(c.location?.name)))
       // Only stream rooms are relevant here — filter the location dropdown
       setLocations((locData || []).filter(l => l.name?.includes('Stream Room')))
     } catch (err) {

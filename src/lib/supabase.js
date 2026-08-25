@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { isLedgerRoomName } from './countRooms.js'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://dqreqevbjszercgackuc.supabase.co'
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxcmVxZXZianN6ZXJjZ2Fja3VjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NzU4NzcsImV4cCI6MjA5MzA1MTg3N30.vDu1lA5SJLpA_mRhAF5JkVSreP_F4Q9g_Ta-9xm-UdU'
@@ -3601,7 +3602,12 @@ export const fetchWeeklyUsage = async (start, end) => {
   for (const r of [sfRes, scRes, ooRes, jpRes]) if (r.error) throw r.error
 
   // Stream line items (sold rows only) for the sessions in window.
-  const scIds = (scRes.data || []).map(s => s.id)
+  // Ledger rooms (Front Store / Master) count on the same blind page but their
+  // shortfall is NOT sales — the POS already records store sales here as
+  // storefront rows, and Master sells nothing (countRooms.js, 2026-08-24).
+  const scIds = (scRes.data || [])
+    .filter(s => !isLedgerRoomName(s.location?.name))
+    .map(s => s.id)
   let sciData = []
   if (scIds.length) {
     const { data, error } = await supabase
@@ -3661,6 +3667,7 @@ export const fetchWeeklyUsage = async (start, end) => {
   }
   for (const s of scRes.data || []) {
     const name = s.location?.name || '(no room)'
+    if (isLedgerRoomName(name)) continue  // ledger counts are not stream sessions
     scMap.set(s.id, { location_id: s.location_id, name })
     touchRoom(s.location_id, name).sessions += 1
   }
@@ -3732,7 +3739,7 @@ export const fetchWeeklyUsage = async (start, end) => {
   return {
     start, end,
     storefront: { units: storefrontUnits, txns: (sfRes.data || []).length },
-    stream:     { units: streamUnits, sessions: (scRes.data || []).length, rooms },
+    stream:     { units: streamUnits, sessions: (scRes.data || []).filter(s => !isLedgerRoomName(s.location?.name)).length, rooms },
     online:     { units: onlineUnits, orders: orderIds.length, lines: ooiData.length },
     usSubtotal: storefrontUnits + streamUnits + onlineUnits,
     products,

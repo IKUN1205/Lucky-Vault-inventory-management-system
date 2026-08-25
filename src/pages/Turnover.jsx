@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
+import { isLedgerRoomName } from '../lib/countRooms.js'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { TrendingUp, ChevronRight, ChevronDown, Search } from 'lucide-react'
@@ -150,15 +151,20 @@ export default function Turnover() {
       // Normalize all 3 sources into a single events array
       const events = []
 
-      // 1. Stream counts — channel = location name (the stream room)
+      // 1. Stream counts — channel = location name (the stream room).
+      // Ledger rooms (Front Store / Master) also count on the blind page but
+      // their shortfall is NOT sales (POS already records store sales;
+      // Master sells nothing) — countRooms.js, 2026-08-24.
       for (const item of streamItemsRes.data || []) {
         const sc = streamCountById[item.stream_count_id]
         if (!sc) continue
+        const roomName = locById[sc.location_id] || 'Unknown room'
+        if (isLedgerRoomName(roomName)) continue
         events.push({
           product_id: item.product_id,
           qty: Math.abs(item.difference),
           date: sc.count_time?.slice(0, 10),
-          channel: locById[sc.location_id] || 'Unknown room'
+          channel: roomName
         })
       }
 

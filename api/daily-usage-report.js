@@ -17,6 +17,7 @@
 // Manual: ?date=YYYY-MM-DD | ?today=1 (current partial day) | &dry=1.
 
 import { createClient } from '@supabase/supabase-js'
+import { isLedgerRoomName } from '../src/lib/countRooms.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -140,7 +141,11 @@ export async function computeDailyUsage(supabase, fromDate, toDate = fromDate) {
   if (uErr) throw uErr
 
   // count_id → { room, streamer name }
-  const countMeta = new Map((counts || []).map(c => [c.id, { room: roomShort(c.location?.name), streamer: c.streamer?.name || '(unknown)' }]))
+  // Ledger rooms (Front Store / Master) count on the same blind page but their
+  // shortfall is NOT sales — the POS already records store sales, and Master
+  // sells nothing. Including them here would invent usage (Codex 2026-08-24).
+  const streamOnly = (counts || []).filter(c => !isLedgerRoomName(c.location?.name))
+  const countMeta = new Map(streamOnly.map(c => [c.id, { room: roomShort(c.location?.name), streamer: c.streamer?.name || '(unknown)' }]))
   const countItems = []
   const ids = [...countMeta.keys()]
   for (let i = 0; i < ids.length; i += 100) {

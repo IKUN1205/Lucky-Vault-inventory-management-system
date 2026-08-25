@@ -9,6 +9,7 @@
 // Mirrors fetchWeeklyUsage in src/lib/supabase.js — keep the two in sync.
 
 import { createClient } from '@supabase/supabase-js'
+import { isLedgerRoomName } from '../src/lib/countRooms.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -73,10 +74,13 @@ export default async function handler(req, res) {
     for (const r of [sfRes, scRes, ooRes, jpRes]) if (r.error) throw r.error
 
     // Map each session to its stream room + count sessions per room.
+    // Ledger rooms (Front Store / Master) count on the same page but their
+    // shortfall is NOT sales — countRooms.js, 2026-08-24.
+    const scData = (scRes.data || []).filter(s => !isLedgerRoomName(s.location?.name))
     const scRoom = new Map()
     const roomAgg = new Map()
     const cleanRoom = (n) => (n || '(no room)').replace(/^Stream Room\s*-\s*/i, '')
-    for (const s of scRes.data || []) {
+    for (const s of scData) {
       const name = cleanRoom(s.location?.name)
       scRoom.set(s.id, name)
       const cur = roomAgg.get(name) || { units: 0, sessions: 0 }
@@ -84,7 +88,7 @@ export default async function handler(req, res) {
     }
 
     // Stream line items (sold rows) for top-seller + per-room detail.
-    const scIds = (scRes.data || []).map(s => s.id)
+    const scIds = scData.map(s => s.id)
     let sciData = []
     if (scIds.length) {
       const { data, error } = await supabase
@@ -118,7 +122,7 @@ export default async function handler(req, res) {
     }
 
     const storefront = sumKey(sfRes.data, 'quantity')
-    const stream = sumKey(scRes.data, 'total_sold')
+    const stream = sumKey(scData, 'total_sold')
     const usTotal = storefront + stream + onlineUnits
     const japan = sumKey(jpRes.data, 'quantity')
 

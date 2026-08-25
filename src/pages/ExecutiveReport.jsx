@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
+import { isLedgerRoomName } from '../lib/countRooms.js'
 import {
   TrendingDown,
   TrendingUp,
@@ -231,11 +232,14 @@ export default function ExecutiveReport() {
       for (const item of scItems) {
         const sold = (item.expected_qty || 0) - (item.actual_qty || 0)
         if (sold <= 0) continue
+        const locId = scLocationMap.get(item.stream_count_id)
+        const roomName = locationMap.get(locId)?.name || 'Unknown room'
+        // Ledger rooms' shortfall is NOT sales (POS already records store
+        // sales; Master sells nothing) — countRooms.js, 2026-08-24.
+        if (isLedgerRoomName(roomName)) continue
         const cost = sold * productAvgCost(item.product_id)
         outStream += cost
         unitsStream += sold
-        const locId = scLocationMap.get(item.stream_count_id)
-        const roomName = locationMap.get(locId)?.name || 'Unknown room'
         const shortRoom = roomName.replace(/^Stream Room\s*-\s*/, '')
         addOutflow(item.product_id, sold, cost, shortRoom)
         const cur = streamByRoom.get(roomName) || { cost: 0, units: 0 }

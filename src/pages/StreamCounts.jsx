@@ -18,6 +18,7 @@ import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { BrandChip, LangChip } from '../components/ProductChips'
 import ProductThumb from '../components/ProductThumb'
+import { isLedgerRoomName } from '../lib/countRooms.js'
 import { categoryOf, categoryLabel, categoryRank } from '../lib/countCategories'
 import { 
   ClipboardList, 
@@ -103,14 +104,20 @@ const isCounted = (v) => {
   return Number.isFinite(n) && n >= 0
 }
 
-// Stream room locations (filter for only these)
+// Rooms that can be counted on this page (filter for only these).
+// 2026-08-24 (Gary "做一个点货和直播间一样"): Front Store and Master join the
+// list — same blind-count flow, same rules. Until now they were structurally
+// excluded, which is why Master had literally zero app counts ever (Aldo
+// counted on paper and sent photos the same morning this was added).
 const STREAM_ROOM_NAMES = [
   'Stream Room - eBay LuckyVaultUS',
   'Stream Room - eBay SlabbiePatty',
   'Stream Room - TikTok RocketsHQ',
   'Stream Room - TikTok Packheads',
   'Stream Room - PokeCasino',
-  'Stream Room - PokeAuctionHouse'
+  'Stream Room - PokeAuctionHouse',
+  'Front Store',
+  'Master Inventory'
 ]
 
 export default function StreamCounts() {
@@ -294,13 +301,18 @@ export default function StreamCounts() {
     }))
   }
 
+  // Ledger rooms (Front Store / Master): same blind count, but nobody is
+  // streaming and sales are already recorded elsewhere — the streamer field
+  // disappears and every "sold" label becomes "short vs book".
+  const ledgerRoom = isLedgerRoomName(locations.find(l => l.id === form.location_id)?.name)
+
   const handleStartCount = async () => {
     // Validate form
     if (!form.location_id) {
       addToast('Please select a stream room', 'error')
       return
     }
-    
+
     // Handle new streamer
     let streamerId = form.streamer_id
     if (showNewStreamer && newStreamerName.trim()) {
@@ -313,8 +325,12 @@ export default function StreamCounts() {
         return
       }
     }
-    
-    if (!streamerId || streamerId === 'other') {
+
+    // Ledger rooms (Front Store / Master) have no streamer — nobody's sales
+    // are being measured. The field is hidden for them; the counter stands in
+    // as streamer_id (column is required) and reports exclude these rooms
+    // from sales anyway (countRooms.js).
+    if (!ledgerRoom && (!streamerId || streamerId === 'other')) {
       addToast('Please select or enter a streamer name', 'error')
       return
     }
@@ -341,7 +357,10 @@ export default function StreamCounts() {
       addToast('Please select or enter who is counting', 'error')
       return
     }
-    
+
+    // Ledger count: the counter stands in for the (required) streamer column.
+    if (ledgerRoom) streamerId = counterId
+
     // Update form with resolved IDs
     setForm(f => ({ ...f, streamer_id: streamerId, counted_by_id: counterId }))
     
@@ -377,7 +396,7 @@ export default function StreamCounts() {
         .join('\n  · ')
       const more = blanks.length > 8 ? `\n  · …+${blanks.length - 8} more` : ''
       const proceed = confirm(
-        `${blanks.length} product(s) left blank — they will be recorded as 0 (sold out):\n  · ${names}${more}\n\n` +
+        `${blanks.length} product(s) left blank — they will be recorded as 0 (${ledgerRoom ? 'none on the shelf' : 'sold out'}):\n  · ${names}${more}\n\n` +
         `Gone? press OK. Still on the shelf? press Cancel and count them.`
       )
       if (!proceed) return
@@ -399,7 +418,10 @@ export default function StreamCounts() {
       const lastAtRoom = recentCounts
         .filter(c => c.location_id === form.location_id)
         .sort((a, b) => new Date(b.count_time) - new Date(a.count_time))[0]
-      if (lastAtRoom?.count_time) {
+      if (lastAtRoom?.count_time && !ledgerRoom) {
+        // Ledger rooms have no sessions to merge — a long gap between
+        // Master / Front Store counts is normal (weekly cadence), so the
+        // "merged stream sessions" warning would only confuse the counter.
         const hoursAgo = (Date.now() - new Date(lastAtRoom.count_time).getTime()) / 3600000
         if (hoursAgo > STALE_THRESHOLD_HOURS) {
           const proceed = confirm(
@@ -685,7 +707,9 @@ export default function StreamCounts() {
       }
 
       addToast(
-        `Count submitted! ${totalSold} items sold.`,
+        ledgerRoom
+          ? `Count submitted! ${totalSold} short vs book (not sales).`
+          : `Count submitted! ${totalSold} items sold.`,
         'success',
         streamCountId ? { action: { label: 'Undo', onClick: undo } } : undefined
       )
@@ -925,7 +949,10 @@ export default function StreamCounts() {
                 </select>
               </div>
               
-              {/* Streamer (sales attributed to) */}
+              {/* Streamer (sales attributed to). Hidden for ledger rooms
+                  (Front Store / Master) — nobody streams there and the diff
+                  is shortfall, not anyone's sales. */}
+              {!ledgerRoom && (
               <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-300 mb-2">
                   Streamer (sales go to) *
@@ -942,7 +969,7 @@ export default function StreamCounts() {
                   ))}
                   <option value="other">+ Add New Streamer</option>
                 </select>
-                
+
                 {showNewStreamer && (
                   <input
                     type="text"
@@ -954,6 +981,7 @@ export default function StreamCounts() {
                   />
                 )}
               </div>
+              )}
               
               {/* Counted By */}
               <div className="mb-4">
@@ -1054,12 +1082,14 @@ export default function StreamCounts() {
                               {count.location?.name?.replace('Stream Room - ', '')}
                             </p>
                             <p className="text-xs text-gray-400">
-                              {count.streamer?.name} • {new Date(count.count_time).toLocaleDateString()}
+                              {isLedgerRoomName(count.location?.name)
+                                ? count.counted_by?.name || count.streamer?.name
+                                : count.streamer?.name} • {new Date(count.count_time).toLocaleDateString()}
                             </p>
                           </div>
                           <div className="text-right">
                             <p className="text-sm font-medium text-vault-gold">
-                              {count.total_sold} sold
+                              {count.total_sold} {isLedgerRoomName(count.location?.name) ? 'short vs book' : 'sold'}
                             </p>
                             {count.total_discrepancies > 0 && (
                               <p className="text-xs text-amber-400">
@@ -1086,7 +1116,9 @@ export default function StreamCounts() {
                                         {item.product?.name}
                                       </span>
                                       <span className={item.difference < 0 ? 'text-green-400' : 'text-amber-400'}>
-                                        {item.difference < 0 ? `${Math.abs(item.difference)} sold` : `+${item.difference}`}
+                                        {item.difference < 0
+                                          ? `${Math.abs(item.difference)} ${isLedgerRoomName(count.location?.name) ? 'short' : 'sold'}`
+                                          : `+${item.difference}`}
                                       </span>
                                     </div>
                                   ))}
@@ -1113,8 +1145,8 @@ export default function StreamCounts() {
                 {locations.find(l => l.id === form.location_id)?.name}
               </h2>
               <p className="text-sm text-gray-400">
-                Streamer: {users.find(u => u.id === form.streamer_id)?.name} • 
-                Counting: {users.find(u => u.id === form.counted_by_id)?.name} • 
+                {!ledgerRoom && <>Streamer: {users.find(u => u.id === form.streamer_id)?.name} • </>}
+                Counting: {users.find(u => u.id === form.counted_by_id)?.name} •
                 {form.count_date} @ {form.count_time}
               </p>
             </div>
@@ -1322,13 +1354,15 @@ export default function StreamCounts() {
             <div className="bg-vault-dark rounded-lg p-4 mb-6">
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
-                  <p className="text-gray-400">Stream Room</p>
+                  <p className="text-gray-400">{isLedgerRoomName(report.location_name) ? 'Room' : 'Stream Room'}</p>
                   <p className="text-white font-medium">{report.location}</p>
                 </div>
+                {!isLedgerRoomName(report.location_name) && (
                 <div>
                   <p className="text-gray-400">Streamer</p>
                   <p className="text-white font-medium">{report.streamer}</p>
                 </div>
+                )}
                 <div>
                   <p className="text-gray-400">Counted By</p>
                   <p className="text-white font-medium">{report.counted_by}</p>
@@ -1352,12 +1386,14 @@ export default function StreamCounts() {
               </div>
             )}
 
-            {/* Items Sold */}
+            {/* Items Sold — or, for ledger rooms, unexplained shortfall */}
             {report.sold_items.length > 0 && (
               <div className="mb-6">
                 <h3 className="font-display text-lg font-semibold text-white mb-3 flex items-center gap-2">
                   <CheckCircle size={20} className="text-green-400" />
-                  Items Sold ({report.total_sold} total)
+                  {isLedgerRoomName(report.location_name)
+                    ? `Short vs Book (${report.total_sold} total — NOT sales; the ledger already records sales)`
+                    : `Items Sold (${report.total_sold} total)`}
                 </h3>
                 <div className="bg-green-400/10 rounded-lg border border-green-400/30 overflow-hidden">
                   <table>
@@ -1366,7 +1402,7 @@ export default function StreamCounts() {
                         <th className="text-green-400">Product</th>
                         <th className="text-right text-green-400">Was</th>
                         <th className="text-right text-green-400">Now</th>
-                        <th className="text-right text-green-400">Sold</th>
+                        <th className="text-right text-green-400">{isLedgerRoomName(report.location_name) ? 'Short' : 'Sold'}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1464,9 +1500,12 @@ export default function StreamCounts() {
                   physical recount or the people in the room.
                 </p>
                 <p className="text-xs text-amber-400/80 mt-1">
-                  Until then, <b>sales for these SKUs are unknown, not zero</b>. A count measures
-                  sales as expected − counted, which only works when expected is right — so stock
-                  can keep leaving these SKUs and every session will report 0 sold.
+                  {isLedgerRoomName(report.location_name)
+                    ? <>Until then, <b>the book quantity for these SKUs is wrong</b> and every
+                       future count here will keep reporting the same surplus.</>
+                    : <>Until then, <b>sales for these SKUs are unknown, not zero</b>. A count measures
+                       sales as expected − counted, which only works when expected is right — so stock
+                       can keep leaving these SKUs and every session will report 0 sold.</>}
                 </p>
               </div>
             )}

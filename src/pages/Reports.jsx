@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { isLedgerRoomName } from '../lib/countRooms.js'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { BarChart3, Calendar, CalendarRange, CalendarDays, ShoppingCart, Receipt, FileText, Filter, ClipboardList } from 'lucide-react'
@@ -139,12 +140,17 @@ export default function Reports() {
       const totalExpensesCost = expenses?.reduce((sum, e) => sum + (e.amount_usd || 0), 0) || 0
       const totalItems = acquisitions?.reduce((sum, a) => sum + (a.quantity_purchased || 0), 0) || 0
 
-      // Stream counts totals
-      const totalUnitsSold = streamCounts.reduce((sum, c) => sum + (c.total_sold || 0), 0)
+      // Stream counts totals. Ledger rooms (Front Store / Master) count on the
+      // same blind page but their total_sold is shortfall, NOT sales (the POS
+      // already records store sales) — countRooms.js, 2026-08-24.
+      const salesCounts = streamCounts.filter(c => !isLedgerRoomName(c.location?.name))
+      const totalUnitsSold = salesCounts.reduce((sum, c) => sum + (c.total_sold || 0), 0)
+      // Discrepancies come from ALL counts — a Front Store / Master surplus
+      // still needs review; only the SALES numbers exclude ledger rooms.
       const totalDiscrepancies = streamCounts.reduce((sum, c) => sum + (c.total_discrepancies || 0), 0)
 
       // Group stream counts by streamer
-      const salesByStreamer = streamCounts.reduce((acc, c) => {
+      const salesByStreamer = salesCounts.reduce((acc, c) => {
         const name = c.streamer?.name || 'Unknown'
         if (!acc[name]) acc[name] = { counts: 0, sold: 0, discrepancies: 0 }
         acc[name].counts += 1
@@ -153,8 +159,9 @@ export default function Reports() {
         return acc
       }, {})
 
-      // Group stream counts by room
-      const salesByRoom = streamCounts.reduce((acc, c) => {
+      // Group stream counts by room (sales counts only — ledger rooms'
+      // shortfall is not sales)
+      const salesByRoom = salesCounts.reduce((acc, c) => {
         const name = c.location?.name?.replace('Stream Room - ', '') || 'Unknown'
         if (!acc[name]) acc[name] = { counts: 0, sold: 0, discrepancies: 0 }
         acc[name].counts += 1
@@ -163,8 +170,11 @@ export default function Reports() {
         return acc
       }, {})
 
-      // Group sold items by product
+      // Group sold items by product — restricted to sales counts, so a
+      // Front Store / Master shortfall never shows up as a product "sold"
+      const salesCountIds = new Set(salesCounts.map(c => c.id))
       const soldByProduct = streamCountItems
+        .filter(item => salesCountIds.has(item.stream_count_id))
         .filter(item => item.difference < 0)
         .reduce((acc, item) => {
           const name = item.product?.name || 'Unknown'
@@ -646,9 +656,11 @@ export default function Reports() {
                             <td className="font-medium text-white">
                               {count.location?.name?.replace('Stream Room - ', '')}
                             </td>
-                            <td className="text-gray-300">{count.streamer?.name}</td>
+                            <td className="text-gray-300">{isLedgerRoomName(count.location?.name) ? '—' : count.streamer?.name}</td>
                             <td className="text-gray-400">{count.counted_by?.name}</td>
-                            <td className="text-right text-green-400 font-medium">{count.total_sold}</td>
+                            <td className="text-right text-green-400 font-medium">
+                              {count.total_sold}{isLedgerRoomName(count.location?.name) ? ' short' : ''}
+                            </td>
                             <td className="text-right">
                               {count.total_discrepancies > 0 ? (
                                 <span className="text-amber-400">+{count.total_discrepancies}</span>

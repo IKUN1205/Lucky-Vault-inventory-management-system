@@ -586,22 +586,25 @@ async function handleReceive(body, res) {
   return res.status(200).json({ ok: results.every(r => r.ok), results })
 }
 
-function buildStreamCountUndone(body) {
+export function buildStreamCountUndone(body) {
   const { roomName, streamerName, countedByName } = body
   const room = shortRoom(roomName)
+  const ledger = isLedgerRoom(roomName)
   const lines = []
-  lines.push(`↩️ Stream Count UNDONE — ${room}`)
-  lines.push(`Counter: ${countedByName || '?'} (was recording ${streamerName || '?'}'s session)`)
+  lines.push(`↩️ ${ledger ? 'Inventory Count' : 'Stream Count'} UNDONE — ${room}`)
+  lines.push(ledger
+    ? `Counter: ${countedByName || '?'}`
+    : `Counter: ${countedByName || '?'} (was recording ${streamerName || '?'}'s session)`)
   lines.push(`Time: ${nowUtcStamp()}`)
   lines.push('')
-  lines.push('⚠️ The previous Stream Count message above is VOID — please disregard those numbers. A new count will be submitted shortly.')
+  lines.push(`⚠️ The previous ${ledger ? 'Inventory Count' : 'Stream Count'} message above is VOID — please disregard those numbers. A new count will be submitted shortly.`)
   return lines.join('\n')
 }
 
 // Match the room name (e.g. "Stream Room - TikTok RocketsHQ") to the right
 // env var. Substring matching is intentional — robust to small label changes
 // like "Stream Room — " (em dash) vs "Stream Room - " (hyphen).
-function getRoomWebhook(roomName) {
+export function getRoomWebhook(roomName) {
   if (!roomName) return null
   // Lower-case once so we tolerate every casing the front-end might pass:
   // "Packheads" (from Stream Count), "PackHeadsTCG" (from Platform Sales),
@@ -614,6 +617,9 @@ function getRoomWebhook(roomName) {
   // pokecasino = renamed Whatnot room (2026-07-22); env var name unchanged
   if (n.includes('whatnot') || n.includes('pokecasino'))  return process.env.LARK_WEBHOOK_STREAM_WHATNOT     || null
   if (n.includes('pokeauction'))                          return process.env.LARK_WEBHOOK_STREAM_POKEAUCTIONHOUSE || null
+  // Front Store counts land in the storefront group (Gary 2026-08-24: store
+  // uses the same count flow). Master has no room group — falls to main.
+  if (n.includes('front store'))                          return process.env.LARK_WEBHOOK_STOREFRONT || null
   return null
 }
 
@@ -711,39 +717,58 @@ export function dominantLanguage(...groups) {
   return [...n.entries()].sort((a, b) => b[1] - a[1])[0][0]
 }
 
-function buildStreamCountBrief(body) {
+// Front Store and Master are counted on the same blind page (Gary 2026-08-24)
+// but their negative diffs mean something DIFFERENT: the POS / ledger already
+// decrements sales in real time, so a shortfall here is unrecorded shrinkage,
+// never "sold". Printing "Sold last session" for these rooms would tell the
+// team the exact opposite of the truth. Single source of truth shared with
+// every report that turns count diffs into sales numbers:
+export { isLedgerRoomName as isLedgerRoom } from '../src/lib/countRooms.js'
+import { isLedgerRoomName as isLedgerRoom } from '../src/lib/countRooms.js'
+
+export function buildStreamCountBrief(body) {
   const { roomName, streamerName, countedByName, totalSold, totalDiscrepancies } = body
   // Strip the "Stream Room - " prefix in the brief — main group already knows
   // the context, shorter is better.
   const room = (roomName || 'Unknown').replace(/^Stream Room\s*[-—]\s*/i, '')
+  const ledger = isLedgerRoom(roomName)
   const lines = []
-  lines.push(`📋 Stream Count — ${room}`)
+  lines.push(`📋 ${ledger ? 'Inventory Count' : 'Stream Count'} — ${room}`)
   // streamer_id = previous streamer (the one whose sales we're recording).
   // counted_by_id = current streamer taking over (also the one counting).
-  lines.push(`Sold by ${streamerName || '?'} · Counted by ${countedByName || '?'} (now streaming)`)
+  lines.push(ledger
+    ? `Counted by ${countedByName || '?'}`
+    : `Sold by ${streamerName || '?'} · Counted by ${countedByName || '?'} (now streaming)`)
   const sold = Number(totalSold) || 0
   const disc = Number(totalDiscrepancies) || 0
-  let summary = `Sold last session: ${sold}`
+  let summary = ledger
+    ? `Short vs book: ${sold} (NOT sales — the ledger already records sales)`
+    : `Sold last session: ${sold}`
   if (disc > 0) summary += ` · ⚠️ +${disc} discrepancies`
   lines.push(summary)
   appendCounterNote(lines, body)
   return lines.join('\n')
 }
 
-function buildStreamCountDetailed(body) {
+export function buildStreamCountDetailed(body) {
   const { roomName, streamerName, countedByName, soldItems = [], discrepancyItems = [], totalSold, totalDiscrepancies } = body
+  const ledger = isLedgerRoom(roomName)
   const lines = []
   // This message goes to that room's own group, so the "Stream Room - " prefix
   // is telling people where they already are.
-  lines.push(`📋 Stream Count — ${(roomName || 'Unknown room').replace(/^Stream Room\s*[-—]\s*/i, '')}`)
+  lines.push(`📋 ${ledger ? 'Inventory Count' : 'Stream Count'} — ${(roomName || 'Unknown room').replace(/^Stream Room\s*[-—]\s*/i, '')}`)
   const dominant = dominantLanguage(soldItems, discrepancyItems)
   // Three lines into one, and no Time: — Lark stamps every message itself.
-  lines.push(`Sold by ${streamerName || '?'} (last session) · counted by ${countedByName || '?'} (now streaming)`)
+  lines.push(ledger
+    ? `Counted by ${countedByName || '?'}`
+    : `Sold by ${streamerName || '?'} (last session) · counted by ${countedByName || '?'} (now streaming)`)
 
   if (soldItems.length > 0) {
     lines.push('')
     const skuLabel = soldItems.length === 1 ? 'SKU' : 'SKUs'
-    lines.push(`📤 Sold last session: ${Number(totalSold) || 0} units / ${soldItems.length} ${skuLabel}`)
+    lines.push(ledger
+      ? `📉 Short vs book: ${Number(totalSold) || 0} units / ${soldItems.length} ${skuLabel} — NOT sales; the ledger already records sales. This is unexplained shortfall:`
+      : `📤 Sold last session: ${Number(totalSold) || 0} units / ${soldItems.length} ${skuLabel}`)
     // Biggest movers first. The submitted order is the order of the count sheet,
     // which puts a 1-unit line above a 70-unit line for no reason a reader can use.
     const bySold = [...soldItems].sort((a, b) => (Number(b.quantity) || 0) - (Number(a.quantity) || 0))
@@ -762,7 +787,7 @@ function buildStreamCountDetailed(body) {
     if (soldItems.some(i => i.unverified)) lines.push(`   unverified = books for this room could not be checked`)
   }
 
-  appendSurplus(lines, discrepancyItems, totalDiscrepancies, dominant)
+  appendSurplus(lines, discrepancyItems, totalDiscrepancies, dominant, roomName)
   appendCounterNote(lines, body)
   return lines.join('\n')
 }
@@ -795,7 +820,9 @@ const MAX_UNSOURCED_SHOWN = 4
  * physical recount or the people in the room, and age is what makes them
  * escalate instead of blend in.
  */
-export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies, dominant = undefined) {
+// roomName is optional so standalone callers keep working; without it the
+// wording defaults to the stream-room version.
+export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies, dominant = undefined, roomName = null) {
   if (!discrepancyItems.length) return lines
   // Default keeps standalone callers (and the tests) honest: decide from
   // whatever this block itself holds.
@@ -805,7 +832,9 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies, 
   // Staff read "+N found" as cosmetic. What it means is that this SKU's sales
   // cannot be measured until the books are right, and goods keep leaving, so the
   // warning is compressed onto the number rather than dropped.
-  lines.push(`⚠️ +${Number(totalDiscrepancies) || 0} units beyond system — not added; sales for these SKUs UNKNOWN, not zero`)
+  lines.push(isLedgerRoom(roomName)
+    ? `⚠️ +${Number(totalDiscrepancies) || 0} units beyond system — not added; the book quantity for these SKUs is wrong until resolved`
+    : `⚠️ +${Number(totalDiscrepancies) || 0} units beyond system — not added; sales for these SKUs UNKNOWN, not zero`)
 
   const fixable = discrepancyItems.filter(i => i.fixable === true)
   const unsourced = discrepancyItems.filter(i => i.fixable === false)

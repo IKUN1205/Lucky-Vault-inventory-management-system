@@ -27,6 +27,7 @@
 // fallback.
 
 import { createClient } from '@supabase/supabase-js'
+import { isLedgerRoomName } from '../src/lib/countRooms.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -159,7 +160,11 @@ export default async function handler(req, res) {
 
     // Per-product sold quantities for those count sessions (expected −
     // actual = sold). Batched .in() — a week is a handful of sessions.
-    const roomByCountId = new Map((counts || []).map(c => [c.id, roomShort(c.location?.name)]))
+    // Ledger rooms (Front Store / Master) count on the same page but their
+    // shortfall is NOT sales — countRooms.js, 2026-08-24.
+    const roomByCountId = new Map((counts || [])
+      .filter(c => !isLedgerRoomName(c.location?.name))
+      .map(c => [c.id, roomShort(c.location?.name)]))
     const countItems = []
     const countIds = [...roomByCountId.keys()]
     for (let i = 0; i < countIds.length; i += 100) {
