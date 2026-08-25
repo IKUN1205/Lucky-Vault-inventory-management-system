@@ -1,5 +1,11 @@
 # LV Inventory — 作业手册 brief (2026-08-24)
 
+## ✅ 8/24 门店+Master 接入盲盘(Gary:「做一个点货和直播间一样」;`a251cea` 已发版,Sully 已在 STOREFRONT CHATS 收到链接)
+- **点货页房间列表加了 Front Store 和 Master Inventory**——此前是硬编码 6 个直播间,这两个房构造上进不去(Master 零 app 盘点、Aldo 手写拍照的真正原因)。同一套盲盘规则原样适用。
+- **🔴 核心不变量:ledger 房(门店/Master)的负差永远不叫 sold。** 门店 POS 实时扣库存、Master 无销售,负差=无解释短缺;当 sold 算会把门店损耗在 storefront_sales 之外重复计、把 Master 短缺算成凭空销量。新 `src/lib/countRooms.js` 的 `isLedgerRoomName()` 是唯一判定源,**8 个把盘点负差当销量的消费方全部排除 ledger 房**(daily-usage-report · fetchWeeklyUsage(3处) · Turnover · ExecutiveReport · Reports(totals/byRoom/byProduct,**正差仍全量进「需复核」**) · weekly-buy-report · weekly-usage-digest · StreamSessions)。**Codex 连审 4 轮共 ~12 条 P1**,前三轮全是「又找到一个没过滤的消费方」——这类改动的教训:**加一种新语义的行进旧表,先把所有读表人找全,漏一个就是假销量**。
+- 措辞全链路分流:消息标题「Inventory Count」、群里写 **「Short vs book: N — NOT sales」**;streamer 字段对 ledger 房隐藏(counter 顶位填 NOT NULL 列);18h「合并场次」确认不弹;undo 消息同步分流;门店简报走 LARK_WEBHOOK_STOREFRONT 进 STOREFRONT CHATS,Master 落主群。auto-reconcile 只对 TikTok Packheads 触发,不受影响。
+- 测试 34(ledger 专项,跑真 builder)+18+21 全过;发版前按 8/13 铁律 vite preview + playwright 实走截图(房间下拉 ✓ streamer 消失 ✓ 盲盘表 82 行 ✓ 控制台只剩既有 CORS/400 两个老错)。**server 端 count_sales_recon 只认 4 个直播房,ledger 盘点不会误入日报**;周报的 Master 锚定块待做。
+
 ## ✅ 8/24 制度:挪库进出直播房 = 该房群里自动通知(Gary:「以后记成给他们在群里发他们 transfer inventory」)
 - 新 `inventory-sync/room_transfer_notify.py` 挂 `LV_Room_Transfer_Notify`(**每 10 分钟**):movements 里任何进/出直播房的转库,以该群现有 inventory bot 的 webhook 身份发进房间自己的群;`(Case)` SKU 自动附「SEALED CASES——按箱数,别数箱里的盒」——治的就是「货进了房、数货的人不知道」(Yaz 75 盒被擦 8/21 · Eric 转库晚记 41 分钟 · **8/24 中午 12 箱 WSW 进 PK 当晚被 Trey 连箱内盒数成 206**)。**Codex 连审 4 轮、11 条 P1 全修才 SHIP**:ingest 先落盘再发(崩溃最坏=重发一条,绝不丢)· 逐 (movement,group) 重试 3 次后放弃并 TG 点名 · 游标全精度 + 边界时间戳 id 全集(等值查询也分页)· 状态原子写 + 深度结构校验 + 损坏重播种(告警和状态变更同一笔落盘)· TG backlog 先持久化再发 + HTML 转义 · **Lark webhook 拒收是 HTTP 200 + body 错误码,只认 code==0**。
 - **房→群映射(Gary 定)**:PK=PACKHEADS · e2=SLABBIEPATTY · RocketsHQ=ROCKETS TIKTOK · e1=EBAY TEAM。前三个群的 bot webhook 已从群设置收割存 `data/lark_room_webhooks.json`(路径:群 → ⋯ → Settings → Bots → bot → Copy 按钮 → 读剪贴板;**「⋯」按钮 aria 检索不到,要按坐标点,页面 DPR 1.25 坐标要换算**)。**⚠️ e1/EBAY TEAM 没拿到:Gary 不是那个群的群主**,bot 详情只显示「Added by Peilin Yu」不露 URL、也没有加 bot 入口——**待 Peilin 把「LuckyVault Inventory Bot」的 webhook URL 发来**,填进 json 即通;缺口期間 e1 的转库会每天 TG 提醒 Gary 一次「该房没被通知」。
