@@ -1,4 +1,12 @@
-# LV Inventory — 作业手册 brief (2026-08-24)
+# LV Inventory — 作业手册 brief (2026-08-25)
+
+## ✅ 8/25 Sully 的 8/24 门店盘点已对账并写库(Gary:「我们直接帮忙写 就行」;15 行,备份 `front_sully_count_backup_0825.json`)
+- **Sully 交的是文字清单没走 app**(Front Store 的 stream_counts 仍是 0 场)。对账前先用收银机把盘点时间窗钉死:10:18 PT 卖掉的 6 个 starter deck 已反映在他的数里、13:22 的 Black Bolt 散包 ×2 和 13:52 的 PO Bundle 他都没数到(=卖后才数)、而 **15:46 PT 一个大买家一次买走一排 ETB(Temporal/Vivid/Prismatic PC/PO PC/Chaos ETB/DA/ME/Meganium ex + 5 Poster)全在他清单上** → **盘点发生在 13:52–15:06 PT 之间**。把盘后销售加回去后 **~30 行分毫不差**(最干净:Darkness Ablaze 数 2 = 现账 1 + 盘后卖 1)。**对文字清单必须按「盘点时点账」对,不能拿现在的账直接比** —— 差一个下午的销售就全是假差异。
+- **已写 15 行(按 Aldo 8/5 先例:Gary 下令的手点修正,短缺+多出都写;乐观锁+回读 15/15)**:短缺 −24(Ascended 散包 40→30 · **Gem Vol 6 盒 10→6** · PO 散包 12→8 · Riftbound CN 盒 6→4 · Gem5/JT Bundle/Phantasmal sleeved/Prismatic 铁盒 各 −1);多出 +34(**Chaos Rising Sleeved 0→12(e2 账上有 47)** · **151 散包 0→10(活行 8622041d,e1 有 39;Front 无 retired 行没踩三胞胎坑)** · DR sleeved 13→20(e1 有 87)· Prismatic 散包 5→7 · Surging Sparks 散包 0→1 **全系统查无来路** 等)。**多出三大项形状=从直播房/Master 补货没记 Move,e1/e2 总数暂时重复,等那两房下次盘点自证。**
+- **没数到的 ~32 件一律没动(没数≠零)**:First Partner Illustration S2/S3 ×8 · Rayleigh/Shakuyaku ×3 · [EN] ST-01/ST-20 ×3 · MTG FF ×2 · 一串单件老盒(Paradox Rift/SV/Fusion Strike/Palworld/Storm/Evolving skies)· 151 ETB · DR 普通 ETB · Chaos Rising ETB ×2 —— **像展示柜/柜台后的货,要问 Sully**。⚠️ 文字清单「没写」和「没有」分不清,正是 app 盲盘空行=0 要治的;下次让店里走链接。
+- **三件全目录无 SKU 未建待确认**:Evolving Powers Premium Collection ×1 · SV **Triple Beat** 盒 ×1 · SV **Ruler of Black Flame** 盒 ×1(后两个是日版 sv1a/sv3;账上那行孤零零的「Scarlet & Violet Booster Box」很可能就是其中一盒的粗录名,建 SKU 前要一张实物照片,建错方向会双计)。
+- **⚠️ 两个已知模糊度,下次盘点自证**:① 14:58 PT 卖的 5 Chaos 散包 + 2 PO 散包落在盘点窗内,按「数在卖后」口径写的(若实际数在卖前,PO 是 −6、Chaos 是 −4)② **Prismatic Evolutions Tin 是一行管两种实物**(Umbreon 3 + Sylveon 2)—— 双身份行清单再 +1(Marvel Allegiance 之后第二例)。
+- **Gem Vol 6 三处同时在漂**:Front −4 · 8/24 16:05 从 Master 名义卖 20 盒(收银行 location=Master)· Aldo 的 Master 手点 −90 待复点 —— 这个 SKU 该优先定案。
 
 ## ✅ 8/24 门店+Master 接入盲盘(Gary:「做一个点货和直播间一样」;`a251cea` 已发版,Sully 已在 STOREFRONT CHATS 收到链接)
 - **点货页房间列表加了 Front Store 和 Master Inventory**——此前是硬编码 6 个直播间,这两个房构造上进不去(Master 零 app 盘点、Aldo 手写拍照的真正原因)。同一套盲盘规则原样适用。
