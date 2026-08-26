@@ -3,7 +3,7 @@
 ## 🔴 8/26 e1 空表擦除事故:702 件假销量已撤销、Brandon 真盘已恢复(Gary:「这个应该是brandon」)
 - **06:08 UTC 一场以 Carlos 名义提交的盘点 32 行只填了 4 行,空行=0 一次擦掉 702 件**并广播「Sold 702」;**Brandon 14 分钟后(06:22)的盲盘把被擦前的账逐行数了回来**(White Flare 262 包和被擦前分毫不差——盲盘看不到 expected,抄不了,只能是实数),但他的 754 件全按正差被丢弃。**单向棘轮的完整病例:废盘写库、真盘作废。**
 - **修法照 7/06 先例**:废盘 `c4bd7eec` 软删(`delete_mode='retract'`,理由写明);e1 20 行恢复成 Brandon 实数(备份 `e1_brandon_restore_backup_0826.json`,乐观锁+回读 20/20)。`count_sales_recon` 两处都滤 `deleted=eq.false`,日报不会吃进假 702。**盘点员记分卡如果哪天把 Carlos 记成事故大户,先看这场是不是就是那个已 retract 的废盘。**
-- **⏳ 未决:e1 那堆 CN 盒子到底是什么。** 废盘那 4 个有数的行说 Gem6 11 + Terastal 5;Brandon 说 Gem6 16 + TG 0——**11+5=16,像同一堆 16 盒被两次归到不同行**。现按 Brandon 的写(Gem6 16)。若实物里有 5 盒是 TG:改 Gem6 16→11 + Move TG Master→e1 ×5(Master 现有 10 盒 TG 是 8/26 CN 到货入的)。找 Mario/Brandon 看一眼定案。
+- **✅ CN 盒子定案(Gary:「terastal 就是我们给他的加的…应该是在他们点之前加 这么一个逻辑」)**:5 盒 TG 是到货当天随 Gem4 一起递出去的实物——**废盘那 4 个有数的行反而读对了(Gem6 11 + TG 5),Brandon 把 5 盒 TG 归进了 Gem6(11+5=16)**。已修:Gem6 e1 16→11 + Move TG Master→e1 ×5(Master 剩 5,备份 `tg_e1_move_backup_0826.json`)。⚠️ Gary 那句「给ebay2」按实物观测落在 e1(盘点是在 LuckyVaultUS 看到的);若 e2 也拿了 TG,Master 剩的 5 盒等 e2 盘点自证或 Gary 补数。**制度(Gary 定的逻辑):直播中途递货,账要在他们点之前加** —— 递货的当下发一条 TG 给 bot(tg_move 四步已在)或直接告诉我当场落 Move;room_transfer_notify 10 分钟内会通知房间群。8/25 的教训:交接消息只列了 Gem4 没列 TG → TG 全记 Master → 当晚盘点把它数成 Gem6。
 - **✅ 盘点消息「多出」段已精简(Gary:「转库的再精简一点」)**,在分支 `feat/surplus-trim` 等「发」:头行「+N beyond book」、可修段「✅ Log the missing Move: … ← Master 129 · PokeAuctionHouse 24 (+1 more)」(来源按量排、最多 2 个、房名去前缀)、查无段「❓ No source — recount; do NOT adjust」、去掉块间空行。**Codex 一轮 1 P1:第三个测试文件 `count_label_test.mjs` 还钉着旧文案——「改消息措辞先把所有钉文案的测试找全」**;修后 18+21+34 全绿,build 过。屏幕端 StreamCounts 表格文案没动(另一个面,故意不夹带)。
 
 ## ✅ 8/26 中国票部分到货已入账 + ebay3 = 现有 PokeCasino 房(Gary 定,不新建)
