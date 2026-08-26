@@ -1,5 +1,11 @@
 # LV Inventory — 作业手册 brief (2026-08-26)
 
+## 🔴 8/26 e1 空表擦除事故:702 件假销量已撤销、Brandon 真盘已恢复(Gary:「这个应该是brandon」)
+- **06:08 UTC 一场以 Carlos 名义提交的盘点 32 行只填了 4 行,空行=0 一次擦掉 702 件**并广播「Sold 702」;**Brandon 14 分钟后(06:22)的盲盘把被擦前的账逐行数了回来**(White Flare 262 包和被擦前分毫不差——盲盘看不到 expected,抄不了,只能是实数),但他的 754 件全按正差被丢弃。**单向棘轮的完整病例:废盘写库、真盘作废。**
+- **修法照 7/06 先例**:废盘 `c4bd7eec` 软删(`delete_mode='retract'`,理由写明);e1 20 行恢复成 Brandon 实数(备份 `e1_brandon_restore_backup_0826.json`,乐观锁+回读 20/20)。`count_sales_recon` 两处都滤 `deleted=eq.false`,日报不会吃进假 702。**盘点员记分卡如果哪天把 Carlos 记成事故大户,先看这场是不是就是那个已 retract 的废盘。**
+- **⏳ 未决:e1 那堆 CN 盒子到底是什么。** 废盘那 4 个有数的行说 Gem6 11 + Terastal 5;Brandon 说 Gem6 16 + TG 0——**11+5=16,像同一堆 16 盒被两次归到不同行**。现按 Brandon 的写(Gem6 16)。若实物里有 5 盒是 TG:改 Gem6 16→11 + Move TG Master→e1 ×5(Master 现有 10 盒 TG 是 8/26 CN 到货入的)。找 Mario/Brandon 看一眼定案。
+- **✅ 盘点消息「多出」段已精简(Gary:「转库的再精简一点」)**,在分支 `feat/surplus-trim` 等「发」:头行「+N beyond book」、可修段「✅ Log the missing Move: … ← Master 129 · PokeAuctionHouse 24 (+1 more)」(来源按量排、最多 2 个、房名去前缀)、查无段「❓ No source — recount; do NOT adjust」、去掉块间空行。**Codex 一轮 1 P1:第三个测试文件 `count_label_test.mjs` 还钉着旧文案——「改消息措辞先把所有钉文案的测试找全」**;修后 18+21+34 全绿,build 过。屏幕端 StreamCounts 表格文案没动(另一个面,故意不夹带)。
+
 ## ✅ 8/26 中国票部分到货已入账 + ebay3 = 现有 PokeCasino 房(Gary 定,不新建)
 - **UPS `1Z03KC740405052385`(220 盒)部分到货 8/25**:10 Terestal Gathering + 60 Gem Vol.4。团队没走 Intake,Gary 直播中途直接分掉——已按 Intake-to-Master 语义补账(receipts ×2 + acquisitions recv 60/100、10/50 + inventory + movements ×3,备份 `cn_partial_intake_backup_0826.json`,回读全过)。**Gem4 三个房各 20(e2 / e1 / PokeCasino),Master 0;TG 10 留 Master**。成本 = 本批单价:Gem4 **$17.44/盒**(eBay ask ~$31,80%↓ 很健康)、TG **$51.94/盒**(ask $64.98 的 80%)。在途还剩 150 盒(40 Gem4 · 40 TG · 20 Gem2 · 50 Gem5),到了继续走 Intake。
 - **🔴 ebay3 = PokeCasino,用现有 `Stream Room - PokeCasino` 房(原 Whatnot 8 月改名),不建新房**(Gary 选的)。⚠️ 账上还挂着 154 件 Whatnot 时代的货——**PokeCasino 首次盲盘会把旧账洗出来,该早点点一场**。待办:PokeCasino 现在是真直播房了,`room_transfer_notify` 的 STREAM_ROOMS(4 房)和 `count_sales_recon`(只认 4 直播房)都还不含它,要接的话得给它配群 webhook + 加名单。
