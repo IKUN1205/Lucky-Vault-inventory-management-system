@@ -1,4 +1,9 @@
-# LV Inventory — 作业手册 brief (2026-08-25)
+# LV Inventory — 作业手册 brief (2026-08-26)
+
+## ✅ 8/26 中国票部分到货已入账 + ebay3 = 现有 PokeCasino 房(Gary 定,不新建)
+- **UPS `1Z03KC740405052385`(220 盒)部分到货 8/25**:10 Terestal Gathering + 60 Gem Vol.4。团队没走 Intake,Gary 直播中途直接分掉——已按 Intake-to-Master 语义补账(receipts ×2 + acquisitions recv 60/100、10/50 + inventory + movements ×3,备份 `cn_partial_intake_backup_0826.json`,回读全过)。**Gem4 三个房各 20(e2 / e1 / PokeCasino),Master 0;TG 10 留 Master**。成本 = 本批单价:Gem4 **$17.44/盒**(eBay ask ~$31,80%↓ 很健康)、TG **$51.94/盒**(ask $64.98 的 80%)。在途还剩 150 盒(40 Gem4 · 40 TG · 20 Gem2 · 50 Gem5),到了继续走 Intake。
+- **🔴 ebay3 = PokeCasino,用现有 `Stream Room - PokeCasino` 房(原 Whatnot 8 月改名),不建新房**(Gary 选的)。⚠️ 账上还挂着 154 件 Whatnot 时代的货——**PokeCasino 首次盲盘会把旧账洗出来,该早点点一场**。待办:PokeCasino 现在是真直播房了,`room_transfer_notify` 的 STREAM_ROOMS(4 房)和 `count_sales_recon`(只认 4 直播房)都还不含它,要接的话得给它配群 webhook + 加名单。
+- e2/e1 那两笔转库 movements 会被 10 分钟一跑的 room_transfer_notify 自动发进 SLABBIEPATTY(e1 没 webhook 照旧 TG 提醒)。
 
 ## ✅ 8/25 Sully 的 8/24 门店盘点已对账并写库(Gary:「我们直接帮忙写 就行」;15 行,备份 `front_sully_count_backup_0825.json`)
 - **Sully 交的是文字清单没走 app**(Front Store 的 stream_counts 仍是 0 场)。对账前先用收银机把盘点时间窗钉死:10:18 PT 卖掉的 6 个 starter deck 已反映在他的数里、13:22 的 Black Bolt 散包 ×2 和 13:52 的 PO Bundle 他都没数到(=卖后才数)、而 **15:46 PT 一个大买家一次买走一排 ETB(Temporal/Vivid/Prismatic PC/PO PC/Chaos ETB/DA/ME/Meganium ex + 5 Poster)全在他清单上** → **盘点发生在 13:52–15:06 PT 之间**。把盘后销售加回去后 **~30 行分毫不差**(最干净:Darkness Ablaze 数 2 = 现账 1 + 盘后卖 1)。**对文字清单必须按「盘点时点账」对,不能拿现在的账直接比** —— 差一个下午的销售就全是假差异。
