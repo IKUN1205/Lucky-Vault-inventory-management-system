@@ -1,5 +1,10 @@
 # LV Inventory — 作业手册 brief (2026-08-31)
 
+## ✅ 8/31 Buy List Intake 页已发版(Gary:「给他们app function来一个…注意mapping sku 确保是正确的sku」;`61eee62`,Vercel READY)
+- **`/buy-list`:门店买 lot 后把卖家 item list 一贴,逐行确认 SKU,一步入账+入库。** 解析(数量+自由文本+括号注记)→ 缩写展开(pb/dr/pkc/etb/AH/CR…;set 码 st22/op17 不受展开污染)→ 候选排序(**形态词一票否决**:etb≠box≠pack≠sleeved;按「剩余词最少」排;retired 排除;对不上返回空绝不硬配)→ **只有唯一完美双向匹配才预选,其余必须人点**(同名异语言双 exact 也不预选,下拉带 [EN]/[JP]/[CN])→ 提交:acquisitions(status Received,成本=实付总价按市价权重分摊,单行填价优先、余额分给未填行、尾差补末行使合计分毫等于实付)+ updateInventory 落选定房 + Lark purchased 通知(报入账额不报收银额)。**回滚**:acquisition 先记后写库存、invApplied 分段、恢复 basis 快照、删除后回读验证,回滚不完整红字喊停。
+- **权限已开 9 人**(Admin/Sully/Frank/Mario/John John/Gary/Aldo/Eric/Jason),路由/侧栏/UserManagement 三处同步(**漏 UserManagement 就永远没法给人开权限**)。STOREFRONT CHATS 已发英文教程,并让店里把上周那单 buylist 补贴进来。
+- **Codex 三轮共 15 条 P1 全修**,最要紧的几课:① 单行填价会把其余行静默记 \$0(部分填价=余额按市价权重分给未填行)② 分摊逐行四舍五入合计≠实付(尾差补末行)③ acquisition 成功而库存写失败时不进回滚清单(push 要在写库存**之前**)④ `DUPLICATE_CANCELLED` 不许静默采纳 candidates[0]——给候选但 product_id 留空 ⑤ **`fetchInventoryRow` 不返回 id**,拿它做快照恢复 basis 永远不触发(直查带 id)⑥ 金额输入 10.005 会绕过一切(先取整到分再校验)。**parser 测试 76 项**(形态矩阵+near-miss 返回空+变异),`scratchpad/buylist_parse_test.mjs`。updateInventory 无乐观锁 = 全仓已知缺陷,与 IntakeToMaster 同级,等 RPC,不算本页回归。
+
 ## ✅ 8/31 追加:30th Celebration 的 eBay 草稿 30/30 就位(Gary:「都上ebay了吗」「走 然后中文货以及日本货呢」)
 - **30 个草稿(美 19 · 日 4 · 中 7)全在 LuckyVaultUS Seller Hub 草稿箱**,逐标题核对 30/30;qty 0、LV 描述模板、官图、$=Shopify 同价。**全部停在 Preview 没点 List it(铁律)**——Gary 说「发」即批量上线,发布时带 CN 批次那套 List-it 重试(自动补 Set/Game specifics)。draftId 台账 `scratchpad/ebay30/ebay30_log.json`。
 - **复用现成管线零重造**:`lv-listings/tools/ebay_list_autodriver.py`(停在 Preview 的 sealed 自动驾驶)+ 克隆 `chinese_batch_list.py` 的跑批器(逐 SKU env、断点日志、每个跑完关 tab)。**CN 批次先例证实 LuckyVaultUS 开了缺货保留:qty 0 能直接发布 live**——「eBay 不能库存0」只对没开这个选项的号成立。
