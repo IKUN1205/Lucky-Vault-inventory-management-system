@@ -1,4 +1,11 @@
-# LV Inventory — 作业手册 brief (2026-08-26)
+# LV Inventory — 作业手册 brief (2026-08-31)
+
+## ✅ 8/31 「30th Celebration」预备 listing 全线上架(Gary:「最新set 30th 周年…现放图片和价格 库存写0…先都做了」)
+- **30 个 Shopify listing 已 live(美 19 · 日 4 · 中 7),全部 active + qty 0(inventory_policy deny = 显示 Sold Out 不可买)+ 官图 + 目录 SKU 同步建好**。tag `LV-30TH-PRELIST-2026-08-30` 一键可管;台账 `inventory-sync/data/anniv30_prelist_ledger_0830.json`(catalog_id ↔ shopify_id ↔ sku);SKU 格式 `LV-30C-<TYPE>-<uuid8>`。回读 30/30(状态/价/库存/图)+ 公开页实测渲染 Sold out。
+- **产品线事实(31 个 agent 双源互证,9/16 全球同步发售,系列码 30C/M6a)**:**美版没有零售 booster box**(PHD 分销商货单+PokeBeach 全清单证实,包只走 Bundle/ETB/铁盒/collection);日版盒 MSRP ¥7,200 已炒到 ~¥45,000(feed $281);**中文盒预售仅 $84.99——三语同品价差 3 倍是本套最大的套利面**。UPC 分 Day($536)/Night($586)。验证轮纠了研究轮三个错价(UPC Day 405→536、Lucario 贴纸 106→39、Ditto 118→180)和一个 404 官图。
+- **定价口径:锚点(市价>观察到的 ask>MSRP)×1.05 取半元**,qty 0 期间价格只嫌低不嫌高。**发售前要人工过一遍的**:两张 Battle Deck($21,MSRP 锚,ask 已 5×)、日版 Futuristic Box($180.50,抽选品转售预计远高)、Sylveon/Greninja ex Box($115.50,ask 锚可能是双盒套装价)。
+- **唯一没建的:[CN] 幻彩未来纪念礼盒**——官方 image.pokemon.com.cn 对我们一律回 HTML 拦截页(带 Referer 也不行),TCGHobby/PokeUnlimited/KrystalKollectz 都没上架这个抽选品,**查无稳定图源不硬造**;到货拍照后跑 `scratchpad/create_futuristic_cn.py`(幂等,查重后建)即成。
+- **坑四连,记死**:① `products.category` 是 NOT NULL(值域:Booster Box/ETB/Booster Bundle/Ultra-Premium Collection/Tin/Deck/Collection Box…)——插产品别漏 ② **Shopify 图片 src 拉取对签名 URL/巨图会 422**(像素上限 20MP);正解=本地下载→PIL 压 1600px JPEG→base64 `attachment` 直传(234KB 秒过)③ CN CDN(image.pokemon.com.cn)对非浏览器访问回 HTML 假装成功——**判「下载成功」必须验 magic bytes** ④ `lv-finance` 真路径是 `Desktop/LV Agents/lv-finance`(不是 luckyvault 下),`shopify_api` 在那里。
 
 ## 🔴 8/26 e1 空表擦除事故:702 件假销量已撤销、Brandon 真盘已恢复(Gary:「这个应该是brandon」)
 - **06:08 UTC 一场以 Carlos 名义提交的盘点 32 行只填了 4 行,空行=0 一次擦掉 702 件**并广播「Sold 702」;**Brandon 14 分钟后(06:22)的盲盘把被擦前的账逐行数了回来**(White Flare 262 包和被擦前分毫不差——盲盘看不到 expected,抄不了,只能是实数),但他的 754 件全按正差被丢弃。**单向棘轮的完整病例:废盘写库、真盘作废。**
