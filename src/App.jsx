@@ -7,6 +7,7 @@ import Login from './pages/Login'
 import AccessDenied from './pages/AccessDenied'
 import Dashboard from './pages/Dashboard'
 import PurchasedItems from './pages/PurchasedItems'
+import BuyListIntake from './pages/BuyListIntake'
 import IntakeToMaster from './pages/IntakeToMaster'
 import MovedInventory from './pages/MovedInventory'
 import OnlineOrders from './pages/OnlineOrders'
@@ -119,6 +120,9 @@ function AppRoutes() {
       } />
       <Route path="/intake" element={
         <ProtectedRoute path="/intake"><Layout><IntakeToMaster /></Layout></ProtectedRoute>
+      } />
+      <Route path="/buy-list" element={
+        <ProtectedRoute path="/buy-list"><Layout><BuyListIntake /></Layout></ProtectedRoute>
       } />
       <Route path="/move-inventory" element={
         <ProtectedRoute path="/move-inventory"><Layout><MovedInventory /></Layout></ProtectedRoute>

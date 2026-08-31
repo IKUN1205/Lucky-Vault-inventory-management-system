@@ -6,6 +6,7 @@ import {
   Home,
   Package,
   ShoppingCart,
+  ClipboardPaste,
   Truck,
   Receipt,
   ArrowRightLeft,
@@ -68,6 +69,7 @@ const navSections = [
     title: 'Receive',
     items: [
       { path: '/purchased-items', label: 'Purchased Items', icon: ShoppingCart },
+      { path: '/buy-list', label: 'Buy List Intake', icon: ClipboardPaste },
       { path: '/intake', label: 'Intake to Master', icon: Package },
       { path: '/storefront-import', label: 'Storefront Import', icon: Store },
     ]

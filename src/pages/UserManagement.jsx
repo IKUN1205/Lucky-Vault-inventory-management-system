@@ -31,6 +31,7 @@ const PAGE_SECTIONS = [
   ]},
   { title: 'Receive', items: [
     { path: '/purchased-items', label: 'Purchased Items' },
+    { path: '/buy-list', label: 'Buy List Intake' },
     { path: '/intake', label: 'Intake to Master' },
     { path: '/storefront-import', label: 'Storefront Import' },
   ]},
