@@ -1,5 +1,10 @@
 # LV Inventory — 作业手册 brief (2026-08-31)
 
+## ✅ 8/31 追加:30th Celebration 的 eBay 草稿 30/30 就位(Gary:「都上ebay了吗」「走 然后中文货以及日本货呢」)
+- **30 个草稿(美 19 · 日 4 · 中 7)全在 LuckyVaultUS Seller Hub 草稿箱**,逐标题核对 30/30;qty 0、LV 描述模板、官图、$=Shopify 同价。**全部停在 Preview 没点 List it(铁律)**——Gary 说「发」即批量上线,发布时带 CN 批次那套 List-it 重试(自动补 Set/Game specifics)。draftId 台账 `scratchpad/ebay30/ebay30_log.json`。
+- **复用现成管线零重造**:`lv-listings/tools/ebay_list_autodriver.py`(停在 Preview 的 sealed 自动驾驶)+ 克隆 `chinese_batch_list.py` 的跑批器(逐 SKU env、断点日志、每个跑完关 tab)。**CN 批次先例证实 LuckyVaultUS 开了缺货保留:qty 0 能直接发布 live**——「eBay 不能库存0」只对没开这个选项的号成立。
+- 坑:标题带「Coin Set」会把 prelist 类目建议器带去钱币区(CCG 类目按钮不出现→卡在 identify 页)——**改成「Booster Packs x3 + Pikachu Coins」这种 pack 前置的标题就过**。类目按钮 no-btn = 标题的品类信号错了,不是页面坏了。
+
 ## ✅ 8/31 「30th Celebration」预备 listing 全线上架(Gary:「最新set 30th 周年…现放图片和价格 库存写0…先都做了」)
 - **30 个 Shopify listing 已 live(美 19 · 日 4 · 中 7),全部 active + qty 0(inventory_policy deny = 显示 Sold Out 不可买)+ 官图 + 目录 SKU 同步建好**。tag `LV-30TH-PRELIST-2026-08-30` 一键可管;台账 `inventory-sync/data/anniv30_prelist_ledger_0830.json`(catalog_id ↔ shopify_id ↔ sku);SKU 格式 `LV-30C-<TYPE>-<uuid8>`。回读 30/30(状态/价/库存/图)+ 公开页实测渲染 Sold out。
 - **产品线事实(31 个 agent 双源互证,9/16 全球同步发售,系列码 30C/M6a)**:**美版没有零售 booster box**(PHD 分销商货单+PokeBeach 全清单证实,包只走 Bundle/ETB/铁盒/collection);日版盒 MSRP ¥7,200 已炒到 ~¥45,000(feed $281);**中文盒预售仅 $84.99——三语同品价差 3 倍是本套最大的套利面**。UPC 分 Day($536)/Night($586)。验证轮纠了研究轮三个错价(UPC Day 405→536、Lucario 贴纸 106→39、Ditto 118→180)和一个 404 官图。
