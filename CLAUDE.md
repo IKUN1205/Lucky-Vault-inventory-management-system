@@ -1,5 +1,9 @@
 # LV Inventory — 作业手册 brief (2026-08-31)
 
+## 📌 8/31 决定:Kevin 在 ebay2 拍的量贩 slab lot 不入系统(Gary:「这些便宜的就不进了」)
+- slabbiepatty 账号(登录名 anthony,k1bkogcy 环境)8/24-8/31 拍入 **161 单 / 1,501 张**量贩评级卡(CGC 10 为主,Lot of 4/8/12/20,~$8/张,主供 e2 mystery slab 场):8/24 = 100 单 1,012 张(Gary 记 101/1,015,差 1 单 3 张,可能在 hidden/cancelled tab)· 8/28 = 50 单 409 张 · 8/31 = 11 单 80 张。**Gary 定:不入 slabs 表**——管理成本高于货值,mystery 场本来就无 SKU 卖。**以后盘点/审计在 e2 撞见成堆无账 slab 先想到这批,不是失窃。**原始抓取 `scratchpad/kevin_wins_raw.json`。
+- 查法备忘:ebay2 购买记录在 k1bkogcy 的 `ebay.com/mye/myebay/purchase`,每单标题带 Lot of (N);购买页 pg 参数不翻页,一页全量;金额列 DOM 混杂别直接抓。⚠️ 当时有 2 单 Awaiting Payment($32+$77)已提醒。
+
 ## ✅ 8/31 Buy List Intake 页已发版(Gary:「给他们app function来一个…注意mapping sku 确保是正确的sku」;`61eee62`,Vercel READY)
 - **`/buy-list`:门店买 lot 后把卖家 item list 一贴,逐行确认 SKU,一步入账+入库。** 解析(数量+自由文本+括号注记)→ 缩写展开(pb/dr/pkc/etb/AH/CR…;set 码 st22/op17 不受展开污染)→ 候选排序(**形态词一票否决**:etb≠box≠pack≠sleeved;按「剩余词最少」排;retired 排除;对不上返回空绝不硬配)→ **只有唯一完美双向匹配才预选,其余必须人点**(同名异语言双 exact 也不预选,下拉带 [EN]/[JP]/[CN])→ 提交:acquisitions(status Received,成本=实付总价按市价权重分摊,单行填价优先、余额分给未填行、尾差补末行使合计分毫等于实付)+ updateInventory 落选定房 + Lark purchased 通知(报入账额不报收银额)。**回滚**:acquisition 先记后写库存、invApplied 分段、恢复 basis 快照、删除后回读验证,回滚不完整红字喊停。
 - **权限已开 9 人**(Admin/Sully/Frank/Mario/John John/Gary/Aldo/Eric/Jason),路由/侧栏/UserManagement 三处同步(**漏 UserManagement 就永远没法给人开权限**)。STOREFRONT CHATS 已发英文教程,并让店里把上周那单 buylist 补贴进来。
