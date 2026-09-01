@@ -1,12 +1,13 @@
 # LV Inventory — 作业手册 brief (2026-09-01)
 
 ## ✅ 9/1 海贼王语言前缀:26 个 SKU 查证完毕,**等 Frank 回话再落库**(Gary:「改一下语言前缀 和其他op一样」「改之前我看一眼」「你问问frank」)
-- **21 个 agent 取证 + 对抗复核**(4.5M token):语言列不能信,但这次它 25/26 是对的——**唯一错的正是最贵那个**: 记 EN,实为 **JP**(47 罐 / 8 月买 ,900)。**三方互证**:Bandai 亚洲官网「日本以外亚洲限定」+ 对抗复核未能推翻 + **我们自己 PackHeads 的 live listing 标题就写着「… Asia Exclusive TS-03 [JP]」**。
-- **TikTok API 对账没有一条真矛盾**:Illustration Box 全族 = EN(Vol.5/Vol.6 标题直接写 English,Vol.3/4 用英文版 set 名 ,**日版 listing 一条都没有**)· Tin Pack Set Vol.1/2 = EN · Double Pack Set = EN(DP 系列国际独占,日本从未发行)。两条看似矛盾的(OP-09 / PRB-01 有 JP listing)查明**那些是「盒」,争议行是 blister —— 挂卡 blister 是西方零售独有形态**,UPC 810059 = Bandai Namco America。
-- **分四类,一个字未写**:A 有货 9 个 + B 零库存活行 9 个 = **18 个建议加前缀**;C **7 个是已有带前缀 SKU 的重复行(全零库存)→ 该合并不该改名**(给它们加前缀等于把刚清掉的重复又擦亮);D ** 和  三源都判不出,坚决留空**([EN] 和 [JP] 版本目录里都已存在)。
-- **🔴 改名会打断按名字建的映射**:7 月那次废掉 90/286 条钉价就是这个原因。已查:这批断 8 个 key( 2 +  6),同步脚本已备(**新 key 加进去,旧 key 保留**);之前改的 7 个 OP17 名字不在任何配置里,没打断。
-- **🔴 病根不是谁填错了,是两个表单各自写死一个值**: 默认  不问人(那六个 Starter Deck 是 8/03 一次 bulk 提交、1.2 秒内写进去的), 写死 。**所以 language 列记的是「用了哪个表单」,不是任何人的判断**——这就是必须写进名字的理由,名字是唯一出现在点货表/买入表/Lark 消息上的东西。
-- **✅ 已英文 TG 问 Frank 五条**(命名格式 / 买入时带语言 / 那两个查不出的是哪版 / 六个 ST-31~36 是否英文版 / 7 个重复行能否合并)。**新  挂  每小时追问一次**(Gary:「没回答就持续每个小时问他」):判「已回答」= Frank 在提问后发过任何消息(不做关键词匹配,否则会追问一个已经回过话的人)、回答自动转发 Gary 并**自行停止**、22:00–08:00 PT 照发但静音、**发送失败不推进计时**(否则那一小时静默丢失)、**inbox 读不到就 hold 不盲发**、每 6 小时未答向 Gary 升级一次。测试 16 项全过(全部 stub,零真实发送)。
+- **21 个 agent 取证 + 对抗复核**(4.5M token):语言列不能信,但这次它 25/26 是对的——**唯一错的正是最贵那个**:`64c3983b One Piece: Asia exclusive Japanese Mini-tin Vol3 TS-03` 记 EN,实为 **JP**(47 罐 / 8 月买 $8,900)。**三方互证**:Bandai 亚洲官网「日本以外亚洲限定」+ 对抗复核未能推翻 + **我们自己 PackHeads 的 live listing 标题就写着「… Asia Exclusive TS-03 [JP]」**。
+- **TikTok API 对账没有一条真矛盾**:Illustration Box 全族 = EN(Vol.5/Vol.6 标题直接写 English,Vol.3/4 用英文版 set 名 `One Piece Promotion Cards (OP-PR)`,**日版 listing 一条都没有**)· Tin Pack Set Vol.1/2 = EN · Double Pack Set = EN(DP 系列国际独占,日本从未发行)。两条看似矛盾的(OP-09 / PRB-01 有 JP listing)查明**那些是「盒」,争议行是 blister —— 挂卡 blister 是西方零售独有形态**,UPC 810059 = Bandai Namco America。
+- **分四类,一个字未写**:A 有货 9 个 + B 零库存活行 9 个 = **18 个建议加前缀**;C **7 个是已有带前缀 SKU 的重复行(全零库存)→ 该合并不该改名**(给它们加前缀等于把刚清掉的重复又擦亮);D **`EB-03 Heroines Booster Pack` 和 `OP-15 Booster Box` 三源都判不出,坚决留空**([EN] 和 [JP] 版本目录里都已存在)。
+- **🔴 改名会打断按名字建的映射**:7 月那次废掉 90/286 条钉价就是这个原因。已查:这批断 8 个 key(`sku_urls.json` 2 + `ebay_bin_queries.json` 6),同步脚本已备(**新 key 加进去,旧 key 保留**);之前改的 7 个 OP17 名字不在任何配置里,没打断。
+- **🔴 病根不是谁填错了,是两个表单各自写死一个值**:`AddProduct.jsx` 默认 `language:'EN'` 不问人(那六个 Starter Deck 是 8/03 一次 bulk 提交、1.2 秒内写进去的),`JapanAddProduct` 写死 `'JP'`。**所以 language 列记的是「用了哪个表单」,不是任何人的判断**——这就是必须写进名字的理由,名字是唯一出现在点货表/买入表/Lark 消息上的东西。
+- **✅ 已英文 TG 问 Frank 五条**(命名格式 / 买入时带语言 / 那两个查不出的是哪版 / 六个 ST-31~36 是否英文版 / 7 个重复行能否合并)。**新 `lv-finance/frank_sku_followup.py` 挂 `LV_Frank_SKU_Followup` 每小时追问一次**(Gary:「没回答就持续每个小时问他」「用英文问他」):判「已回答」= Frank 在提问后发过任何消息(**不做关键词匹配**,否则会追问一个已经回过话的人)、回答自动转发 Gary 并**自行停止**、22:00–08:00 PT 照发但静音、**发送失败不推进计时**(否则那一小时静默丢失)、**inbox 读不到就 hold 不盲发**、每 6 小时未答向 Gary 升级一次。测试 16 项全过(全部 stub,零真实发送)。
+- ⚠️ **写这条手册时又被 bash 反引号咬了一次**:heredoc 里的 `` ` `` 触发命令替换,把六处 SKU 名和金额整段吃掉(`$8,900` 变 `,900`)。**改 .md/.py 一律用 Write/Edit 工具**,这条家规不只管 Python。
 
 ## 🔴 9/1 到货警示大扫除:$20K 已送达从没入账 + 警报噪音已 dismiss(Gary:「很多已经到了不对吗」「之前的消除警报 dismiss」)
 - **逐票问承运商,6 票 / $20,021 已 Delivered 但 receipts=0**(最老 28 天):Illustration Box V7+V8 ×114 $4,332 · CN Terastal30+Gem5 $1,691 · DR ETB ×40 $2,840 · DR 盒×10+Palworld $3,326 · **OP17 EN 盒 ×98 $7,056** · 151 散包 ×32 $776。**FedEx 876492985458(日本 61 件 $8,275)9/1 10:17 已配達完了**(3 个包裹全签收)而警示还在说 on the way。
