@@ -1,5 +1,11 @@
 # LV Inventory — 作业手册 brief (2026-08-31)
 
+## ✅ 9/1 房间级「收银机对账警示」上线(预览模式)+ OP17 箱规定案 12(Gary 三连指示)
+- **新 `inventory-sync/count_room_recon_notify.py` 挂 `LV_Count_Room_Recon`(15 分钟一巡)**:PK/RocketsHQ 一有带差异的盘点,生成「REGISTER CHECK」发房间群——**只报异常**(Gary:「这个太多了信息」):写掉的行先和订单 API 按 set 码+形态自动配对,**配上的压成一句「N 行全对,no action」**;case/box 家族盒当量守恒的压成一句「形态数错,货没少,下次按箱数」;只有真无解释的短缺(附「窗口内补了 +N,可能是时差」)和 ≥3 的多出逐行点名要回复。**现在是 --preview 只发 Gary TG,Gary 说切群才去掉**。状态机 done/todo/pending/dead 四级、原子写、先持久化再发、只认 code==0、分片续传、死信 TG 重试到成功。Codex 三轮 24 条全收(仅 UTC−7 显示按全仓既例保留)。
+- **匹配器的课**:pack/sleeved/blister 在本目录是一族(sleeved SKU 的 category 就叫 Blister Pack),形态闸门要按族放行;set 码正则的  **在 heredoc 里又变了退格符**(第 N 次!两处正则静默失效,靠真数据 ST01 配不上才暴露)——铁律重申:**这条管道改 .py 只用 Write/Edit,heredoc 里的反斜杠一律 chr(92)**。
+- **OP17 箱规 = 12 盒/箱定案**(Gary:「他们可能按照箱子直接算12盒」+ Frank 说 12 + 72=6×12 整除),ppb 10→12 已写库,箱转盒成本 = $1,658.25÷12 = $138.19/盒。**按 12 做全家族盒当量守恒:PK 自 8/21 进 325 − 转出 65 − 今晚实点 92 = 真消耗 168 盒当量/11 天**;此前按盘点负差报的「22 箱/周」大半是拆箱假消耗,已撤回。周末 OP17 弹药实物 ≈14 箱当量,大概率够,Frank 补 3-5 箱保险即可。
+- 顺带修:count_sales_recon 的 TG 日报因「<=」被当 HTML 标签拒收(8/29 那天整份日报无声丢失)——已全文转义;8/31 周报 PK「741 写掉在地板带内」Gary 批示放行。
+
 ## 📌 8/31 决定:Kevin 在 ebay2 拍的量贩 slab lot 不入系统(Gary:「这些便宜的就不进了」)
 - slabbiepatty 账号(登录名 anthony,k1bkogcy 环境)8/24-8/31 拍入 **161 单 / 1,501 张**量贩评级卡(CGC 10 为主,Lot of 4/8/12/20,~$8/张,主供 e2 mystery slab 场):8/24 = 100 单 1,012 张(Gary 记 101/1,015,差 1 单 3 张,可能在 hidden/cancelled tab)· 8/28 = 50 单 409 张 · 8/31 = 11 单 80 张。**Gary 定:不入 slabs 表**——管理成本高于货值,mystery 场本来就无 SKU 卖。**以后盘点/审计在 e2 撞见成堆无账 slab 先想到这批,不是失窃。**原始抓取 `scratchpad/kevin_wins_raw.json`。
 - 查法备忘:ebay2 购买记录在 k1bkogcy 的 `ebay.com/mye/myebay/purchase`,每单标题带 Lot of (N);购买页 pg 参数不翻页,一页全量;金额列 DOM 混杂别直接抓。⚠️ 当时有 2 单 Awaiting Payment($32+$77)已提醒。
