@@ -1,4 +1,9 @@
-# LV Inventory — 作业手册 brief (2026-08-31)
+# LV Inventory — 作业手册 brief (2026-09-01)
+
+## ✅ 9/1 Marvel Allegiance 双单位行根治:散包 SKU 已建+拆分写库(Gary:「tiktok api如果有的话 我们就补一个」)
+- **API 实锤后才动手**:TikTok listing `1732404405434159181` 自己就挂着两个 SKU——**Pack `1732461065041449037` $12.99 / box `1732461065041514573` $206.99**;7/1 以来卖 **17 盒 + 22 包、零取消**(拉全量订单逐行验)。这就是「一行账管两种实物」的收银机铁证。
+- **拆分依据**:8/24 Trey 式「只数盒」写 1(8/21 卖的 2 盒 DELIVERED 已发走,对的);**8/25→9/1 五场连续、三个盘点员全数 25 = 1 盒 + 24 散包**。已建 `773a95c5 2023 Upper Deck Marvel Allegiance The Infinity Trilogy Booster Pack`(brand Other/EN/type Pack/category Booster Pack)+ PK 库存行 **24 @ $3.72**(= 盒 basis $119÷32);盒行 qty 1 未动。备份 `marvel_pack_split_backup_0901.json`,回读全过。**故意不走 box_breaks** —— 历史拆盒早已通过盘点负差离账,现在再记一笔会双扣。点货表从今晚起两行各数各的,+24 幽灵永久消失。
+- **known_dual_unit.json 已清空**(Marvel 摘掉)——recon 对这两行恢复正常报警。TikTok 侧 sku_id 映射(pack/box 两个 id 见上)留给 apply_orders 上线时用。⚠️ Masterpieces XL(eac57e70,breakable ppb=20)同构造,货架若也有散包就照方抓药。
 
 ## ✅ 9/1 房间级「收银机对账警示」上线(预览模式)+ OP17 箱规定案 12(Gary 三连指示)
 - **新 `inventory-sync/count_room_recon_notify.py` 挂 `LV_Count_Room_Recon`(15 分钟一巡)**:PK/RocketsHQ 一有带差异的盘点,生成「REGISTER CHECK」发房间群——**只报异常**(Gary:「这个太多了信息」):写掉的行先和订单 API 按 set 码+形态自动配对,**配上的压成一句「N 行全对,no action」**;case/box 家族盒当量守恒的压成一句「形态数错,货没少,下次按箱数」;只有真无解释的短缺(附「窗口内补了 +N,可能是时差」)和 ≥3 的多出逐行点名要回复。**现在是 --preview 只发 Gary TG,Gary 说切群才去掉**。状态机 done/todo/pending/dead 四级、原子写、先持久化再发、只认 code==0、分片续传、死信 TG 重试到成功。Codex 三轮 24 条全收(仅 UTC−7 显示按全仓既例保留)。
