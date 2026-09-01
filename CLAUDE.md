@@ -1,5 +1,17 @@
 # LV Inventory — 作业手册 brief (2026-09-01)
 
+## 🔴 9/1 到货警示大扫除:$20K 已送达从没入账 + 警报噪音已 dismiss(Gary:「很多已经到了不对吗」「之前的消除警报 dismiss」)
+- **逐票问承运商,6 票 / $20,021 已 Delivered 但 receipts=0**(最老 28 天):Illustration Box V7+V8 ×114 $4,332 · CN Terastal30+Gem5 $1,691 · DR ETB ×40 $2,840 · DR 盒×10+Palworld $3,326 · **OP17 EN 盒 ×98 $7,056** · 151 散包 ×32 $776。**FedEx 876492985458(日本 61 件 $8,275)9/1 10:17 已配達完了**(3 个包裹全签收)而警示还在说 on the way。
+- **真伤不在「晚了」,在成本没进账**:① Illustration Box V7/V8 **全系统零痕迹**(库存0/movements0/销售0/从没被盘点)② DR ETB ×40 库存全零但门店已卖 13 个 ③ DR 盒 ×10 **basis $0.00**(8/20 手工加库存,成本一分没记)④ **🔴 OP17 EN 盒 basis $353.84 而实付 $72**(8/26 一次从 Master 转出 186 盒进 PK)——**COGS 虚记近 5 倍,污染了 8/31-9/1 那套 OP17 消耗账,待 Gary 点头改**。
+- **病根(8/21 就记过、没修)**:`inbound_notify` / `inbound_tracking` **只更新自己的 state 文件,从不写 `acquisitions.tracking_delivered_at`** → 这 6 票 `tracking_last_checked_at` 全是 NULL,追踪器从没真查过;`inbound_tracking` 的 state 里 8/19、8/21 那两票 `shipped` 日期写的是 **9/1**(今天才第一次看见),`1ZJ20R270315012804` 干脆是 null。外加 cron 日志一串 `composer content mismatch` / `search-focus check failed`,通知失败顺延。
+- **✅ 已 dismiss 8 行**(`dismiss_stale_arrivals_backup_0901.json`,乐观锁+回读,**只关收货计数器,不碰库存/receipts/成本**):3 行 Storm 是 **8/12 你拍板的 RECONCILED_NO_STOCK_DELTA**(货早在楼里,补进去=148 个幽灵)、Gem Vol.5×3 / 评价卡×1 / others×3 有库存实证、Mega Symphonia×1 与 Storm In Bag 第 6 袋是同票其余行全收满的漏勾。**故意留着两行**:`[CN] 5.0 精灵球 ×80`(7/27 送到 Gary 家,**36 天零痕迹**,CN 账 ¥47,200——货在哪?)· `黑盒 ×1`。
+- **🔴 为什么一个已经拍板的决定会天天回来**:两个消费方都不认 `RECONCILED_NO_STOCK_DELTA` —— app `IntakeToMaster.jsx` 的 outstanding 只看 `quantity_received < quantity_purchased`;`daily_inventory_watch` 用 `status neq 'Received'`,而结案状态正是 **`Received - Discrepancy`(不等于 Received)**。已修日巡(加 status/notes 三重过滤,含 `DISMISSED` 标记),实测 **10 行噪音 → 2 行真问题**。**app 侧同一处待改待发。教训:结案要写成消费方读得懂的东西,否则「已决定」会被反复要求再决定一次,把真信号埋 36 天。**
+
+## ✅ 9/1 OP17 家族补 [EN]/[JP] 名字前缀(Gary:「THE WORLD'S STRONGEST WARRIORS ×13 是英文还是日文 我们需要在sku上显示」)
+- **那 13 盒是日文**(`71cc6ce5`,Chiyoda 发出,$1,393.60÷13 = **$107.20/盒**,比 case 折算的 $138.19 和 Frank 的 $325-333 都便宜——JP 价在跌)。
+- **查出来一个真雷:`c9e98cd7` [EN] 和 `77d8f781` [JP] 名字逐字节相同** —— `One Piece Card Game The World's Strongest Warriors (OP17) Booster Box`,一个 7 盒 @$353.84、一个 17 盒 @$333,**盘点表上就是同样的字出现两遍**。7 月给 164 个海贼王产品加前缀那一轮之后建的 SKU 没跟上。
+- **已改 7 个**(`op17_name_prefix_backup_0901.json`,旧名全部吸进 `aliases` 所以 buy-list/tg_move/查重守卫照样搜得到):两个盒 SKU 分成 `[EN]`/`[JP]`,`[JP] (Case)` / `(Cut Slice)` / `Single Pack` / `[EN] 4th Anniversary Tournament Pack`。⚠️ **`77d8f781` 和 `71cc6ce5` 两行都是 JP 盒 = 同物异名,两边都有货(17/13),合并要 Gary 点头**;全库还有 **26 个海贼王 SKU 没前缀**,同一招待做。
+
 ## ✅ 9/1 Marvel Allegiance 双单位行根治:散包 SKU 已建+拆分写库(Gary:「tiktok api如果有的话 我们就补一个」)
 - **API 实锤后才动手**:TikTok listing `1732404405434159181` 自己就挂着两个 SKU——**Pack `1732461065041449037` $12.99 / box `1732461065041514573` $206.99**;7/1 以来卖 **17 盒 + 22 包、零取消**(拉全量订单逐行验)。这就是「一行账管两种实物」的收银机铁证。
 - **拆分依据**:8/24 Trey 式「只数盒」写 1(8/21 卖的 2 盒 DELIVERED 已发走,对的);**8/25→9/1 五场连续、三个盘点员全数 25 = 1 盒 + 24 散包**。已建 `773a95c5 2023 Upper Deck Marvel Allegiance The Infinity Trilogy Booster Pack`(brand Other/EN/type Pack/category Booster Pack)+ PK 库存行 **24 @ $3.72**(= 盒 basis $119÷32);盒行 qty 1 未动。备份 `marvel_pack_split_backup_0901.json`,回读全过。**故意不走 box_breaks** —— 历史拆盒早已通过盘点负差离账,现在再记一笔会双扣。点货表从今晚起两行各数各的,+24 幽灵永久消失。
