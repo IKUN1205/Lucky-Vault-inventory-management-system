@@ -1,5 +1,23 @@
 # LV Inventory — 作业手册 brief (2026-09-01)
 
+## 🔴 9/1 门店 $3,000 现金买入:货已在架、钱一分没入账(Gary:「这个入库一下门店 并且告诉小马要走门店的系统」)
+- **抢在我前面 14 分钟,Aldo 18:00 PT 自己把 14 行全录进 Front Store —— 但是走的「Master → Front Store 转库」,而 Master 从来没有过这批货**(`White Flare PC ETB` 这个 SKU 是他几分钟前新建的,Master 不可能持有)。他先手工给 Master 加库存(零痕迹那条老路),再转出来。后果:**数量对 ✓ · 我们付的 $3,000 系统里完全不存在 ✗ · 8 个 SKU 成本 $0.00,另外 5 个背着 Master 的旧 basis(151 ETB 记 $510/个,实付 $224)**。
+- **✅ 我只补钱不补货(补货就翻倍)**:14 条 acquisitions = **$3,000**(status Received,按市价权重分摊,尾差 $0.01 补末行)+ **13 行 Front Store basis 改对**(乐观锁 + 回读 14/14 全 OK,**一个 quantity 都没动**)。备份 `buylist_cost_backup_0901.json`,notes 里写明「COST ONLY,货是 18:00 转库进来的」。
+- **🔴 判「listed 是市价不是实付」有三条独立证据,这是全案的枢纽**:① **9 条能查价的里 8 条落在 TCG 市价的 98–101%**(Prismatic SPC $255/$259 · 151 bundle $180/$179 · 151 ETB $560/$569 · Perfect Order $175/$174 · Chaos PC ETB $135/$136 · Mega Lucario PC $230/$231)② **8/26 那条一模一样格式的**:`X1 journey etb $138 … $380 cash paid / $350 from hard box / $30 store front cash` —— 逐行加起来 $602,实付 $380 ③ **Prismatic Booster Bundle 写 $90,正是我们自己 8/26 在收银台卖出的价**。所以 **$7,506 是市价,$3,000 是实付 = 市价的 40%**,买得很好。
+- **✅ 「hard box」= 现金保险箱**(Mario 原话:「Withdrew $8000 from bank to hard box for cash buys」「Taking $2350 cash from hard box for card show」),不是产品也不是供应商。
+- **🔴 新方法:市价可以反过来定产品。** 既然店里每行都按市价写,那**没写形态的行就用市价认**:`Crown zenith x3 = $220/个` → Booster Bundle 市价 $221 ✓,而 ETB $326 / PC ETB $423 / Premium Figure $346 全对不上;`Mega Charizard upc = $230` → 老的 Charizard UPC 市价 $589,只有 `Mega Charizard X ex UPC` 说得通;`White flare etb pc $240` = 普通 WF ETB($154.52)的 **1.55 倍**,正是 PC 版的溢价 → 是 PC 版不是两个普通版。**14 行我全部独立判完,和 Aldo(手里拿着实物)选的 SKU 一个不差,包括两行没写形态的和两行没写数量的。**
+- **⚠️ Tohoku Pika Box 上架 1 分钟就卖了**:01:00:14 转进 Front,**01:01:16 收银台卖 $120,而那行 basis 是 $0.00** → 那笔销售报的毛利比实际高 $58.35(真成本)。**卖出行永不回改**,没动,只记在这里。
+- **⚠️ 顺带**:Sully 01:03 又用同一条错路把 `Pitch black elite trainer box pc ETB ×1` 从 Master 转进 Front,同样 $0 成本 —— 不在 Gary 这张单上,没动。`151 Elite Trainer Box` 原有那 1 个的 $510 basis 本身就可疑(像是把市价当成本记的),另案。
+
+### 🔴 而我差点让 Mario 用一个解析不了他自己格式的页面(已修,**未过 Codex 未发版**)
+- 店里真实格式是 **`名字 xN $价格`**,而 8/31 上线的 `/buy-list` 三处都读错,**他今晚这张单基本没有一行能解析对**:
+  1. **行尾的 `$510` 把 `xN` 规则挡死** → `parseBuyList('Prismatic spc x2 $510')` 返回 **qty=null**,而且 `510` 还会混进匹配用的 token。
+  2. **`151` 被当成数量** → `'151 booster bundle x10'` 返回 **qty=151,name="booster bundle x10"**。病根是「开头整数」这条分支排在「显式 xN」前面。**而 151 是我们最大的产品之一。**
+  3. **`SV 151 Booster Bundle` 这行目录名根本搜不到** —— `expandTokens` 把「套号前缀 + 任意位数字」合并成套号,`SV 151` 变成 `sv151`,于是打「151 booster bundle」的人永远匹配不上它。今晚就是靠这条才发现的(ranker 把中文版 `[CN] 151 Bundle Box` 排在第一)。
+- **修法**:行尾金额先摘掉进 `note`(**只当备注,绝不当成实付价** —— 那是市价,自动填进去会记成 $7,506)· 显式 `xN` / ` - N` 优先于开头整数 · 套号合并**限定 1–2 位数字**(我们的套号全是 OP-17 / ST-36 / EB-03 / PRB-2 / M6,三位数就是套名不是套号)。
+- **测试 76 → 86 项,跑真模块 + 变异测试**:把套号上限撤掉 → 2 条红;把开头整数挪回最前 → 2 条红。`npx vite build` 通过。
+- **✅ 已英文 TG 告诉 Mario 走 `/buy-list`**,并按「说清代价而不是说规矩」写:货记成 Master 转库让系统一度以为 Master 有 34 个它从没有过的盒子、$3,000 无处可寻、Tohoku 那盒按 $0 成本卖掉。**同时问了三件只有他能定的事**:$3,000 是不是全部付款 · 两行没写数量的是不是各 1 个 · Crown Zenith 是不是 bundle。**没给 Aldo 发**(Gary 只点了小马),要发说一声。
+
 ## ✅ 9/1 海贼王语言前缀:26 个 SKU 查证完毕,**等 Frank 回话再落库**(Gary:「改一下语言前缀 和其他op一样」「改之前我看一眼」「你问问frank」)
 - **21 个 agent 取证 + 对抗复核**(4.5M token):语言列不能信,但这次它 25/26 是对的——**唯一错的正是最贵那个**:`64c3983b One Piece: Asia exclusive Japanese Mini-tin Vol3 TS-03` 记 EN,实为 **JP**(47 罐 / 8 月买 $8,900)。**三方互证**:Bandai 亚洲官网「日本以外亚洲限定」+ 对抗复核未能推翻 + **我们自己 PackHeads 的 live listing 标题就写着「… Asia Exclusive TS-03 [JP]」**。
 - **TikTok API 对账没有一条真矛盾**:Illustration Box 全族 = EN(Vol.5/Vol.6 标题直接写 English,Vol.3/4 用英文版 set 名 `One Piece Promotion Cards (OP-PR)`,**日版 listing 一条都没有**)· Tin Pack Set Vol.1/2 = EN · Double Pack Set = EN(DP 系列国际独占,日本从未发行)。两条看似矛盾的(OP-09 / PRB-01 有 JP listing)查明**那些是「盒」,争议行是 blister —— 挂卡 blister 是西方零售独有形态**,UPC 810059 = Bandai Namco America。
