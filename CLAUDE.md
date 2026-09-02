@@ -12,8 +12,17 @@
 - **🔴 病灶二:Gary 8/31「Mystery Game 从门店零售剔出单列」只实现在 slabs 上。** 代码是 `if tbl == "slabs" and "mystery game" in notes` —— 而**同样打着 `Mystery Game` 标签的 134 行 `storefront_sales` / $27,519 没有任何地方在过滤**。所以哪个报表一去加 storefront_sales,出奖立刻变营收。**一个决定只在一张表上落地,另一张表就成了后门。**
 - **🔴 病灶三:Mystery Game 设计上就不写收款行**(`MovedInventory.jsx` 注释原话 `lightweight (no POS/payment)`,`payment_method_id: null`)。38 笔全部 $0 收款 → 现金对账对这块永远瞎。
 - **🔴 而最麻烦的是同一列塞了两种意思,下游无法分辨**:没填价的行按 `mysteryPricelessTotal` **均分(那是真收的钱)**,填了价的行保留价格、**slab 还自动预填市价(那是奖品价值不是钱)**。只能靠「同一笔里价格是不是全相等」这个签名去猜:**7 笔均分 $6,390(真钱)· 17 笔价格各异 $18,972(奖品价)· 14 笔只有一行、连签名都没有 $5,685 判不了**。所以「Mystery Game 到底收了多少钱」的诚实答案是**一个区间 $6,390–$12,075,不是一个数**。这是「单位铁律」的同型病:**一列答两个问题**。
-- **修法(未动手,等 Gary 定)**:① 任何加 `storefront_sales` 的地方一律过滤 `notes='Mystery Game'`,和 slabs 一视同仁(服务端改,不用发版)② `shopify_storefront()` 补上 storefront_sales 才是真门店 ③ 表单拆成两个字段——**收了多少钱**(一笔,写 `storefront_payments`)和**发出去的奖品**(记 COGS 不记营收)。在③之前那 $31k 只能标「判不了」,**不许当营收报**。⚠️ `monthly_sales_report` 注释写着「外账(投资人)= 门店+活动合并」——**投资人版正在看被出奖抬高的门店数**。
-- ⚠️ 顺带:`storefront_sales.sale_price` 是**行总额不是单价**(`qty 20/$720` 和 `qty 1/$35` 一对照就明白)。我当天先按单价乘了数量,把 Gem Vol 6 报成 $70,642,真实 $4,632,**虚高 15 倍**。列的单位这周错第二次了。
+### ✅ 9/1 ①② 已修并生效(Gary:「go」)—— 服务端改,**这两个目录不在 git 下,所以改完立即生效、无需发版,也没有版本回滚**
+- **新 `lv-finance/mystery_game.py` 是唯一判定源**,四个读者全部 import 它。**测试 30 项跑真模块 + 四条变异全部证红**(把 singles 指回 `notes` → 红 · 让 storefront_sales 乘 quantity → 3 条红 · 列没选到时返回 False 而不是抛 → 2 条红 · 单行判成 False 而不是 None → 2 条红),控制组绿。
+- **🔴 两个陷阱写进模块并用测试钉死**:① **标签的列每张表都不一样**(`storefront_sales.notes` · `slabs.notes` · **`singles.sale_notes`**)——**我当天就栽了一次**,用 `notes` 读 singles 什么都没找到,而那读起来和「本来就没有出奖」一模一样。所以 `is_mystery(row, table)` **必须传表名**,列没被 select 到就 **抛 `MissingTagColumn` 而不是返回 False**(「没查」永远不许渲染成「没有」)② **绝不能在 PostgREST 侧过滤**:`notes=not.ilike.*Mystery*` 会**把 notes 为 NULL 的行全部丢掉**(NULL NOT ILIKE 结果是 NULL 不是 true),而绝大多数真零售行的 notes 就是 NULL —— 服务端过滤等于静默删掉大半个门店。取回来再在 Python 里切。
+- **`daily_sales_report.shopify_storefront()` 三处改**:补进 `storefront_sales`(**此前从不读,门店最大的一块一直是 0**)· 出奖按共享判定从三张表一起剔出 · **singles 按 `quantity` 乘**(此前漏乘,八月 $210)。返回契约一个键都没动(`pos_gross`/`pos_net`/`by_payment`/`mystery_game`),所以 `render_report_html`/`render_report_pdf`/`codex_daily_audit`/`monthly_sales_report` 零改动自动吃到修正值;只新增 `sealed_retail`(**只含零售,和 pos_gross 同口径**)。
+- **验收不是「跑起来了」,是逐日跑完八月、重现另一条路独立算出来的月度**:`retail $48,869 MATCH · mystery $31,047 MATCH`,exit 0。**差的那 $60 正是我新加的补账去重**(收银台手录卡后来补账会在两张表各留一行,`RECONCILED_FROM_COUNTER` 那行跳过;8/17 $40 + 8/21 $20)。零售对收银台 +3.8%。
+- **日巡 `storefront_recon` 出奖单独成桶**:此前每一笔出奖都掉进「有货品行无收款 🚨」—— **实测 22 笔误报 → 3 笔真的**。新行只说它能证明的:「Mystery Game 出奖 N 笔 $X(不计入门店零售)/ 其中像现金桶的 $A · 单行判不了的 $B —— 这笔钱没有任何收款记录」。
+- **🔴 顺带修掉一个既有的静默死亡**:`storefront_recon` 的双录检测 `sorted(key=lambda s: (s["product_id"], ...))` 在 `product_id` 为 NULL(收银台手录卡)时 **TypeError**,而整段包在 try 里 → **只要 26 小时窗口里有一行手录卡,整个门店对账当天就不跑**,6 月以来这样的行有 131 条。已改成跳过无 product_id 的行(它们本来也不可能「同品双录」)。
+- **两个手跑的周报脚本同样接入**(`reports/_weekly_gen/storefront_real_margin.py` · `pos_cost_scanner.py`)——实测七月那一周它们原本把 **$3,689 的奖品价算进了毛利**。
+- **✅ app 侧一处都不用改,已逐个查过**:`ExecutiveReport`/`Turnover`/`weekly-usage-digest` 读的是 **quantity/cost_basis(消耗口径)—— 出奖的货是真离开货架的,滤掉反而错**;`cash-alert-eod` 读 `net_cash_usd`,而**出奖行这一列 195 行全是 NULL**,所以现金链路(含 `store_sales_api` → daily_finance_report/cash_ledger)本来就干净。**要过滤的只有加 `sale_price`/`profit` 的地方。**
+- **⏳ 还没做的第 ③ 条(要动 app 表单,得过 Codex)**:Mystery Game 表单拆成「收了多少钱」(一笔,写 `storefront_payments`)和「发出去的奖品」(记 COGS 不记营收)。在那之前 **$31k 只能标「判不了」,不许当营收报**;⚠️ `monthly_sales_report` 注释写着「外账(投资人)= 门店+活动合并」——**投资人版仍在看被出奖抬高的门店数**。
+- ⚠️ 顺带:`storefront_sales.sale_price` 是**行总额不是单价**(`qty 20/$720` 和 `qty 1/$35` 一对照就明白)。我当天先按单价乘了数量,把 Gem Vol 6 报成 $70,642,真实 $4,632,**虚高 15 倍**。列的单位这周错第二次了,已写进 `mystery_game.amount()` 并用测试钉死。
 
 ## 🔴 9/1 库存体检:结构没崩,漏的是成本
 - **289 行在架 / 16,449 件 / 账面 $203,482;负库存 0 条**,没有写坏的状态。
