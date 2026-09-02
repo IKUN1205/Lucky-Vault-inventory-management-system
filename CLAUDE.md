@@ -1,5 +1,28 @@
 # LV Inventory — 作业手册 brief (2026-09-01)
 
+## 🔴 9/1 「八月门店又 8w」查实:门店真实营收三个月是平的,跳的是 Mystery Game(Gary:「八月份怎么门店又8w了 看一下finance的逻辑」)
+```
+月份      headline    Mystery Game   剔掉之后    收银台实收
+6月       $67,277      $21,529      $45,748     $55,113
+7月      $123,353      $75,677      $47,676     $51,288      ← 61% 是出奖
+8月       $79,765      $31,047      $48,718     $47,070
+```
+- **门店真实营收 $45.7k → $47.7k → $48.7k,一条直线;headline 在 $67k/$123k/$80k 之间乱跳,波动 100% 来自 Mystery Game。** 八月那 8w = 把柜台所有货品行加总($79,765),里面 $31,047 是出奖按零售价记成了销售。剔掉之后 $48,718 vs 收银台 $47,070,**差 $1,648(3.4%)—— 对得上**。
+- **🔴 病灶一:`daily_sales_report.shopify_storefront()` 只读 `slabs` + `singles`,从不读 `storefront_sales`。** docstring 写着「门店 sales = slabs+singles with sale_channel='in_person'」(7/12 定的),而**密封品现在是门店最大的一块** —— 八月 $59,204 它一分钱都没看见,报出来的门店只有 $17,034。
+- **🔴 病灶二:Gary 8/31「Mystery Game 从门店零售剔出单列」只实现在 slabs 上。** 代码是 `if tbl == "slabs" and "mystery game" in notes` —— 而**同样打着 `Mystery Game` 标签的 134 行 `storefront_sales` / $27,519 没有任何地方在过滤**。所以哪个报表一去加 storefront_sales,出奖立刻变营收。**一个决定只在一张表上落地,另一张表就成了后门。**
+- **🔴 病灶三:Mystery Game 设计上就不写收款行**(`MovedInventory.jsx` 注释原话 `lightweight (no POS/payment)`,`payment_method_id: null`)。38 笔全部 $0 收款 → 现金对账对这块永远瞎。
+- **🔴 而最麻烦的是同一列塞了两种意思,下游无法分辨**:没填价的行按 `mysteryPricelessTotal` **均分(那是真收的钱)**,填了价的行保留价格、**slab 还自动预填市价(那是奖品价值不是钱)**。只能靠「同一笔里价格是不是全相等」这个签名去猜:**7 笔均分 $6,390(真钱)· 17 笔价格各异 $18,972(奖品价)· 14 笔只有一行、连签名都没有 $5,685 判不了**。所以「Mystery Game 到底收了多少钱」的诚实答案是**一个区间 $6,390–$12,075,不是一个数**。这是「单位铁律」的同型病:**一列答两个问题**。
+- **修法(未动手,等 Gary 定)**:① 任何加 `storefront_sales` 的地方一律过滤 `notes='Mystery Game'`,和 slabs 一视同仁(服务端改,不用发版)② `shopify_storefront()` 补上 storefront_sales 才是真门店 ③ 表单拆成两个字段——**收了多少钱**(一笔,写 `storefront_payments`)和**发出去的奖品**(记 COGS 不记营收)。在③之前那 $31k 只能标「判不了」,**不许当营收报**。⚠️ `monthly_sales_report` 注释写着「外账(投资人)= 门店+活动合并」——**投资人版正在看被出奖抬高的门店数**。
+- ⚠️ 顺带:`storefront_sales.sale_price` 是**行总额不是单价**(`qty 20/$720` 和 `qty 1/$35` 一对照就明白)。我当天先按单价乘了数量,把 Gem Vol 6 报成 $70,642,真实 $4,632,**虚高 15 倍**。列的单位这周错第二次了。
+
+## 🔴 9/1 库存体检:结构没崩,漏的是成本
+- **289 行在架 / 16,449 件 / 账面 $203,482;负库存 0 条**,没有写坏的状态。
+- **八月门店营收 23%($15,371 / 208 件)是按 $0 成本卖的**,毛利报表上全是 ~100%。29 个产品里 **19 个全系统查无任何进货记录**,10 个成本就在别的房间躺着、拿过来就能补(Destined Rivals $329 · Phantasmal Flames $95.56 · Terastal Gathering $50.96 · Chaos Rising $14.98…)。最大的 **Gem Pack Vol 6:卖了 93 个、还剩 143 个、零进货记录** —— 钱花过(CN `入库*090` 20 箱 ¥2,880/箱 = ¥57,600),**箱规 CN 侧没写所以每盒成本推不出来,要问**。
+- **🔴 全库只有 4 个直播房被盘过,其余字面意义上一次都没有**:Japan Warehouse $50,022 · Master $46,760 · Front Store $23,356 · PokeCasino/PAH $483 —— **账面 59% 的钱从没被观测过**。8/24 把 Master/Front 加进点货页已 8 天,**零使用**。
+- **Japan Warehouse movements 进 0 出 0,从建库到今天一笔没有**,11,695 件(11,328 是散包);而 8/12 读他们自己的表是 **484 件**,差 24 倍。
+- **「$99K 买了没入库」大部分是噪音**:真正「承运商说到了、receipts 还是 0」只有 2 条 $0;48 条 $57,391 是「有单号但追踪器从没写过送达」(`inbound_notify` 老病),30 条 $42,780 没单号。这些行 `cost_usd` 都在 acquisitions 上,**钱记了,缺的是收货计数器**,比零成本行轻。
+- 同名双行还有货:`Black Bolt Booster Pack`(Master 40 @ $0 vs 另一行 322 @ $3,944,那 40 个的 $0 就是这么来的)· `Dual Evolution (Case)` 各 1。
+
 ## 🔴 9/1 门店 $3,000 现金买入:货已在架、钱一分没入账(Gary:「这个入库一下门店 并且告诉小马要走门店的系统」)
 - **抢在我前面 14 分钟,Aldo 18:00 PT 自己把 14 行全录进 Front Store —— 但是走的「Master → Front Store 转库」,而 Master 从来没有过这批货**(`White Flare PC ETB` 这个 SKU 是他几分钟前新建的,Master 不可能持有)。他先手工给 Master 加库存(零痕迹那条老路),再转出来。后果:**数量对 ✓ · 我们付的 $3,000 系统里完全不存在 ✗ · 8 个 SKU 成本 $0.00,另外 5 个背着 Master 的旧 basis(151 ETB 记 $510/个,实付 $224)**。
 - **✅ 我只补钱不补货(补货就翻倍)**:**15 条 acquisitions = $6,104.77**(status Received)+ **14 行 Front Store basis 改对**(乐观锁 + 回读全 OK,**三轮写下来一个 quantity 都没动**)。备份 `buylist_cost_backup_0901.json` → `buylist_realloc_backup_0901.json` → `buylist_80pct_backup_0901.json`,notes 里写明「COST ONLY,货是 18:00 转库进来的」。
