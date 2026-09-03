@@ -13,15 +13,31 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import vm from 'node:vm'
+import { isLedgerRoomName } from '../src/lib/countRooms.js'
+import { isCaseProduct } from '../src/lib/caseUnit.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const src = readFileSync(path.join(ROOT, 'api/lark-notify.js'), 'utf8')
 
 // Strip the ESM export keywords so the file can be evaluated as a script, then
 // hand back the two functions under test.
-const script = src.replace(/^export\s+default\s+/m, 'const __handler = ')
+//
+// import/export-FROM lines have to go entirely, not just lose the keyword:
+// blanking `export` off "export { x as y } from '...'" leaves "{ x as y } from
+// '...'", which is a SyntaxError. That is what silently killed this file on
+// 08-24 when lark-notify.js grew its first relative import, and every
+// assertion below has been dead since. The bindings those lines provided are
+// injected into the context instead, so the module still finds them.
+// (`.` already excludes newlines, so no \n class is needed here — writing one
+//  through a shell here-doc is how this line got a literal newline in it once.)
+const script = src.replace(/^\s*(import|export)\s.*\sfrom\s+'[^']+'\s*;?\s*$/gm, '')
+                  .replace(/^\s*import\s+'[^']+'\s*;?\s*$/gm, '')
+                  .replace(/^export\s+default\s+/m, 'const __handler = ')
                   .replace(/^export\s+/gm, '')
-const ctx = vm.createContext({ console, fetch: () => {}, process, Intl, Date })
+const ctx = vm.createContext({
+  console, fetch: () => {}, process, Intl, Date,
+  isLedgerRoom: isLedgerRoomName, isLedgerRoomName, isCaseProduct,
+})
 vm.runInContext(script + '\n;globalThis.__t = { buildMessage, marketClause };', ctx)
 const { buildMessage, marketClause } = ctx.__t
 
