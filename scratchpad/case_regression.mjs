@@ -25,6 +25,9 @@ const HERE = path.dirname(new URL(import.meta.url).pathname.slice(1))
 const KEYS = JSON.parse(fs.readFileSync(
   'c:/Users/Gary/Desktop/LV Agents/inventory-sync/data/_supabase_keys.json', 'utf8'))
 const BASE = KEYS.urls[0].replace(/\/$/, ''), ANON = KEYS.anon_key_network
+// shortCountName is already `export function` in the source; re-exporting it
+// would be a duplicate export and a SyntaxError. Only the module-private ones
+// go here.
 const EXPORTS = '\nexport { splitJpName, jpItemLines }\n'
 const shims = []
 
@@ -106,4 +109,23 @@ for (const p of cases) {
   const b = NEW.jpItemLines([{ name: raw, quantity: 2 }]).lines[0]
   console.log(`   ${a === b ? 'same ' : 'CHANGED'} ${b}`)
   if (a !== b) console.log(`            was: ${a}`)
+}
+
+// ---- 4. shortCountName over the whole catalogue, old vs new ---------------
+let scSame = 0
+const scDiff = []
+for (const p of live) {
+  const label = (p.name || '').trim()
+  if (!label) continue
+  const raw = `One Piece | ${label} | ${p.category || 'Booster Box'} | JP`
+  const a = OLD.shortCountName(raw, 'EN'), b = NEW.shortCountName(raw, 'EN')
+  if (a === b) scSame++
+  else scDiff.push([label, a, b])
+}
+console.log(`\n=== shortCountName over ${live.length} live names ===`)
+console.log(`identical: ${scSame}   changed: ${scDiff.length}`)
+for (const [l, a, b] of scDiff) {
+  console.log(`   "${l}"`)
+  console.log(`      was: "${a}"`)
+  console.log(`      now: "${b}"`)
 }

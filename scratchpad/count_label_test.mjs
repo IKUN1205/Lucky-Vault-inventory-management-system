@@ -61,5 +61,30 @@ has(txt, 'Master Inventory has 36', 'the actionable half survives shortening')
 hasnt(txt, 'One Piece |', 'no pipe columns left anywhere')
 hasnt(txt, '[JP] OP-13', 'the language prefix is stripped from the name')
 
+// ---- a carton must never be labelled a box (09-03) -------------------------
+// products.category on every case row reads "Booster Box", so the count message
+// printed "CASE · X · Booster Box" — the person reconciling it reads one box,
+// and a case is twelve. Both spellings of the marker have to land on "Case".
+{
+  const newSpelling = shortCountName(
+    'One Piece | CASE · [JP] THE WORLD’S STRONGEST WARRIORS | Booster Box | JP', 'EN')
+  const oldSpelling = shortCountName(
+    "One Piece | [JP] THE AZURE SEA'S SEVEN (Case) | Booster Box | JP", 'EN')
+  const plainBox = shortCountName(
+    'One Piece | BOX · [JP] THE WORLD’S STRONGEST WARRIORS | Booster Box | JP', 'EN')
+
+  hasnt(newSpelling, 'Booster Box', 'a renamed carton never says Booster Box')
+  has(newSpelling, '· Case', 'a renamed carton says Case')
+  hasnt(oldSpelling, 'Booster Box', 'an old-spelling carton never says Booster Box')
+  hasnt(newSpelling, 'CASE ·', 'the leading marker is not repeated in the message')
+  // …and the sibling BOX row must be untouched: mislabelling a box as a carton
+  // is the same 12x error pointed the other way.
+  has(plainBox, 'Booster Box', 'a plain box still says Booster Box')
+  hasnt(plainBox, '· Case', 'a plain box is never called a Case')
+  // the language tag appears once, not twice — stripping it before the marker
+  // left it mid-name, where the dominant-language rule then appended a second
+  eq((newSpelling.match(/\[JP\]/g) || []).length, 1, 'language tag appears exactly once')
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

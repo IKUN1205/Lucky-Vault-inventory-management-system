@@ -688,13 +688,28 @@ function _dedupeSet(name) {
 
 export function shortCountName(raw, dominant = null) {
   const { name, form, lang } = splitProductLabel(raw)
-  let s = _dedupeSet(String(name || '').replace(/^\[(EN|JP|CN)\]\s*/i, '').trim())
+  // Before any stripping: the marker is what makes it recognisable as a carton.
+  const isCase = isCaseProduct(name)
+  let s = _dedupeSet(String(name || '')
+    // Leading form marker first (09-02 rename), then the language tag — same
+    // order as splitJpName, and for the same reason: strip the tag first and it
+    // is no longer leading on a renamed name, so it survives and then gets
+    // appended a SECOND time by the dominant-language rule below.
+    .replace(/^\s*(case|box|loose pack|blister|sleeved pack|etb|bundle|tin|starter deck)\s*[·–—]\s*/i, '')
+    .replace(/^\[(EN|JP|CN)\]\s*/i, '').trim())
+  // The form the row is really in. `form` comes from products.category, which on
+  // every case row in the catalogue reads "Booster Box" — so without this the
+  // count message prints "CASE · X · Booster Box" and the person reconciling it
+  // reads one box. Same defect the count sheet's type column had; fixing one and
+  // not the other is how a decision lands on one table and leaves a back door on
+  // the next (09-01 Mystery Game).
+  const effForm = isCase ? 'Case' : form
   // Append the form only when the name is not already saying it. Plain
   // case-insensitive containment, so "…Booster Box" + form "Booster Box" prints
   // once while "…Premium Booster PRB2 Booster Packs" + form "Booster Box" keeps
   // both — there the two really do disagree, and that is worth seeing.
-  if (form && form !== '?' && !s.toLowerCase().includes(form.toLowerCase())) {
-    s = `${s} · ${form}`
+  if (effForm && effForm !== '?' && !s.toLowerCase().includes(effForm.toLowerCase())) {
+    s = `${s} · ${effForm}`
   }
   // Tag the exception, never the norm. A Packheads count is nine EN rows and one
   // JP row; tagging all ten puts the marker everywhere and therefore nowhere,
