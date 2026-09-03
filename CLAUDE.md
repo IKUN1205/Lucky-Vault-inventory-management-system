@@ -12,6 +12,11 @@
 - ⚠️ **任务注册踩了两个坑**:`Register-ScheduledTask` 在根目录要提权(拿不到);`schtasks /tr` 无论怎么加引号都会在 **「LV Agents」那个空格上劈开**。**解法是在 `C:\Users\Gary\lv-singles-watchdog.cmd` 放一个无空格的 shim** 去 call 真正的 bat,文件头写明了为什么在那儿。另:Git Bash 会把 `/create` 当成路径,**schtasks 必须从 PowerShell 调**。
 - **⏳ 提了但今天没做(会造成停机,不该在上班时间偷偷做)**:① **隧道从 QUIC 换成 http2**(`protocol: http2`)—— 日志里每一条故障都是 QUIC/datagram,这是对症的标准解法,但**改完要重启隧道,而 8/13 记过硬重启后 Cloudflare 边缘可能几分钟才把流量路由到新 connector** ② **cloudflared 是 2025.8.1,官方提示已过期到 2026.8.3**。**两件都建议约个低峰时段一起做。**
 - ⚠️ 顺带纠正我自己一次差点报错的诊断:我第一版读 `.env` 没剥掉行内注释,把 `WEB_PASSWORD` 读成 **73 个字符**(真实 13),于是认证 401,**我差点报「谁都登不进去」**。**坏的是我的工具,不是服务。** 判「登不进去」之前先确认自己拿的密码是对的。
+- **✅ 已发 STOREFRONT CHATS(Gary:「修好了发到公司群聊」)**,一条英文说明:发生了什么 · 现在有什么不同 · **下次先开 `/health`**(不用密码,一眼分清「服务挂了」和「我登不进去」——那正是 8/13 加这个端点的理由)。
+- **🔴 发送连挂三次,病根又是 8/13 那条,而且是在一个从来没拿到那次修复的模块里**:`lark_post_text.py` 报 `TargetClosedError: Target page/context has been closed`。`slab-inventory/app/adspower.py` 的 `start_browser` 文档自己写着「或者 re-attach 已经在跑的」,**AdsPower 还认为一个正在退出的 profile 是 Active 时,它就把那个将死浏览器的旧 ws 原样还回来 —— 连上了,拿到的是一具尸体**。8/13 的修复只打在 `scripts/_batch4_ingest.py` 里,**共享模块没动,所以每个别的调用方都还带着这个洞**。
+  - **解法是真的 stop + start,而且验收必须是「能不能真开出一个页面」,不是「有没有拿到 ws」**。新 `lv-finance/adspower_recycle.py` 做这件事,`--restart` 之后第 4 次发送一次成功。
+  - **⚠️ 这个探针第一版自己就制造了它要找的尸体**:`connect_over_cdp` 之后调 `br.close()` **会把真的 AdsPower 浏览器关掉**。已去掉,靠退出 `sync_playwright` 上下文释放连接。
+- **🔴 而我差点撤回一条完全正常的消息 —— 数「发了几条」不能数 `document.body.innerText`**:Lark **左边会话列表里每一行都带一条最新消息的预览**,所以同一句话在整页文本里天然出现两次(侧栏一次 + 会话一次)。我按整页计数得出「2 条,重复了」,**脚本都写好了要撤回**,靠**截图看一眼**才发现会话区里只有一条。已改成**只在会话区(x > 740)里数,并且每次都存截图**。**四次发送里只有第 4 次真的发出去了,一条都没重。**
 
 ## ✅ 9/3 `/buy-list` 解析器已发版(Gary:「go」;`8ce22e4`)—— 9/01 写完躺了两天的那份
 - **门店真实写法 `Prismatic spc x2 $510` / `151 booster bundle x10` 现在解析对了**。发版前的线上版本:第一行返回 **qty=null**(行尾金额把 `xN` 规则挡死),第二行返回 **qty=151、产品名「booster bundle」**。Mario 9/01 那张单基本没有一行是对的。
