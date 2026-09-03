@@ -44,9 +44,6 @@ const SINGULAR = {
 // Set-code tokens ("op17", "st-22", "prb2") must never be expanded or mangled.
 const SET_CODE_RX = /^(op|st|eb|prb|sv|me|m)-?\d+$/i;
 const SET_PREFIX_RX = /^(op|st|eb|prb|sv|me|m)$/i;
-// Same prefix but three digits or more: a set NAME behind a series letter ("SV 151"),
-// not a set code. Split so the compact spelling normalizes exactly like the spaced one.
-const LONG_CODE_RX = /^(op|st|eb|prb|sv|me|m)-?(\d{3,})$/i;
 
 // Brand words carry no identity (brand/language are separate columns) — stripped from
 // BOTH input and candidate tokens so "pkc" -> pokemon center matches "PC ETB" symmetrically.
@@ -71,14 +68,6 @@ const FORM_TOKENS = new Set([
  * qty comes ONLY from a leading integer, a trailing " - N", or a trailing "xN"/"x N".
  * A parenthetical becomes `note` (stripped from the name). Lines with no qty marker
  * keep qty: null — never invent a quantity.
- *
- * Order matters, and it is not the obvious one. The store writes
- * "151 booster bundle x10 $1800": a set name that opens with digits, an explicit
- * quantity marker, and a trailing amount. Reading left to right takes 151 as the
- * quantity and hands back "booster bundle x10" as the product. So a trailing
- * amount comes off first (it goes to `note`, never to qty — the figures the store
- * writes are market value, not what we paid), then an EXPLICIT marker, and only a
- * line with no marker at all falls back to a leading integer.
  */
 export function parseBuyList(text) {
   const rows = [];
@@ -94,32 +83,23 @@ export function parseBuyList(text) {
       return ' ';
     });
     line = line.replace(/\s+/g, ' ').trim();
+    const note = notes.length ? notes.join('; ') : null;
 
     let qty = null;
     let name = line;
     let m;
-
-    // Trailing "$510" / "$1,800.00" — recorded as a note, never as a price and never
-    // as a quantity. Left in place it also breaks the "xN" rule, because the number
-    // at the end of the line is the amount rather than the count.
-    if ((m = name.match(/^(.*?)\s*\$\s*([\d,]+(?:\.\d{1,2})?)\s*$/))) {
-      notes.push(`listed $${m[2]}`);
-      name = m[1].trim();
-    }
-    const note = notes.length ? notes.join('; ') : null;
-
-    if ((m = name.match(/^(.*?)\s+x\s*(\d+)$/i))) {
-      // trailing "xN" / "x N" — explicit, so it beats a leading integer
-      qty = parseInt(m[2], 10);
-      name = m[1];
+    if ((m = name.match(/^(\d+)\s+(.*)$/))) {
+      // leading integer = qty
+      qty = parseInt(m[1], 10);
+      name = m[2];
     } else if ((m = name.match(/^(.*?)\s+[-–]\s*(\d+)$/))) {
       // trailing " - N" (space before the dash required, so "op-17" is never a qty)
       qty = parseInt(m[2], 10);
       name = m[1];
-    } else if ((m = name.match(/^(\d+)\s+(.*)$/))) {
-      // leading integer = qty, but only with no explicit marker anywhere on the line
-      qty = parseInt(m[1], 10);
-      name = m[2];
+    } else if ((m = name.match(/^(.*?)\s+x\s*(\d+)$/i))) {
+      // trailing "xN" / "x N"
+      qty = parseInt(m[2], 10);
+      name = m[1];
     }
 
     name = name.replace(/\s*[-–]\s*$/, '').replace(/\s+/g, ' ').trim();
@@ -139,16 +119,12 @@ export function parseBuyList(text) {
 export function expandTokens(str) {
   const rawTokens = String(str ?? '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
 
-  // Re-merge set codes split by the tokenizer: ["st","22"] -> "st22".
-  // Capped at two digits because every set code we carry is (OP-17, ST-36, EB-03,
-  // PRB-2, M6). Three digits means the number is a set NAME, not a code — the
-  // catalog row "SV 151 Booster Bundle" was merging to "sv151", which no line
-  // saying "151 booster bundle" could ever match.
+  // Re-merge set codes split by the tokenizer: ["st","22"] -> "st22"
   const merged = [];
   for (let i = 0; i < rawTokens.length; i++) {
     const t = rawTokens[i];
     const next = rawTokens[i + 1];
-    if (SET_PREFIX_RX.test(t) && next && /^\d{1,2}$/.test(next)) {
+    if (SET_PREFIX_RX.test(t) && next && /^\d+$/.test(next)) {
       merged.push(t + next);
       i++;
       continue;
@@ -158,14 +134,6 @@ export function expandTokens(str) {
 
   const out = [];
   for (let t of merged) {
-    // Split before the set-code branch, which would otherwise swallow "sv151" whole
-    // and leave it unable to match the catalog row spelled "SV 151". Both spellings
-    // have to come out the same or the two stop finding each other.
-    const long = t.match(LONG_CODE_RX);
-    if (long) {
-      out.push(long[1].toLowerCase(), long[2]);
-      continue;
-    }
     if (SET_CODE_RX.test(t)) {
       out.push(t.replace('-', '')); // normalized set code stays as one token
       continue;
