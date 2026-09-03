@@ -686,15 +686,50 @@ function _dedupeSet(name) {
   return name          // two genuinely different halves — keep both
 }
 
+// The leading form marker the 09-02 rename writes, and only in the exact shape
+// that rename emits: "<FORM> · <rest>", with a middle dot.
+//
+// Deliberately narrower than isCaseProduct. Detecting a carton only adds a
+// warning, so it can afford to also accept "CASE - X"; STRIPPING rewrites the
+// name a person reads, and a wrong strip silently deletes part of a real set
+// name. Review's example — "BOX - The Box Set" — is a plausible product name
+// and would have come back as "The Box Set". Nothing in the catalogue writes a
+// form marker with a hyphen, so requiring the middle dot costs nothing.
+// Liberal in what it recognises, conservative in what it rewrites.
+//
+// Known and accepted consequence: a hand-typed "CASE - X" is still recognised
+// as a carton (so it is never called a Booster Box) but keeps its marker in the
+// printed name. That is cosmetic. The other direction — stripping "BOX - " off
+// a genuine set name — silently deletes part of what a person reads, and no
+// product uses the hyphen marker today. If one ever does, rename it with the
+// middle dot rather than widening this.
+const FORM_MARKER_RX =
+  /^\s*(case|box|loose pack|blister|sleeved pack|etb|bundle|tin|starter deck)\s*·\s*/i
+
 export function shortCountName(raw, dominant = null) {
   const { name, form, lang } = splitProductLabel(raw)
-  let s = _dedupeSet(String(name || '').replace(/^\[(EN|JP|CN)\]\s*/i, '').trim())
+  // Before any stripping: the marker is what makes it recognisable as a carton.
+  const isCase = isCaseProduct(name)
+  let s = _dedupeSet(String(name || '')
+    // Leading form marker first (09-02 rename), then the language tag — same
+    // order as splitJpName, and for the same reason: strip the tag first and it
+    // is no longer leading on a renamed name, so it survives and then gets
+    // appended a SECOND time by the dominant-language rule below.
+    .replace(FORM_MARKER_RX, '')
+    .replace(/^\[(EN|JP|CN)\]\s*/i, '').trim())
+  // The form the row is really in. `form` comes from products.category, which on
+  // every case row in the catalogue reads "Booster Box" — so without this the
+  // count message prints "CASE · X · Booster Box" and the person reconciling it
+  // reads one box. Same defect the count sheet's type column had; fixing one and
+  // not the other is how a decision lands on one table and leaves a back door on
+  // the next (09-01 Mystery Game).
+  const effForm = isCase ? 'Case' : form
   // Append the form only when the name is not already saying it. Plain
   // case-insensitive containment, so "…Booster Box" + form "Booster Box" prints
   // once while "…Premium Booster PRB2 Booster Packs" + form "Booster Box" keeps
   // both — there the two really do disagree, and that is worth seeing.
-  if (form && form !== '?' && !s.toLowerCase().includes(form.toLowerCase())) {
-    s = `${s} · ${form}`
+  if (effForm && effForm !== '?' && !s.toLowerCase().includes(effForm.toLowerCase())) {
+    s = `${s} · ${effForm}`
   }
   // Tag the exception, never the norm. A Packheads count is nine EN rows and one
   // JP row; tagging all ten puts the marker everywhere and therefore nowhere,
@@ -725,6 +760,7 @@ export function dominantLanguage(...groups) {
 // every report that turns count diffs into sales numbers:
 export { isLedgerRoomName as isLedgerRoom } from '../src/lib/countRooms.js'
 import { isLedgerRoomName as isLedgerRoom } from '../src/lib/countRooms.js'
+import { isCaseProduct } from '../src/lib/caseUnit.js'
 
 export function buildStreamCountBrief(body) {
   const { roomName, streamerName, countedByName, totalSold, totalDiscrepancies } = body
@@ -2011,7 +2047,11 @@ function splitJpName(raw) {
   // A case holds several boxes. Its category is "Booster Box", so without this
   // one case sold prints as "1 box (case)" - which is what someone auditing a
   // count reads as one box.
-  const isCase = /\(case\)/i.test(label)
+  //
+  // Shared predicate, not /\(case\)/i: the 09-02 rename moved the marker to the
+  // front ("CASE . <set>"), and the parenthesised test stopped matching the very
+  // family it was written for - so that row went back to printing "1 box".
+  const isCase = isCaseProduct(label)
   const form = isBag ? 'bag' : isCase ? 'case'
     : (/box/i.test(category) || /booster box/i.test(label) ? 'box' : 'pack')
   // The set is the label with the form words and any bracketed variant removed;
@@ -2022,6 +2062,18 @@ function splitJpName(raw) {
   // "Terastal Festival ex Booster Box" became "Terastal Festival" while a row
   // sent as plain "Terastal Festival ex" stayed as itself.
   let set = label
+    // The 09-02 rename put the form at the FRONT of eight SKU names
+    // ("CASE · <set>", "BOX · <set>", "LOOSE PACK · <set>"). Without this the
+    // marker rides into the set name and the line reads "BOX · X × 1 box".
+    // The form itself is already carried separately, above.
+    .replace(FORM_MARKER_RX, '')
+    // …and THEN the language tag, because `label` stripped a leading [JP] before
+    // the marker existed, so on a renamed name the tag is no longer leading and
+    // survived. That split one set across two Lark groups: "[JP] X (Case)" gave
+    // set "X" while "CASE · [JP] X" gave set "[JP] X". Only [JP] is stripped
+    // here, matching what `label` already does — widening it to [EN]/[CN] would
+    // silently regroup a hundred existing names for no reason.
+    .replace(/^\[JP\]\s*/i, '')
     .replace(/\([^)]*\)/g, ' ')
     .replace(/\b(ex\s+)?(booster box|booster pack|single pack)\b/gi, ' ')
     .replace(/\s+ex\s*$/i, ' ')

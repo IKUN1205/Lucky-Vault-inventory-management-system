@@ -1,4 +1,25 @@
-# LV Inventory — 作业手册 brief (2026-09-02)
+# LV Inventory — 作业手册 brief (2026-09-03)
+
+## ✅ 9/3 JP OP-17 盒 packs_per_box 10 → 24(Gary:「可以修」)+ 🔴 我的改名把五个消费方弄断了
+- **`71cc6ce5 BOX · [JP] THE WORLD'S STRONGEST WARRIORS` ppb 10→24 已写库**(`fix_op17_ppb_0903.py`,备份 `op17_ppb_backup_0903.json`,乐观锁「仍为 10」+ 回读 + 自己盖 `updated_at`)。三个源一致:**Frank 9/2 18:19「each box comes with 24 packs / for japanese op17」· `pack_math.packs_per_box()` 从 7/03 起对所有海贼王就返回 24 · 日版海贼王盒本来就是 24 包**。每包成本 $107.20/10=$10.72 → **$4.47**;拆 1 盒产出 +10 包 → **+24 包**。
+- **改之前先验过是干净的**:`box_breaks` 全表 2 行都在 7/22 且都不是 OP-17,**按 10 从来没真拆过货**,没有历史产出要重算。脚本里这条是硬闸门,有记录就拒绝写。
+- **🔴 而我 9/2 那次改名(把形态词提到最前)把五个「按 `(case)` 找箱子」的地方全弄断了**:`room_transfer_notify`(进房提醒里那句「SEALED CASES — 按箱数,别数箱里的盒」)· `count_room_recon_notify` 四处(整个 case/box 盒当量守恒)· `api/lark-notify.js` 的 `isCase`。`CASE · [JP] …` 没有括号,**子串判定一个都不认**。**变异测试实证:旧代码把 2 箱印成「2 boxes」——12 倍,而且印在发给团队的消息上。**
+  - **这和探针那次是同一个病,只是我只修了探针自己**(`base_key`),没去找别的消费方。**改名之后必须把「按名字找这类货」的地方全找出来,一个都不能漏** —— 8/24「加一种新语义的行进旧表,先把所有读表人找全」那条,这次轮到我自己。
+  - **修法:一个共享判定,不是五份子串**。新 `pack_math.is_case()` / `strip_case()`(两种写法都认,`Special Case File` 那个收藏盒排除),**16 项测试 + 变异检查**;JS 侧新 `src/lib/caseUnit.js` 同一套(33 项)。服务端两个 cron **不在 git 下,已生效**,两个都实测 import + dry-run 通过。
+- **⚠️ `packs_per_box` 在 CASE 行上存的是「盒/箱」不是「包/盒」**(9/01「OP17 箱规 12」写进了一个叫 packs 的列)。**全库 15 个 CASE SKU 里 7 个写着 30 —— 那当箱规讲不成立**。`caseBoxCount()` 是现在唯一知道这件事的地方,**根治仍要 DDL(`unit` + `base_units`)**。
+- 顺带:全库「盒」行里 DB 和 `pack_math` 不一致的还有 **47 个**(Mega Dream 10 vs 30 · 海贼王一批 20/30 vs 24 · Black Bolt / White Flare 30 vs 20…),**只报没改**,不在这次范围里。
+
+## ✅ 9/3 点货页把 CASE 放到最前(Gary:「是不是我们也要把case 信息放在最前面让他们看最好」)—— **分支 `feat/case-on-count-sheet`(`35cc8aa`),未过 Codex 未发版**
+- **病灶不只是名字,是 type 那一列在说谎**:点货表显示 `products.category`,而**我们每一个 CASE 的 category 都是 `Booster Box`** —— 数货的人想确认单位,唯一能看的那一列告诉他这是盒。实测 Master 的表上:
+  ```
+  BOX  · [JP] THE WORLD'S STRONGEST WARRIORS   | Booster Box
+  CASE · [JP] THE WORLD'S STRONGEST WARRIORS   | Booster Box   ← 只差第一个词
+  ```
+- **改了三处**:红色 `CASE` 角标**排在名字前面**(和 9/2 那条命名规范同一个理由,而且是**从产品算出来的,不是从名字字符串读的** —— 下次再改名不会又断)· type 列变成 **`Case · 12 boxes`** · 行下加一句 **「⚠ Count SEALED CARTONS, not the 12 boxes inside」**。**箱规不知道就写 `size unknown`,绝不默认** —— 猜一个箱规正是这条改动要防的 12 倍错。
+- **不泄露盲盘**:`packs_per_box` 是产品属性不是账面数量,`inv.quantity` 一个字没碰。
+- **实测量过没有把输入框挤出屏幕**(8/21 那个雷):390px 上 CASE 行和普通行的输入框右边缘**都是 372px,完全一样**,我加的角标横向零成本;**点进 CASE 输入框之后名字列左边缘仍是 0px,没有右滑**。桌面/手机截图都逐张看过。
+- **⚠️ 顺带发现一个既有问题(不是我引入的,已用 main 对照证实)**:**360px 上 115 个输入框全部超出 12px**。手册 8/21 记的是「360px 仅 1px 取整」,**这中间漂了**。没修,单独记。
+- **✅ 顺手救回一个从 8/24 起就没跑过的测试**:`scratchpad/jp_group_test.mjs` 把 `lark-notify.js` 复制到 `%TEMP%` 再 import,而 8/24 那个文件长出了 `../src/lib/countRooms.js` 的相对引用 → **每次运行都 ERR_MODULE_NOT_FOUND,54 条断言一条都没执行过**。改成在仓库内生成临时文件,**现在 62 条全过**(含新加的 8 条箱子断言)。**测试跑不起来和测试通过,在 CI 之外看起来一模一样。**
 
 ## 🔴 9/2 晚 Packheads 点货表复查(Gary:「我们修正了sku 能让点货更加简单了吗」)—— 表变清楚了,但难的地方不在表
 - **⏱ 先说清楚:改名之后还没有过一场盘点,所以现在没有任何证据说它有效。** 改名落在 **15:42 PT**,最近一场盘点是 **13:02 PT** —— 差 2.5 小时,方向是反的。**`stream_counts.created_at` 是 UTC,20:02 是 13:02 PT 不是晚上八点**;我差点拿一场改名之前的盘点去给改名记功。明早第一场才是第一次真验证。

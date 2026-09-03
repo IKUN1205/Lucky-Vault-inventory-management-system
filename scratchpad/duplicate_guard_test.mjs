@@ -80,7 +80,12 @@ const raw = fs.readFileSync(SRC, 'utf8')
 // importing file's directory, and a copy in the system temp dir cannot find
 // @supabase/supabase-js. Its import is stripped anyway since the client is
 // replaced, but other imports in this module still have to resolve.
-const tmp = path.join('c:/Users/Gary/luckyvault/Lucky-Vault-inventory-management-system/scratchpad',
+// The shim goes NEXT TO the original, in src/lib. It used to be written into
+// scratchpad/, and the moment supabase.js grew "import { isLedgerRoomName } from
+// './countRooms.js'" (08-24) every run died resolving that against scratchpad/.
+// These assertions had not executed since. Keeping the copy beside the source
+// keeps its relative imports resolvable.
+const tmp = path.join('c:/Users/Gary/luckyvault/Lucky-Vault-inventory-management-system/src/lib',
   '_dupguard.gen.mjs')
 const rewritten = raw
   .replace(/^import\s+\{\s*createClient\s*\}\s+from\s+'@supabase\/supabase-js'\s*$/m, '')
@@ -194,7 +199,7 @@ const names = rows => rows.map(r => r.name).join(' | ')
     },
   }
   const saved = globalThis.__STUB_SUPABASE__
-  const tmp2 = path.join('c:/Users/Gary/luckyvault/Lucky-Vault-inventory-management-system/scratchpad', '_dupguard2.gen.mjs')
+  const tmp2 = path.join('c:/Users/Gary/luckyvault/Lucky-Vault-inventory-management-system/src/lib', '_dupguard2.gen.mjs')
   fs.writeFileSync(tmp2, fs.readFileSync(tmp, 'utf8'))
   globalThis.__STUB_SUPABASE__ = broken
   const M2 = await import(pathToFileURL(tmp2).href + '?v=2')
@@ -208,7 +213,7 @@ const names = rows => rows.map(r => r.name).join(' | ')
 for (const f of ['_dupguard.gen.mjs', '_dupguard2.gen.mjs']) {
   try {
     fs.unlinkSync(path.join(
-      'c:/Users/Gary/luckyvault/Lucky-Vault-inventory-management-system/scratchpad', f))
+      'c:/Users/Gary/luckyvault/Lucky-Vault-inventory-management-system/src/lib', f))
   } catch { /* already gone */ }
 }
 
