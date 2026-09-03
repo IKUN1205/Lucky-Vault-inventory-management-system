@@ -2031,7 +2031,14 @@ function splitJpName(raw) {
     // ("CASE · <set>", "BOX · <set>", "LOOSE PACK · <set>"). Without this the
     // marker rides into the set name and the line reads "BOX · X × 1 box".
     // The form itself is already carried separately, above.
-    .replace(/^\s*(case|box|loose pack|blister|sleeved pack|etb|bundle|tin|starter deck)\s*[·|\-–—]\s*/i, '')
+    .replace(/^\s*(case|box|loose pack|blister|sleeved pack|etb|bundle|tin|starter deck)\s*[·–—]\s*/i, '')
+    // …and THEN the language tag, because `label` stripped a leading [JP] before
+    // the marker existed, so on a renamed name the tag is no longer leading and
+    // survived. That split one set across two Lark groups: "[JP] X (Case)" gave
+    // set "X" while "CASE · [JP] X" gave set "[JP] X". Only [JP] is stripped
+    // here, matching what `label` already does — widening it to [EN]/[CN] would
+    // silently regroup a hundred existing names for no reason.
+    .replace(/^\[JP\]\s*/i, '')
     .replace(/\([^)]*\)/g, ' ')
     .replace(/\b(ex\s+)?(booster box|booster pack|single pack)\b/gi, ' ')
     .replace(/\s+ex\s*$/i, ' ')

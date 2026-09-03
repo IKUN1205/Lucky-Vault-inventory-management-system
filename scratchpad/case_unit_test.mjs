@@ -32,6 +32,14 @@ for (const n of [
   "[EN] OP-15 Adventure On Kami's Island Booster Box",
   'Weiss Schwarz Blue Archive The Animation',
   'Staircase Booster Box',                                      // "case" inside another word
+  // The three Codex broke the first draft with. A bare "case" in the middle of
+  // a name is not a marker; reading it as one puts "count SEALED CARTONS" on a
+  // plain box, which is the 12x error pointed the other way.
+  'A Case for Battle Booster Box',
+  'Display Cases Collection Box',
+  'Special Case-File Collection Box',   // hyphen walks past a lookahead built for a space
+  'Case Study Promo Box',
+  'Briefcase Collection',
   '', null, undefined,
 ]) ok(!isCaseProduct(n), `not a case: ${n}`)
 

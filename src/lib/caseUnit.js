@@ -27,9 +27,21 @@
 // both spellings. It mirrors inventory-sync/pack_math.py:is_case; the two are
 // pinned to the same cases by their respective tests.
 
-// "Special Case File" is a Pokemon collection box, not a carton — the negative
-// lookahead is the reason this cannot simply be /case/i.
-const CASE_RX = /(\(\s*case\s*\)|^\s*case\s*[·|\-–—]|\bcases?\b(?!\s*file))/i
+// Only the two DELIBERATE markers count: the "(Case)" parenthetical, or a
+// leading "CASE ·" / "CASE - " prefix. A bare word "case" anywhere in a name is
+// not a marker and must not be read as one.
+//
+// The first draft accepted \bcases?\b(?!\s*file) and Codex broke it in three
+// swings: "A Case for Battle Booster Box", "Display Cases Collection Box", and
+// "Special Case-File Collection Box" (the hyphen walks straight past a
+// lookahead written for a space) all came back true. None of those exist in the
+// catalogue today — the full 899-name sweep found zero false positives — but a
+// predicate that only holds while nobody names a product "Display Case" is the
+// same latent trap as the "(case)" substring it replaced.
+//
+// The hyphen form requires spaces on both sides so "Case-File" cannot match,
+// while ·/–/— need none: no product name uses them except as a separator.
+const CASE_RX = /(\(\s*cases?\s*\)|^\s*cases?\s*[·–—]\s|^\s*cases?\s+-\s)/i
 
 const nameOf = (x) => (typeof x === 'string' ? x : x?.name) || ''
 

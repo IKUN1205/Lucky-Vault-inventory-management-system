@@ -6,7 +6,7 @@
 // merges two rows of one SKU, and losing a variant when it groups a set.
 import fs from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const SRC = new URL('../api/lark-notify.js', import.meta.url)
 const raw = fs.readFileSync(SRC, 'utf8')
@@ -15,7 +15,9 @@ const raw = fs.readFileSync(SRC, 'utf8')
 // 08-24) every run died with ERR_MODULE_NOT_FOUND resolving it against the temp
 // directory. These 37 assertions had not executed since. Keeping the copy next
 // to the original keeps its relative imports resolvable.
-const tmp = path.join(path.dirname(new URL(import.meta.url).pathname.slice(1)), '_jpgrp.gen.mjs')
+// fileURLToPath, not pathname.slice(1): the slice is a Windows-only hack that
+// eats the leading "/" of a real POSIX absolute path.
+const tmp = path.join(path.dirname(fileURLToPath(import.meta.url)), '_jpgrp.gen.mjs')
 fs.writeFileSync(tmp, raw + '\nexport { buildJpStreamSale, buildJpLocalSale, jpItemLines, splitJpName }\n')
 const M = await import(pathToFileURL(tmp).href)
 process.on('exit', () => { try { fs.unlinkSync(tmp) } catch { /* best effort */ } })
@@ -226,8 +228,15 @@ const caseOld = M.splitJpName("One Piece | [JP] THE AZURE SEA'S SEVEN (Case) | B
 const caseNew = M.splitJpName("One Piece | CASE · [JP] THE WORLD’S STRONGEST WARRIORS | Booster Box | JP")
 ok('old spelling is a case', caseOld.form === 'case', caseOld.form)
 ok('front-marker spelling is a case', caseNew.form === 'case', caseNew.form)
+// Assert the exact value, not just "does not start with case". The first draft
+// only checked the prefix and therefore missed that [JP] survived on the
+// renamed spelling while the old spelling dropped it — one set, two Lark groups.
+ok('front-marker set name is exact', caseNew.set === "THE WORLD’S STRONGEST WARRIORS",
+   caseNew.set)
+ok('old-spelling set name is exact', caseOld.set === "THE AZURE SEA'S SEVEN", caseOld.set)
 ok('front marker does not ride into the set name',
    !/^case/i.test(caseNew.set), caseNew.set)
+ok('no language tag left in the set', !/\[(EN|JP|CN)\]/i.test(caseNew.set), caseNew.set)
 const boxNew = M.splitJpName("One Piece | BOX · [JP] THE WORLD’S STRONGEST WARRIORS | Booster Box | JP")
 ok('a BOX · row is still a box', boxNew.form === 'box', boxNew.form)
 ok('BOX marker stripped from the set too', !/^box/i.test(boxNew.set), boxNew.set)
