@@ -20,6 +20,7 @@ import { BrandChip, LangChip } from '../components/ProductChips'
 import ProductThumb from '../components/ProductThumb'
 import { isLedgerRoomName } from '../lib/countRooms.js'
 import { categoryOf, categoryLabel, categoryRank } from '../lib/countCategories'
+import { isCaseProduct, countUnitLabel, countUnitHint } from '../lib/caseUnit.js'
 import { 
   ClipboardList, 
   Play, 
@@ -227,6 +228,12 @@ export default function StreamCounts() {
         ...inv,
         _cat: categoryOf(inv.product),
         _fresh: Boolean(inv.last_updated && (Date.now() - new Date(inv.last_updated).getTime()) < FRESH_MS),
+        // Computed once here rather than per render: the type column on a case
+        // row must NOT show products.category, which is "Booster Box" on every
+        // case we own and contradicts the row's own name.
+        _isCase: isCaseProduct(inv.product),
+        _unitLabel: countUnitLabel(inv.product),
+        _caseHint: countUnitHint(inv.product),
       })).sort((a, b) =>
         (categoryRank(a._cat) - categoryRank(b._cat)) ||
         (Number(b._fresh) - Number(a._fresh)) ||
@@ -1228,15 +1235,33 @@ export default function StreamCounts() {
                                     brand — the per-row chip was ~120px of duplication
                                     that kept the sheet from fitting the screen. */}
                                 <span className="hidden sm:inline-flex"><BrandChip brand={inv.product?.brand} /></span>
+                                {/* A case is the one row where getting the unit
+                                    wrong costs 12x, so the marker goes FIRST —
+                                    ahead of the name, the same reasoning that
+                                    put the form word at the front of the SKU
+                                    names on 09-02. Rendered from the product,
+                                    not from a string the reader has to parse. */}
+                                {inv._isCase && (
+                                  <span className="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-300 ring-1 ring-red-500/40" title={inv._caseHint}>
+                                    CASE
+                                  </span>
+                                )}
                                 <span>{launchName}<LangChip lang={inv.product?.language} /></span>
                                 {inv._fresh && (
                                   <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-400" title="Recently restocked / sold">🆕</span>
                                 )}
                               </span>
                               {/* phone layout: type rides under the name */}
-                              <span className="block text-xs text-gray-500 sm:hidden">{inv.product?.category}</span>
+                              <span className={`block text-xs sm:hidden ${inv._isCase ? 'text-red-300' : 'text-gray-500'}`}>{inv._unitLabel}</span>
+                              {/* The instruction belongs where the mistake gets
+                                  made. It says nothing about how many we expect
+                                  — packs_per_box is a product attribute, so the
+                                  blind count is untouched. */}
+                              {inv._caseHint && (
+                                <span className="block text-[11px] font-semibold text-red-300">⚠ {inv._caseHint}</span>
+                              )}
                             </td>
-                            <td className="hidden sm:table-cell text-gray-400">{inv.product?.category}</td>
+                            <td className={`hidden sm:table-cell ${inv._isCase ? 'font-semibold text-red-300' : 'text-gray-400'}`}>{inv._unitLabel}</td>
                             <td className="text-right">
                               <input
                                 type="number"

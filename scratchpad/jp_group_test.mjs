@@ -8,11 +8,17 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const SRC = 'c:/Users/Gary/luckyvault/Lucky-Vault-inventory-management-system/api/lark-notify.js'
+const SRC = new URL('../api/lark-notify.js', import.meta.url)
 const raw = fs.readFileSync(SRC, 'utf8')
-const tmp = path.join(process.env.TEMP || '/tmp', '_jpgrp.mjs')
+// The shim MUST live inside the repo. It used to be written to %TEMP%, and the
+// moment lark-notify.js grew a relative import ('../src/lib/countRooms.js',
+// 08-24) every run died with ERR_MODULE_NOT_FOUND resolving it against the temp
+// directory. These 37 assertions had not executed since. Keeping the copy next
+// to the original keeps its relative imports resolvable.
+const tmp = path.join(path.dirname(new URL(import.meta.url).pathname.slice(1)), '_jpgrp.gen.mjs')
 fs.writeFileSync(tmp, raw + '\nexport { buildJpStreamSale, buildJpLocalSale, jpItemLines, splitJpName }\n')
 const M = await import(pathToFileURL(tmp).href)
+process.on('exit', () => { try { fs.unlinkSync(tmp) } catch { /* best effort */ } })
 
 // A literal U+0008 lands here whenever a backslash-b is written through a shell here-doc
 // into this file. In a regex it stops being a word boundary and becomes the
@@ -211,6 +217,29 @@ ok('empty items still throws', (() => {
 // ---- a name with no pipes must not vanish ----------------------------------
 const plain = M.jpItemLines([{ name: 'Storm Emeralda Booster Box', quantity: 4 }])
 ok('un-piped name still renders', /Storm Emeralda — 4 boxes/.test(plain.lines[0]), plain.lines[0])
+
+// ---- the 09-02 rename put the form at the FRONT of the name ----------------
+// Both spellings must land on the same unit. The parenthesised test that used
+// to answer this silently stopped matching the renamed SKU, and a case then
+// prints as "1 box" - which is exactly what an auditor reads as one box.
+const caseOld = M.splitJpName("One Piece | [JP] THE AZURE SEA'S SEVEN (Case) | Booster Box | JP")
+const caseNew = M.splitJpName("One Piece | CASE · [JP] THE WORLD’S STRONGEST WARRIORS | Booster Box | JP")
+ok('old spelling is a case', caseOld.form === 'case', caseOld.form)
+ok('front-marker spelling is a case', caseNew.form === 'case', caseNew.form)
+ok('front marker does not ride into the set name',
+   !/^case/i.test(caseNew.set), caseNew.set)
+const boxNew = M.splitJpName("One Piece | BOX · [JP] THE WORLD’S STRONGEST WARRIORS | Booster Box | JP")
+ok('a BOX · row is still a box', boxNew.form === 'box', boxNew.form)
+ok('BOX marker stripped from the set too', !/^box/i.test(boxNew.set), boxNew.set)
+ok('the box and the case share one set name', boxNew.set === caseNew.set,
+   `${boxNew.set} vs ${caseNew.set}`)
+// and the renamed case renders as cases, not boxes
+const renamedLines = M.jpItemLines([
+  { name: "One Piece | CASE · [JP] THE WORLD’S STRONGEST WARRIORS | Booster Box | JP", quantity: 2 },
+])
+ok('renamed case prints as cases', /2 cases/.test(renamedLines.lines[0]), renamedLines.lines[0])
+ok('renamed case never prints as boxes', !/\bboxes?\b/.test(renamedLines.lines[0]),
+   renamedLines.lines[0])
 
 console.log(`\n${pass + fail.length} checks, ${fail.length} failed`)
 for (const f of fail) console.log('  FAIL ' + f)

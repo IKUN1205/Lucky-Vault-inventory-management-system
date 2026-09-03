@@ -725,6 +725,7 @@ export function dominantLanguage(...groups) {
 // every report that turns count diffs into sales numbers:
 export { isLedgerRoomName as isLedgerRoom } from '../src/lib/countRooms.js'
 import { isLedgerRoomName as isLedgerRoom } from '../src/lib/countRooms.js'
+import { isCaseProduct } from '../src/lib/caseUnit.js'
 
 export function buildStreamCountBrief(body) {
   const { roomName, streamerName, countedByName, totalSold, totalDiscrepancies } = body
@@ -2011,7 +2012,11 @@ function splitJpName(raw) {
   // A case holds several boxes. Its category is "Booster Box", so without this
   // one case sold prints as "1 box (case)" - which is what someone auditing a
   // count reads as one box.
-  const isCase = /\(case\)/i.test(label)
+  //
+  // Shared predicate, not /\(case\)/i: the 09-02 rename moved the marker to the
+  // front ("CASE . <set>"), and the parenthesised test stopped matching the very
+  // family it was written for - so that row went back to printing "1 box".
+  const isCase = isCaseProduct(label)
   const form = isBag ? 'bag' : isCase ? 'case'
     : (/box/i.test(category) || /booster box/i.test(label) ? 'box' : 'pack')
   // The set is the label with the form words and any bracketed variant removed;
@@ -2022,6 +2027,11 @@ function splitJpName(raw) {
   // "Terastal Festival ex Booster Box" became "Terastal Festival" while a row
   // sent as plain "Terastal Festival ex" stayed as itself.
   let set = label
+    // The 09-02 rename put the form at the FRONT of eight SKU names
+    // ("CASE · <set>", "BOX · <set>", "LOOSE PACK · <set>"). Without this the
+    // marker rides into the set name and the line reads "BOX · X × 1 box".
+    // The form itself is already carried separately, above.
+    .replace(/^\s*(case|box|loose pack|blister|sleeved pack|etb|bundle|tin|starter deck)\s*[·|\-–—]\s*/i, '')
     .replace(/\([^)]*\)/g, ' ')
     .replace(/\b(ex\s+)?(booster box|booster pack|single pack)\b/gi, ' ')
     .replace(/\s+ex\s*$/i, ' ')
