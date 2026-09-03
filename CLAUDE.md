@@ -9,7 +9,17 @@
 - **⚠️ `packs_per_box` 在 CASE 行上存的是「盒/箱」不是「包/盒」**(9/01「OP17 箱规 12」写进了一个叫 packs 的列)。**全库 15 个 CASE SKU 里 7 个写着 30 —— 那当箱规讲不成立**。`caseBoxCount()` 是现在唯一知道这件事的地方,**根治仍要 DDL(`unit` + `base_units`)**。
 - 顺带:全库「盒」行里 DB 和 `pack_math` 不一致的还有 **47 个**(Mega Dream 10 vs 30 · 海贼王一批 20/30 vs 24 · Black Bolt / White Flare 30 vs 20…),**只报没改**,不在这次范围里。
 
-## ✅ 9/3 点货页把 CASE 放到最前(Gary:「是不是我们也要把case 信息放在最前面让他们看最好」)—— **分支 `feat/case-on-count-sheet`(`35cc8aa`),未过 Codex 未发版**
+## ✅ 9/3 点货页把 CASE 放到最前 —— **已发版**(Gary:「发吧」;`ee26843` 推 main)
+- **Codex 两轮 + 一轮复审,共 5 条,全部核实为真后才改**。最重的两条:
+  - **🔴 P1 判定太松**:第一版 `\bcases?\b(?!\s*file)` 认名字里任何一个独立的 `case`。Codex 三个反例全部实测命中:`A Case for Battle Booster Box` · `Display Cases Collection Box` · **`Special Case-File Collection Box`(连字符直接绕过我为空格写的 lookahead)**。**全库 899 个名字实测零误判**,所以今天不咬人 —— **但「只要没人给产品起名叫 Display Case 就成立」的规则,和它替换掉的那个子串判定是同一种雷**。已收紧成只认两个**刻意的**标记:`(Case)` 或开头的 `CASE ·` / `CASE - `。
+  - **🔴 P2 `[JP]` 被吃掉的顺序反了**:`label` 在形态标记存在之前就剥了开头的 `[JP]`,所以改名后的名字里 `[JP]` 不在开头、活了下来 —— `[JP] X (Case)` 得到 set `X`,而 `CASE · [JP] X` 得到 `[JP] X`,**同一个套被拆成两个 Lark 分组**,而且语言标签会被再追加一次变成两个。**而我的测试只断言了「不以 case 开头」没断言确切值,所以漏掉了它** —— 已改成钉确切字符串。
+- **✅ 顺带把同一个谎言在消息侧也修了**:`shortCountName` 原本印 **`CASE · X · Booster Box`** —— 对账的人读到的是一个盒,而一箱是十二个。**只修表不修消息,就是 9/01 Mystery Game 那个「一个决定只在一张表上落地」**。
+- **🔴 两轮评审在一处给了相反的意见,我按「改写比识别更危险」定的**:前缀剥离现在**只认中点 `·`**(改名工具产出的确切形状),因为 `BOX - The Box Set` 完全可能是真的套名,**剥错了是静默删掉人要读的字**;而 `isCaseProduct` 仍然认 `CASE - X`,**识别错只是多一句提醒**。代价写进测试:手打的 `CASE - X` 会保留标记,但**永远不会被叫成 Booster Box**。
+- **决定性的验证不是评审,是双版本对跑**(`scratchpad/case_regression.mjs`,照 9/01 parser 那次):**同时 import main 和 HEAD 两个 `lark-notify.js`,把全部 863 个在售名字喂进去** —— 箱判定**新增 1 个(正是改名那个)、丢失 0 个**;`splitJpName` **857/863 完全一样**;`shortCountName` **846/863 一样,变的 17 个逐条核对全是想要的**(13 个箱不再自称 Booster Box + 4 个改名行不再重复标记)。
+- 测试:`caseUnit` 38 · `jp_group` 65 · `count_label` 27 · `is_case`(py)21,十个套件全绿,截图桌面+手机复看。
+- **⚠️ `git add -A src/` 把 9/01 那个没发版的 `buyListParse.js` 顺手扫了进来**,推之前发现并单独撤回(`ee26843`)——**8/12 记过「发版前必须按文件核对,不能整个工作区一把梭」,这次又犯了**。那份改动仍在工作区未提交,**等 Gary 一句话就能发**。
+
+### 原始设计(9/3)
 - **病灶不只是名字,是 type 那一列在说谎**:点货表显示 `products.category`,而**我们每一个 CASE 的 category 都是 `Booster Box`** —— 数货的人想确认单位,唯一能看的那一列告诉他这是盒。实测 Master 的表上:
   ```
   BOX  · [JP] THE WORLD'S STRONGEST WARRIORS   | Booster Box
