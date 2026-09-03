@@ -686,6 +686,26 @@ function _dedupeSet(name) {
   return name          // two genuinely different halves — keep both
 }
 
+// The leading form marker the 09-02 rename writes, and only in the exact shape
+// that rename emits: "<FORM> · <rest>", with a middle dot.
+//
+// Deliberately narrower than isCaseProduct. Detecting a carton only adds a
+// warning, so it can afford to also accept "CASE - X"; STRIPPING rewrites the
+// name a person reads, and a wrong strip silently deletes part of a real set
+// name. Review's example — "BOX - The Box Set" — is a plausible product name
+// and would have come back as "The Box Set". Nothing in the catalogue writes a
+// form marker with a hyphen, so requiring the middle dot costs nothing.
+// Liberal in what it recognises, conservative in what it rewrites.
+//
+// Known and accepted consequence: a hand-typed "CASE - X" is still recognised
+// as a carton (so it is never called a Booster Box) but keeps its marker in the
+// printed name. That is cosmetic. The other direction — stripping "BOX - " off
+// a genuine set name — silently deletes part of what a person reads, and no
+// product uses the hyphen marker today. If one ever does, rename it with the
+// middle dot rather than widening this.
+const FORM_MARKER_RX =
+  /^\s*(case|box|loose pack|blister|sleeved pack|etb|bundle|tin|starter deck)\s*·\s*/i
+
 export function shortCountName(raw, dominant = null) {
   const { name, form, lang } = splitProductLabel(raw)
   // Before any stripping: the marker is what makes it recognisable as a carton.
@@ -695,7 +715,7 @@ export function shortCountName(raw, dominant = null) {
     // order as splitJpName, and for the same reason: strip the tag first and it
     // is no longer leading on a renamed name, so it survives and then gets
     // appended a SECOND time by the dominant-language rule below.
-    .replace(/^\s*(case|box|loose pack|blister|sleeved pack|etb|bundle|tin|starter deck)\s*[·–—]\s*/i, '')
+    .replace(FORM_MARKER_RX, '')
     .replace(/^\[(EN|JP|CN)\]\s*/i, '').trim())
   // The form the row is really in. `form` comes from products.category, which on
   // every case row in the catalogue reads "Booster Box" — so without this the
@@ -2046,7 +2066,7 @@ function splitJpName(raw) {
     // ("CASE · <set>", "BOX · <set>", "LOOSE PACK · <set>"). Without this the
     // marker rides into the set name and the line reads "BOX · X × 1 box".
     // The form itself is already carried separately, above.
-    .replace(/^\s*(case|box|loose pack|blister|sleeved pack|etb|bundle|tin|starter deck)\s*[·–—]\s*/i, '')
+    .replace(FORM_MARKER_RX, '')
     // …and THEN the language tag, because `label` stripped a leading [JP] before
     // the marker existed, so on a renamed name the tag is no longer leading and
     // survived. That split one set across two Lark groups: "[JP] X (Case)" gave

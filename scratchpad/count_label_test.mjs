@@ -84,6 +84,18 @@ hasnt(txt, '[JP] OP-13', 'the language prefix is stripped from the name')
   // the language tag appears once, not twice — stripping it before the marker
   // left it mid-name, where the dominant-language rule then appended a second
   eq((newSpelling.match(/\[JP\]/g) || []).length, 1, 'language tag appears exactly once')
+
+  // The marker strip is middot-only ON PURPOSE. A real set name can plausibly
+  // start with "BOX - "; stripping that would silently delete part of what a
+  // person reads. Recognition stays liberal, rewriting stays conservative.
+  const realSetName = shortCountName(
+    'One Piece | BOX - The Box Set | Booster Pack | JP', 'EN')
+  has(realSetName, 'BOX - The Box Set', 'a hyphen prefix is never stripped from a set name')
+  // …and the accepted cost: a hand-typed hyphen carton keeps its marker, but is
+  // still never mislabelled a Booster Box.
+  const hyphenCase = shortCountName(
+    'One Piece | CASE - [JP] SOME SET | Booster Box | JP', 'EN')
+  hasnt(hyphenCase, 'Booster Box', 'a hyphen-marked carton is still not a Booster Box')
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
