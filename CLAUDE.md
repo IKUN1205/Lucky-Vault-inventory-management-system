@@ -1,5 +1,38 @@
 # LV Inventory — 作业手册 brief (2026-09-04)
 
+## ✅ 9/4 产品缩略图:**8/20 手册那条「全库一张都不显示」已经过时了 —— 现在是显示的**(Gary:「work 一下产品的缩略图」)
+
+- **🔴 先纠正手册自己**:8/20 记的是「`lv-slabs.luckyvault.us` 一个 CORS 头都没有,所以 `useProductImages` 一直返回 `{}`,全库产品缩略图一张都不显示」。**今天实测,那个洞已经被补上了,而且补得很规矩** ——
+  ```
+  Origin: https://lucky-vault-inventory-management-sy.vercel.app  →  ACAO 回显 ✅
+  Origin: http://localhost:5173                                   →  ACAO 回显 ✅(开发用)
+  Origin: https://evil.example.com                                →  没有 ACAO ✅(正确拒绝)
+  ```
+  **是白名单不是通配符**,`vary: Origin` 也在。`market_prices.json` 同样待遇。
+- **而且不是靠读响应头下的结论 —— 8/20 那次是用无头 Chromium 测的,所以这次照同一个方法复测**(`scratchpad/thumb_cors_browser_check.py`,从 `localhost:5173` 这个真 origin 跑 `useProductImages` 那一模一样的 `fetch`):**349 条全部拿到,再把其中一个 URL 当 `<img>` 加载,400×400 真的解码出来了。** 两步都要测 —— **`<img>` 不受 CORS 管,所以一个主机完全可能放行 JSON 却对图片做防盗链**。
+- **基础设施其实早就铺满了**:`ProductThumb` 已经接在 **11 个页面**上(含点货页 `StreamCounts.jsx:1231`,手机上按 `hidden sm:table-cell` 藏起来 —— 8/21 那次为了消灭横滑把「空缩略图列」藏掉,**而它当时空的原因正是这个 CORS 洞**)。**所以这次不需要写任何 app 代码,数据到位它们自己就亮了。**
+
+### 📌 覆盖率实测:在架 208 个产品,**118 个真能显示出图(57%)**
+- `product_image_audit_0904.py`:**在册 349 → 351 条** · 在架命中 118 · **缺 90** · **坏图 0**。
+- **判「图是活的」必须看字节不能看状态码** —— 好几个图床会 200 回一个 HTML。
+- **⚠️ 而我第一版探针自己造了一个假故障**:把 `Inferno X (In Bag)` 报成坏图,其实是 **Shopify 按 `Accept` 回了 AVIF**,而我的魔数表只认头四个字节 —— **AVIF/HEIF 的 `ftyp` 在第 4 个字节上**,浏览器认得好好的。**一个会凭空发明坏图的检查器比没有检查器更糟:它会派人去修一张从来没坏过的图。** 修完实测**坏图 0**。
+- **uuid8 撞车 0 个**(906 个产品全查)。撞了就会**把 A 的图挂在 B 的行上,而错图比没图更危险 —— 没图一眼看得出缺,错图会被当真**。
+
+### ✅ 补了 2 个(只补「零判断」的那种),**已生效,不用发版**
+- 只认**人工钉过 TCG id** 的产品(7/24 那条钉 id 铁律):钉过 = 有人核过名称+语言+价位,**它的图不是猜的,是那个 id 指着的东西的照片**。写进 `product_images_overrides.json` → 跑 `build_product_images.py` → **公网当场就是新的**(351 条,实测已服务)。备份 `product_images.bak_0904.json` + `.bak_0904`,重建后**逐 key 比对:新增 2、丢失 0**。
+- **🔴 而这一步当场抓到一个 EN/JP 错配,是手册里那条「已四次抓到」的第五次,而且这次是我的工具犯的**:`Black Bolt Booster Pack` 在库里**两行都有货**(`6088d502` 是 JP、HUA 进的;`f1ebe9c5` 是 EN、Frank 进的),而**钉价文件按名字索引,那个名字下唯一的钉指向英文版**。写下去就是**把英文包的照片挂在日文行上**。
+  - **病根是我的匹配器只查了「钉是否唯一」没查语言** —— 钉 id 铁律要求的是**名称 + 语言 + 价位三对齐**,而这个工具是按名字匹配的,**语言这一关不在这里把就等于没有**。已加 `slug_language()`:从 TCG 的 slug 读语言(`-japanese-`),**读不出来一律跳过,绝不当成「一致」**。
+  - 结果:自动补 **5 → 2**,拦下 1 个语言冲突、2 个 slug 读不出语言的(`151 Tin` · `[EN] EB-03 Heroines`)留给人看一眼。**图这种东西人扫一眼就能判,比核对名字快得多。**
+
+### 🔴 剩下 90 个缺图的,**钉价文件补不动 —— 因为缺的正好是 TCG 没有的那批**
+- 前几名:`OP-17 血统 Blister ×161` · `Gem Pack Vol 6 ×135 [CN]` · `Rarity Collection ×116 [JP]` · `OP 4th Anniversary ×108` · `[EN] OP-16 散包 ×86` · `Nivel Arena ×71 [JP]`。
+- 实跑 `erp_pricing.price_product` 逐个试:**严格匹配一个都不给**(`NO_STRICT_TCG_MATCH` / `NEEDS_EBAY_US (TCG has no CN)`)。**这是设计对的,不是坏了** —— 模糊匹配出来的图会把 OP-15 的盒子印在 OP-16 的行上。
+- **所以这 90 个只能走 7 月那条路:逐个产品找图 + 人过目**(那次 55 个里找到 52 个)。**没有更便宜的自动解。**
+
+### ⏳ 顺带两条,都不是今天能修的
+- **`AddProduct` 那个上传图的入口是死的**:`products.image_url` 列**不存在**(PostgREST 42703)、`product-images` 桶也没建。**它会明说「photo upload failed, add it later」不会假装成功**,但它永远不会成功 —— **和 9 张积压的表卡在同一件事上:Supabase org 还在 William 手里。**
+- **🔴 `sku_urls.json` 296 条钉里,93 条(31%)已经没有任何产品答应那个名字了** —— 它按**名字**索引,而 7 月那轮改名就废掉过 90/286,我们 9/2、9/3 又改了一轮。另有 **3 条只能靠 aliases 找回,而没有任何代码读 aliases**,其中 **`[EN] OP-16 The Time Of Battle Blister Pack` 在架 1,221 件** —— 它的钉从 8/19 改名那天起就是死的,**价和图一起丢**。`data/pin_orphan_0904.json`。**根治是按 product_id 不按名字**(`add_product_price_sources_2026_08_10.sql`,同样卡在 DDL 上)。
+
 ## 🔴 9/4 成本口径体检的两个 ask:一个做完了,一个卡在 Supabase 权限上(财务侧提的方案 `lv-finance/reports/views/入库成本控制改造方案.html`)
 
 ### ✅ Ask 1a `fix_unit_costs.py` 已卸膛(改完立即生效,这个目录不在 git 下)
