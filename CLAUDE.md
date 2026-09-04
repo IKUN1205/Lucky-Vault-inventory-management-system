@@ -1,5 +1,29 @@
 # LV Inventory — 作业手册 brief (2026-09-04)
 
+## ✅ 9/4 缩略图周巡上线 + **20 张可疑图当场抓出来**(Gary:「我们要不每周看一下 然后我记得有一些 sku 的图片是不对的」)
+
+- **Gary 记得没错,而且我上午那份体检看不见这件事** —— 它只问「图能不能加载」,**没问「这张图是不是这个产品」**。**空图一眼看得出缺,错图会被当真,而且比文字更被当真:没有人会回头再读一遍一张图。**
+- **✅ 新 `inventory-sync/product_image_watch.py` + 任务 `LV Product Image Watch`(每周一 09:15)已上线并实跑通过**(exit 0,**Telegram 真的发出去了**,不是只验了 import —— `jp_shipment_watch` 那条 `--telegram` 从写好起就没发出去过,病根正是 import 被 except 吞掉)。**只在问题集合变化时说话**,首跑之后立刻实测到「0 new, 2 resolved」。**每周报一次平安的看门狗是墙纸。**
+- 七条判据,**每一条只用本地已有的证据或 URL 自己写着的东西** —— 这里冤枉一张图,就是派人去「修」一张本来是对的图。
+
+### 🔴 抓到 20 张,最重的一条不是图的问题
+- **`SHOPIFY-COLLISION` 5 组:两条 Shopify listing 挂着同一个 uuid8。**
+  ```
+  Abyss Eye Booster Box   sku=LV-M5-BOX-748116b5
+  Abyss Eye Booster Pack  sku=LV-GEN-PACK-748116b5   ← 同一个 uuid8
+  ```
+  `build_product_images.py` 是 `m[uuid8] = 图`,**后写的赢**,所以盒那一行挂的是散包的照片。**但图只是小的那一半:uuid8 是 Shopify 回指产品的钥匙,散包 listing 背着盒的 uuid8,意味着散包是按盒的成本在定价。** 这条 **8/07 就记过**(「5 组重复挂牌…同一个成本会同时驱动两条价,必有一条是错的」)**,一直没修 —— 今天从图这一侧又撞见同一个洞,只是这次它在每一个页面上都看得见。** 5 组:Uma Musume(43 件)· Abyss Eye(32)· [JP] TIME OF BATTLE(2)· Black Bolt · DB Dual Evolution。**修在 Shopify 侧改 SKU,不在图这边。**
+- **`DUPLICATE` 3 对真错的**(两个不同形态共用一张图,必有一个是错的):`Phantasmal Flames ETB` vs `Booster Box` · `Ascended Heroes EX Box` vs `Ascended heroes etbs ETB` · **`BOX · [EN] OP-15` vs `[JP] Adventure on KAMI's Island (Case)`** —— 最后这对同时是**箱子挂着盒子的照片**(正是 9/3 那 12 倍的病)**和 EN/JP 混用**。
+- **⚠️ 这条判据第一版把 6 个假的和 3 个真的混在一起报**:`Sealed / Unsealed / In Bag` 是同一个纸盒的三种状态,**共用一张盒的照片是对的不是缺陷**。已按 `variant` 归成一类。**一份会喊狼来了的周报,第三周就没人点开了。**
+
+### ✅ 顺手修回一个被静默撤销的决定(已生效)
+- **`build_product_images.py` 让 Shopify 压过 overrides,于是 12 个手工做的 ×N 角标里有 2 个已经被盖掉了**(Inferno X (In Bag) · Terastal Festival ex (Open))。
+- **但 ×N 不是「同一个东西更好看的照片」,是烧进图里的一个单位声明**(Gary 7/20:一袋 = 一盒的包,角标就是让数货的人不用读字也看得见)。**Shopify 的官图不可能带这个,所以让 Shopify 赢就等于悄悄删掉一个决定。** 已改成**只有 `x\d+_` 这类角标图压过 Shopify**,普通 override 照旧让位。重建后**逐 key 比对:变化 2、丢失 0**,两张图公网实测 200 + image/jpeg。
+- **⏳ Storm Emeralda 那三行要你定**:`Booster Box 179 件` / `(In Bag) 71` / `(Unsealed) 34` **三行共用同一张封盒照片**,而磁盘上**从来没有过 Storm 的 ×30**(7/20 那轮的范围是「**没有** sealed 盒 SKU 的产品」,Storm 有,所以被排除在外)。**所以这是缺口不是回归。** 但今天点货表上这三行长得一模一样,而其中两行一件 = 30 包 —— **要不要给 Storm 补 ×30,一句话我就做**(`batch_x30.py` 现成)。
+
+### ⚠️ 这七条判据看不见的那一类,说清楚
+- **同一个套、对的形态、但画面是错的那张图**,七条判据一条都抓不到 —— **只有眼睛能看**。所以周巡抓到 0 条**不等于「每张图都是对的」**,脚本自己会把这句话打出来。
+
 ## ✅ 9/4 产品缩略图:**8/20 手册那条「全库一张都不显示」已经过时了 —— 现在是显示的**(Gary:「work 一下产品的缩略图」)
 
 - **🔴 先纠正手册自己**:8/20 记的是「`lv-slabs.luckyvault.us` 一个 CORS 头都没有,所以 `useProductImages` 一直返回 `{}`,全库产品缩略图一张都不显示」。**今天实测,那个洞已经被补上了,而且补得很规矩** ——
