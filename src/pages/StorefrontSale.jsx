@@ -13,6 +13,8 @@ import {
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
+import useMarketPrices from '../lib/useMarketPrices'
+import { marketFor } from '../lib/marketPct'
 import {
   ScanLine, X, Trash2, Loader2, Package, Diamond, Layers,
   AlertTriangle, CreditCard, Save, ShoppingCart, TrendingUp, RefreshCw,
@@ -118,6 +120,10 @@ function distributeCartTotal(cart, total) {
 
 export default function StorefrontSale() {
   const { toasts, addToast, removeToast } = useToast()
+  // Sealed market prices for the "sold at N% of market" line. Singles and
+  // slabs carry their own price on the row; sealed does not, so it comes from
+  // the pinned-id feed.
+  const { prices: marketPrices } = useMarketPrices()
   const { user } = useAuth()
 
   const [paymentMethods, setPaymentMethods] = useState([])
@@ -796,11 +802,18 @@ export default function StorefrontSale() {
         try {
           const lineItems = ok.map(({ line }) => {
             if (line.kind === 'sealed') {
+              // PINNED prices only. A fuzzy name match is evidence, not an
+              // identity: on 09-04 the feed's fuzzy entry for an Ascended
+              // Heroes tin belonged to a different tin and read 186% of
+              // market. An unpinned product counts as unpriced and shows up in
+              // the coverage note instead of quietly skewing the percentage.
+              const mk = marketFor(line.product.id, marketPrices)
               return {
                 kind: 'sealed',
                 name: `${line.product.brand} | ${line.product.name}`,
                 quantity: Number(line.quantity) || 1,
                 price: Number(line.price) || 0,
+                market: mk && mk.pinned && Number(mk.market) > 0 ? Number(mk.market) : null,
               }
             }
             if (line.kind === 'slab') {
