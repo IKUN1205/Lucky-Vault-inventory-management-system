@@ -312,10 +312,27 @@ export default function BuyListIntake() {
             acquirer: buyer, vendor: 'Store buy-list', sourceCountry: 'USA', currency: 'USD',
             totalCost: bookedTotal, totalCostUSD: bookedTotal,
             totalUnits: activeLines.reduce((n, l) => n + l.qty, 0),
-            items: allocation.rows.map(({ line }) => ({
-              name: products.find(p => p.id === line.product_id)?.name || line.name,
-              quantity: line.qty,
-            })),
+            // The market fields the card needs to say "85% of the $644 market".
+            // Without them every line came back unpriced and the message read
+            // "No market price on file for any of these — nothing was checked",
+            // on a purchase where six of the fourteen SKUs had a price sitting
+            // in the feed the whole time (measured on Sully's 09-04 buy). This
+            // page already looks those prices up to weight the cost split; it
+            // simply was not passing them on.
+            items: allocation.rows.map(({ line, lineTotal }) => {
+              const m = !feedDown && line.product_id
+                ? marketFor(line.product_id, marketPrices) : null
+              const mkt = m && Number(m.market) > 0 ? Number(m.market) : null
+              const unit = line.qty > 0 ? lineTotal / line.qty : null
+              return {
+                name: products.find(p => p.id === line.product_id)?.name || line.name,
+                quantity: line.qty,
+                market: mkt,
+                marketPct: mkt && unit ? (unit / mkt) * 100 : null,
+                marketPinned: mkt ? !!m.pinned : null,
+                marketState: feedDown ? 'feed_down' : undefined,
+              }
+            }),
           }),
         }).catch(err => console.error('[lark-notify] buylist request failed:', err))
       } catch { /* notification must never block the booking */ }
