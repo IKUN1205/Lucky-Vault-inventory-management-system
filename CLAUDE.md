@@ -9,7 +9,9 @@
 | `lv-singles` 03cd1083 | 3(**iad = VPS**) | 无(8/13 已改指 local) | 🔴 死的,**Gary 确认不用了** |
 - **`buy.luckyvault.us` 现在返回 Cloudflare 1033**,而 `buy-portal` 那个应用 **6/11 之后就没跑过**(无计划任务、8788 没人听)。**它已经这样死了三个月**,和 9/3 的 singles 503 无关 —— 但**一个还解析得出、点开是 5xx 的域名,对下一个排查的人就是个陷阱**:我今天就为它绕了一段。
 - **老 `lv-singles` 隧道上那 3 条 iad 连接是 VPS 的**(8/13 换隧道时留下的)。**没有任何域名指向它,所以抢不走流量**;但只要隧道还在,VPS 那个 connector 就还连着。
-- **⏳ 删不删待 Gary 点头** —— 删 DNS 记录和隧道是不可逆的对外动作,「不需要用了」不等于「删掉」。
+- **✅ 两条死隧道已删(Gary:「全删掉」)**:`cloudflared tunnel delete lv-buy-portal`(0 连接)+ `delete -f lv-singles`(3 条 VPS 连接,要 `-f`)。删完 `tunnel list` 只剩两条在用的,各 4 条连接;singles/slabs 实测照常。`config-buy.yml` 和两个凭证 json 移出现役目录,归档在 `.cloudflared/retired_0903/`(带 README 写明为什么删)。**VPS 那个 connector 从此永久断开。**
+- **🔴 删隧道之前先证明了活着的域名不是靠它服务的**,而且不是靠读配置 —— **读本机 cloudflared 的 metrics 计数器**(`127.0.0.1:20242`),打 4 次 `/health` 前后从 **1484 → 1488,正好 +4**。**配置说什么是一回事,谁在真的接请求是另一回事。**
+- **⏳ `buy.luckyvault.us` 的 DNS 记录还在,所以它现在仍然回 1033** —— 删了隧道不会删 CNAME。**全仓库没有任何 Cloudflare API token**(不像 Vercel 那个),所以这一步要么 Gary 去后台点一下(DNS → 删 `buy` 那条 CNAME,20 秒),要么建一个 token 存进 `inventory-sync/data/` 以后走 API。**我没有去 UI 自动化删 DNS —— 在一个正在服务的 zone 里点删除,值不回那点收益。**
 
 ## 🔴 9/3 singles 503:app 从来没挂,是隧道;而真正的问题是**挂了也没人扶**(Gary:「singles系统现在503了 修一下」)
 - **先说结论:app 没有挂过。** 它从 **08/20 12:38 起一直在跑**,`out/webapp.log` 里 **5xx 一条都没有**,而我用真密码从公网走一遍 `/` 拿到 **200 / 13,767 字节 / 222ms**(`inventory-sync/singles_e2e.py`)。**503 根本没到达 app。**
