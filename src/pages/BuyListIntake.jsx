@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ClipboardPaste, Check, AlertTriangle, X } from 'lucide-react'
-import { supabase, fetchAllPages, createAcquisition, deleteAcquisition, updateInventory, convertToUSD } from '../lib/supabase'
+import { supabase, fetchAllPages, createAcquisition, deleteAcquisition, updateInventory, convertToUSD, createStorefrontSale } from '../lib/supabase'
 import { createProductChecked } from '../lib/duplicateGuard'
 import useMarketPrices from '../lib/useMarketPrices'
 import { marketFor } from '../lib/marketPct'
@@ -37,6 +37,22 @@ export default function BuyListIntake() {
   const [totalPaid, setTotalPaid] = useState('')
   const [buyerId, setBuyerId] = useState('')
   const [locationId, setLocationId] = useState('')
+  // How we paid. Recorded on every acquisition in the batch (Gary 2026-09-04
+  // "记一下付款"). Until now this page wrote no payment at all, so a store buy
+  // paid out of the drawer left the goods and the cost in the books and the
+  // cash nowhere — the 09-03 $11,198 buy is exactly that hole.
+  //
+  // "Not paid yet" is a real method here (IOU (we owe)), not a blank. A blank
+  // cannot be told apart from nobody filling it in, and that ambiguity is what
+  // let 500 rows accumulate with no payment on them.
+  const [payMethods, setPayMethods] = useState([])
+  const [paymentMethodId, setPaymentMethodId] = useState('')
+  // A lot of loose singles bought alongside the sealed. Recorded as money and a
+  // card count ONLY — never as inventory, because Cards Scan intakes each card
+  // properly later and booking stock here would count them twice. Same
+  // contract as the register's Bulk Buy.
+  const [singlesCount, setSinglesCount] = useState('')
+  const [singlesPaid, setSinglesPaid] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [done, setDone] = useState(null)
   const submitLock = useRef(false)
@@ -45,15 +61,17 @@ export default function BuyListIntake() {
   useEffect(() => {
     (async () => {
       try {
-        const [prods, us, locs] = await Promise.all([
+        const [prods, us, locs, pms] = await Promise.all([
           fetchAllPages(() => supabase.from('products')
             .select('id,name,aliases,brand,language,type,variant,active,category')
             .order('id')),
           supabase.from('users').select('id,name').order('name'),
           supabase.from('locations').select('id,name,type,active').order('name'),
+          supabase.from('payment_methods').select('id,name').order('name'),
         ])
         setProducts(prods)
         setUsers(us.data || [])
+        setPayMethods(pms.data || [])
         const phys = (locs.data || []).filter(l => l.active && l.type === 'Physical')
         setLocations(phys)
         const front = phys.find(l => l.name === 'Front Store')
@@ -186,7 +204,7 @@ export default function BuyListIntake() {
   }, [activeLines, unresolved.length, paidNum, marketPrices, feedDown])
 
   const canSubmit = activeLines.length > 0 && unresolved.length === 0 && paidNum > 0 &&
-    buyerId && locationId && allocation && allocation.rows && !submitting
+    buyerId && locationId && paymentMethodId && allocation && allocation.rows && !submitting
 
   const submit = async () => {
     if (!canSubmit || submitLock.current) return
@@ -214,6 +232,7 @@ export default function BuyListIntake() {
           currency: 'USD',
           cost_usd: convertToUSD(lineTotal, 'USD'),
           status: 'Received',
+          payment_method_id: paymentMethodId,
           notes: `BUYLIST | raw="${line.raw.replace(/"/g, "'")}" | alloc=${method}${line.note ? ` | note=${line.note}` : ''}`,
         })
         const entry = { acqId: acq.id, product_id: line.product_id, qty: line.qty, invApplied: false, snapshot: null }
@@ -228,10 +247,61 @@ export default function BuyListIntake() {
         await updateInventory(line.product_id, locationId, line.qty, unit)
         entry.invApplied = true
       }
+      const bookedTotal = Math.round(allocation.rows.reduce((n, r) => n + r.lineTotal, 0) * 100) / 100
+      const payName = payMethods.find(p => p.id === paymentMethodId)?.name || ''
+
+      // Loose singles bought with the lot: money and count, NO stock. Written
+      // as a counter buy line, the same shape the register's Bulk Buy uses, so
+      // Cards Scan picks it up from one place instead of two. If this wrote
+      // inventory, every card would be counted again the moment it is scanned.
+      const nCards = parseInt(singlesCount, 10)
+      const singlesAmt = Math.round((parseFloat(singlesPaid) || 0) * 100) / 100
+      if (Number.isInteger(nCards) && nCards > 0 && singlesAmt > 0) {
+        await createStorefrontSale({
+          date: today,
+          sale_type: 'Itemized',
+          product_id: null,
+          location_id: locationId,
+          quantity: nCards,
+          sale_price: singlesAmt,
+          cost_basis: null,
+          profit: null,
+          payment_method_id: paymentMethodId,
+          cashier_id: buyerId,
+          transaction_id: batchId,
+          transaction_type: 'buy',
+          net_cash_usd: -singlesAmt,
+          notes: `BUY: bulk singles — ${nCards} cards (pending Cards Scan intake) | BUYLIST batch ${batchId}`,
+        })
+      }
+
+      // Cash is the only method that moves the drawer, so it is the only one
+      // that writes a counter row. Recording a Zelle or a card payment as cash
+      // out would make the next count read short by exactly this amount — and
+      // reporting a normal handover as a shortfall is what stopped anyone
+      // counting for the six weeks before 09-04.
+      if (/^cash$/i.test(payName) && bookedTotal > 0) {
+        await createStorefrontSale({
+          date: today,
+          sale_type: 'Itemized',
+          product_id: null,
+          location_id: locationId,
+          quantity: activeLines.reduce((n, l) => n + l.qty, 0),
+          sale_price: bookedTotal,
+          cost_basis: null,
+          profit: null,
+          payment_method_id: paymentMethodId,
+          cashier_id: buyerId,
+          transaction_id: batchId,
+          transaction_type: 'buy',
+          net_cash_usd: -bookedTotal,
+          notes: `BUY: sealed buy-list paid in cash — ${activeLines.length} line(s) | BUYLIST batch ${batchId}`,
+        })
+      }
+
       // fire-and-forget group notification (never awaited, never blocks booking).
       // Report what was BOOKED — if the user confirmed line prices that differ
       // from the cash paid, the notification must match the books, not the till.
-      const bookedTotal = Math.round(allocation.rows.reduce((n, r) => n + r.lineTotal, 0) * 100) / 100
       try {
         const buyer = users.find(u => u.id === buyerId)?.name || 'store'
         fetch('/api/lark-notify', {
@@ -332,6 +402,36 @@ export default function BuyListIntake() {
               {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
             </select>
           </label>
+          <label className="text-sm text-gray-400">Paid with *
+            <select className="block mt-1" value={paymentMethodId} onChange={e => setPaymentMethodId(e.target.value)}>
+              <option value="">Select…</option>
+              {payMethods.map(p => (
+                <option key={p.id} value={p.id}>
+                  {/^iou/i.test(p.name) ? `${p.name} — not paid yet` : p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="flex flex-wrap gap-3 mt-3 items-end border-t border-white/10 pt-3">
+          <div className="text-sm text-gray-400 w-full">
+            Loose singles bought with this lot <span className="text-gray-500">— optional</span>
+          </div>
+          <label className="text-sm text-gray-400">How many cards
+            <input type="number" min="0" step="1" className="block mt-1 w-32"
+              value={singlesCount} onChange={e => setSinglesCount(e.target.value)} />
+          </label>
+          <label className="text-sm text-gray-400">Paid for them (USD)
+            <input type="number" min="0" step="0.01" className="block mt-1 w-36"
+              value={singlesPaid} onChange={e => setSinglesPaid(e.target.value)} />
+          </label>
+          <p className="text-xs text-gray-500 flex-1 min-w-64">
+            Records the money and the count only. The cards themselves stay out of
+            inventory until Cards Scan intakes them one by one — booking stock here
+            would count every card twice.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-3 mt-3 items-end">
           <button className="btn btn-primary" onClick={doParse}>Parse list</button>
         </div>
       </div>

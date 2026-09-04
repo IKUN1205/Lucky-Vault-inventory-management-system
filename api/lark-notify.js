@@ -1405,6 +1405,41 @@ function buildMessage(body) {
       lines.push(`Customer brought $${ti.toFixed(2)} in trade-in`)
     }
 
+    // "sold at 222% of market" (Gary 2026-09-04). Answers the question the
+    // per-line amounts cannot: was this a good sale?
+    //
+    // COMPARED LIKE FOR LIKE. Only the units that actually carry a market
+    // price go into BOTH sides of the ratio. Dividing the whole cart total by
+    // the market value of the priced subset is how the 09-04 $280 sale first
+    // came out at 317% when the honest figure was 222% — nine units of takings
+    // over seven units of value.
+    //
+    // Coverage rides along for the same reason a margin travels with its cost
+    // coverage: "222% of market" over three of ten cards is not a fact about
+    // the sale, it is a fact about three cards.
+    if (transaction_type !== 'buy') {
+      let mktValue = 0, soldPriced = 0, unitsPriced = 0, unitsTotal = 0
+      for (const it of items) {
+        const qty = Number(it.quantity) || 1
+        unitsTotal += qty
+        const mk = it.market == null ? null : Number(it.market)
+        if (mk != null && Number.isFinite(mk) && mk > 0) {
+          mktValue += mk * qty
+          soldPriced += (Number(it.price) || 0) * qty
+          unitsPriced += qty
+        }
+      }
+      if (unitsPriced > 0 && mktValue > 0) {
+        const pct = Math.round((soldPriced / mktValue) * 100)
+        const cover = unitsPriced === unitsTotal
+          ? ''
+          : ` (${unitsPriced} of ${unitsTotal} priced)`
+        lines.push(`sold at ${pct}% of market${cover}`)
+      } else if (unitsTotal > 0) {
+        lines.push('no market price on file for any of these — % not checked')
+      }
+    }
+
     lines.push(nowUtcStamp())
     return lines.join('\n')
   }

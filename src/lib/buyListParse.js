@@ -27,6 +27,16 @@ const SHORTHAND = {
   upc: ['ultra', 'premium', 'collection'],
   bb: ['booster', 'box'],
   wf: ['white', 'flare'],
+  // Added 2026-09-04 from a real store paste. Each of these produced NO
+  // candidates at all until it was here: "PRIS BBUNDLE" tokenized to
+  // ["pris","bbundle"] and "FPS3" stayed whole, so neither could reach the
+  // product it obviously means. Only unambiguous shorthand goes in this map —
+  // one abbreviation, one product family, no guessing.
+  bbox: ['booster', 'box'],
+  bbundle: ['booster', 'bundle'],
+  pris: ['prismatic'],
+  fps2: ['first', 'partner', 'series', '2'],
+  fps3: ['first', 'partner', 'series', '3'],
 };
 
 const SINGULAR = {
@@ -95,6 +105,21 @@ export function parseBuyList(text) {
     });
     line = line.replace(/\s+/g, ' ').trim();
 
+    // Leading decoration: the store ticks off each line as they check it, so
+    // the real paste starts "✅8x AH MEGA EX BOX - $48". The tick glues to the
+    // digit, no quantity rule matches a line starting with an emoji, and every
+    // row comes back with a blank count while the emoji rides along inside the
+    // product name and poisons the matching too. Measured on Gary's 09-03 list
+    // before this: 0 of 7 quantities parsed.
+    // Deliberately NOT "anything that is not a letter or digit". That first
+    // version ate the opening bracket of our own "[JP] ..." names — 177 of the
+    // 874 product names came back as "JP] ...". Nothing broke, because the
+    // tokenizer discards brackets anyway, which is exactly why it would have
+    // survived review: a silent mangling that happens to be harmless today.
+    // So this lists the decoration instead: whitespace, bullets, dashes,
+    // arrows, and pictographs. Brackets, parentheses and "$" are structure.
+    line = line.replace(/^[\s•·*+\-–—>»~]*\p{Extended_Pictographic}*[\s•·*+\-–—>»~]*/u, '');
+
     let qty = null;
     let name = line;
     let m;
@@ -122,6 +147,17 @@ export function parseBuyList(text) {
       // trailing " - N" (space before the dash required, so "op-17" is never a qty)
       qty = parseInt(m[2], 10);
       name = m[1];
+    } else if ((m = name.match(/^(\d+)\s*[xX]\s+(.*)$/))) {
+      // leading "8x NAME" / "26X NAME" — the store's own house style. The x is
+      // a deliberate count marker, so this is as explicit as a trailing xN and
+      // ranks above the bare leading integer below.
+      //
+      // It also settles the one case the bare rule cannot: "151 booster bundle"
+      // is a set name and must not become 151 units, while "8x AH MEGA EX BOX"
+      // unambiguously is eight. The x is what separates them, and requiring a
+      // space after it keeps "2x2" style product names out.
+      qty = parseInt(m[1], 10);
+      name = m[2];
     } else if ((m = name.match(/^(\d+)\s+(.*)$/))) {
       // leading integer = qty, but only with no explicit marker anywhere on the line
       qty = parseInt(m[1], 10);

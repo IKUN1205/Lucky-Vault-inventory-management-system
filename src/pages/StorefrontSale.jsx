@@ -813,6 +813,8 @@ export default function StorefrontSale() {
                 grading_company: line.slab.grading_company || null,
                 quantity: 1,
                 price: Number(line.price) || 0,
+                market: line.slab.market_price_usd != null
+                  ? Number(line.slab.market_price_usd) : null,
               }
             }
             if (line.kind === 'single') {
@@ -822,6 +824,12 @@ export default function StorefrontSale() {
                 name: `${line.single.card_name}${line.single.card_number ? ` #${line.single.card_number}` : ''}${setLabel}`,
                 quantity: Number(line.quantity) || 1,
                 price: Number(line.price) || 0,
+                // Market value of what left the shelf, so the message can say
+                // what the sale was worth rather than only what was collected.
+                // null when the card has no price on file — the notification
+                // reports coverage instead of quietly treating it as $0.
+                market: line.single.current_market_price_usd != null
+                  ? Number(line.single.current_market_price_usd) : null,
               }
             }
             // Manual lines (slab_manual / single_manual) — Lark gets the

@@ -341,6 +341,58 @@ check('a bare number is not treated as an amount',
       + (got.findIndex(c => c.id === 'mega-cz-upc') + 1) + ', tracked separately)');
 }
 
+// ------------------------------------------- the store's real writing style
+// Gary pasted an actual store list on 2026-09-04. Measured against the parser
+// as it then stood: 0 of 7 quantities came out. Every line begins with a tick
+// the staff add as they check items off, and the count is written "8x NAME"
+// rather than "8 NAME". These pin both.
+{
+  const real = parseBuyList([
+    '✅8x AH MEGA EX BOX - $48',
+    '✅26X SPC - $215',
+    '✅7x DR BBOX (ripped seal) - $320',
+  ].join('\n'));
+  check('tick + "8x NAME" -> qty 8', real[0].qty === 8);
+  check('tick is not left in the product name', real[0].name === 'AH MEGA EX BOX');
+  check('trailing per-unit price kept as a note', (real[0].note || '').includes('48'));
+  check('uppercase "26X NAME" -> qty 26', real[1].qty === 26);
+  check('"7x NAME (note) - $320" -> qty 7', real[2].qty === 7);
+  check('parenthetical still becomes the note', (real[2].note || '').includes('ripped seal'));
+}
+{
+  // A bulleted list is the same shape without the tick.
+  const b = parseBuyList('- 5 Journey Together')[0];
+  check('leading dash bullet does not block the count', b.qty === 5 && b.name === 'Journey Together');
+}
+{
+  // The strip must take decoration ONLY. An earlier version removed the "["
+  // from our own "[JP] ..." names — harmless, because the tokenizer drops
+  // brackets, and therefore exactly the kind of silent mangling that survives
+  // review. 177 of 874 names were affected.
+  const jp = parseBuyList('[JP] OP-12 Legacy of the Master Booster Pack')[0];
+  check('a leading [JP] tag survives intact', jp.name.startsWith('[JP]'));
+}
+{
+  // "x" only counts with a space after it, so a product name carrying a
+  // dimension is never read as a quantity.
+  const d = parseBuyList('2x2 Ultra Pro Sleeves')[0];
+  check('"2x2 ..." is a name, not a count of 2', d.qty === null);
+}
+{
+  // Unchanged on purpose: a bare leading integer is still taken as a count, so
+  // "151 booster bundle" still parses as 151. That is a known, separate
+  // problem (the set is called 151) and it is pinned here so a future change
+  // to it is deliberate rather than a side effect of this one.
+  const k = parseBuyList('151 booster bundle')[0];
+  check('bare leading integer still behaves as before', k.qty === 151);
+}
+{
+  // Store shorthand added 09-04. Each produced zero candidates before.
+  check('bbundle expands', eq(expandTokens('PRIS BBUNDLE'), ['prismatic', 'booster', 'bundle']));
+  check('bbox expands', eq(expandTokens('DR BBOX'), ['destined', 'rivals', 'booster', 'box']));
+  check('fps3 expands', eq(expandTokens('FPS3'), ['first', 'partner', 'series', '3']));
+}
+
 // ---------------------------------------------------------------- result
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
