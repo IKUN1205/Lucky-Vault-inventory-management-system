@@ -4717,6 +4717,16 @@ export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
     photo_url: src.photo_url,
     quantity: sellQty,
     tcg_id: src.tcg_id,
+    // The market price travels with the card, like tcg_id does. Leaving it off
+    // was an omission rather than a decision, and it is the single biggest
+    // source of blank prices in the table: measured 2026-09-04, 128 of the 156
+    // rows created by a split had no market price, and they are why sales come
+    // out with the cart total spread evenly — the distributor has no reference
+    // to weight by, so a $4 energy and a $14 Espeon GX both book at $28.
+    // Move Inventory's split has always copied it; this one did not.
+    current_market_price_usd: src.current_market_price_usd,
+    market_price_source: src.market_price_source,
+    market_price_updated_at: src.market_price_updated_at,
     acquisition_cost_usd: src.acquisition_cost_usd,
     acquisition_cost_native: src.acquisition_cost_native,
     acquisition_currency: src.acquisition_currency,
@@ -4806,6 +4816,16 @@ const _recoverSoldSingle = async (src, sellQty, saleData) => {
     // sold, so it cannot carry that card's certificate number.
     quantity: sellQty,
     tcg_id: src.tcg_id,
+    // Market price DOES come across, and cost does not, for the same reason.
+    // Cost is a claim about where this copy came from, and we do not know that.
+    // The market price is a claim about what this CARD is worth, and tcg_id
+    // right above says it is the same card — so the price is as true of the
+    // copy in hand as of the one already sold. Dropping it left all 35
+    // recovery rows blank (measured 2026-09-04) and quietly cost every sale
+    // they appear in its price reference.
+    current_market_price_usd: src.current_market_price_usd,
+    market_price_source: src.market_price_source,
+    market_price_updated_at: src.market_price_updated_at,
     // Cost and provenance are deliberately BLANK. Holding the card proves a
     // copy exists; it does not prove this copy came from the same purchase as
     // the one already sold. Copying the old row's cost would book the same

@@ -66,5 +66,22 @@ t('buys get no % line', pctLine([{ quantity: 1, price: 10, market: 40 }], 'buy')
 t('below market reads below 100', pctLine([{ quantity: 1, price: 30, market: 60 }]),
   'sold at 50% of market')
 
+// ---- fuzzy sealed prices count, but the message says so ----
+t('an unverified match is used and flagged',
+  pctLine([{ quantity: 2, price: 35.50, market: 25.47, market_verified: false }]),
+  'sold at 139% of market · price match not verified')
+t('a verified match carries no caveat',
+  pctLine([{ quantity: 2, price: 35.50, market: 25.47, market_verified: true }]),
+  'sold at 139% of market')
+t('one unverified line taints the whole figure',
+  pctLine([{ quantity: 1, price: 50, market: 25, market_verified: true },
+           { quantity: 1, price: 50, market: 25, market_verified: false }]),
+  'sold at 200% of market · price match not verified')
+// This is the real sale Gary saw report "no market price on file" — it was
+// pinned all along, the sealed wiring simply had not finished deploying.
+t('the live 09-04 Chaos Rising sale',
+  pctLine([{ quantity: 2, price: 35.50, market: 25.47, market_verified: true }]),
+  'sold at 139% of market')
+
 console.log(`${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

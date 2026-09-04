@@ -802,18 +802,24 @@ export default function StorefrontSale() {
         try {
           const lineItems = ok.map(({ line }) => {
             if (line.kind === 'sealed') {
-              // PINNED prices only. A fuzzy name match is evidence, not an
-              // identity: on 09-04 the feed's fuzzy entry for an Ascended
-              // Heroes tin belonged to a different tin and read 186% of
-              // market. An unpinned product counts as unpriced and shows up in
-              // the coverage note instead of quietly skewing the percentage.
+              // Pinned AND fuzzy prices both count, and the message says when
+              // any of them was fuzzy — the same contract the buy form already
+              // uses ("match not verified yet").
+              //
+              // Pinned-only was the first version and it was too strict to be
+              // useful: only 94 of the feed's 316 entries are pinned, so seven
+              // out of ten sealed sales would have reported "no market price on
+              // file" for a product we do have a price for. A caveat people can
+              // see beats a silence they cannot.
               const mk = marketFor(line.product.id, marketPrices)
+              const mkv = mk && Number(mk.market) > 0 ? Number(mk.market) : null
               return {
                 kind: 'sealed',
                 name: `${line.product.brand} | ${line.product.name}`,
                 quantity: Number(line.quantity) || 1,
                 price: Number(line.price) || 0,
-                market: mk && mk.pinned && Number(mk.market) > 0 ? Number(mk.market) : null,
+                market: mkv,
+                market_verified: mkv == null ? null : !!mk.pinned,
               }
             }
             if (line.kind === 'slab') {

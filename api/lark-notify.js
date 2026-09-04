@@ -1419,6 +1419,7 @@ function buildMessage(body) {
     // the sale, it is a fact about three cards.
     if (transaction_type !== 'buy') {
       let mktValue = 0, soldPriced = 0, unitsPriced = 0, unitsTotal = 0
+      let anyUnverified = false
       for (const it of items) {
         const qty = Number(it.quantity) || 1
         unitsTotal += qty
@@ -1427,6 +1428,11 @@ function buildMessage(body) {
           mktValue += mk * qty
           soldPriced += (Number(it.price) || 0) * qty
           unitsPriced += qty
+          // Sealed prices can come from a fuzzy name match. Those are usable
+          // but not proven: on 09-04 a fuzzy entry for an Ascended Heroes tin
+          // belonged to a different tin and read 186% of market. Say so rather
+          // than either hiding it or throwing the price away.
+          if (it.market_verified === false) anyUnverified = true
         }
       }
       if (unitsPriced > 0 && mktValue > 0) {
@@ -1434,7 +1440,8 @@ function buildMessage(body) {
         const cover = unitsPriced === unitsTotal
           ? ''
           : ` (${unitsPriced} of ${unitsTotal} priced)`
-        lines.push(`sold at ${pct}% of market${cover}`)
+        const caveat = anyUnverified ? ' · price match not verified' : ''
+        lines.push(`sold at ${pct}% of market${cover}${caveat}`)
       } else if (unitsTotal > 0) {
         lines.push('no market price on file for any of these — % not checked')
       }
