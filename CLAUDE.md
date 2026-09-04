@@ -1,5 +1,16 @@
 # LV Inventory — 作业手册 brief (2026-09-03)
 
+## 📌 9/3 隧道/域名台账 —— 哪些还在用,哪些是死的(Gary:「那几个都不需要用了」)
+| 隧道 | 连接数 | 域名 | 状态 |
+|---|---|---|---|
+| `lv-singles-local` bf506712 | 4(本机) | `lv-singles.luckyvault.us` | ✅ **在用** |
+| `lv-slabs` 2c57af6b | 4(本机) | `lv-slabs.luckyvault.us` | ✅ **在用**(8081,永远别动) |
+| `lv-buy-portal` d2d1c801 | **0** | `buy.luckyvault.us` → **1033** | 🔴 死的,**Gary 确认不用了** |
+| `lv-singles` 03cd1083 | 3(**iad = VPS**) | 无(8/13 已改指 local) | 🔴 死的,**Gary 确认不用了** |
+- **`buy.luckyvault.us` 现在返回 Cloudflare 1033**,而 `buy-portal` 那个应用 **6/11 之后就没跑过**(无计划任务、8788 没人听)。**它已经这样死了三个月**,和 9/3 的 singles 503 无关 —— 但**一个还解析得出、点开是 5xx 的域名,对下一个排查的人就是个陷阱**:我今天就为它绕了一段。
+- **老 `lv-singles` 隧道上那 3 条 iad 连接是 VPS 的**(8/13 换隧道时留下的)。**没有任何域名指向它,所以抢不走流量**;但只要隧道还在,VPS 那个 connector 就还连着。
+- **⏳ 删不删待 Gary 点头** —— 删 DNS 记录和隧道是不可逆的对外动作,「不需要用了」不等于「删掉」。
+
 ## 🔴 9/3 singles 503:app 从来没挂,是隧道;而真正的问题是**挂了也没人扶**(Gary:「singles系统现在503了 修一下」)
 - **先说结论:app 没有挂过。** 它从 **08/20 12:38 起一直在跑**,`out/webapp.log` 里 **5xx 一条都没有**,而我用真密码从公网走一遍 `/` 拿到 **200 / 13,767 字节 / 222ms**(`inventory-sync/singles_e2e.py`)。**503 根本没到达 app。**
 - **是隧道。** `out/tunnel.log` 里全是 QUIC 掉线再重连:`no recent network activity` · `datagram manager encountered a failure` · 一次 `Failed to refresh DNS local resolver ... i/o timeout`。**9/02 23:42Z 那次 connIndex 0/1/2/3 四条全掉**,14 秒后才重新注册完 —— **那个窗口里 Cloudflare 手上一个 connector 都没有,只能回 503**。今天 11:23Z 和 13:52Z 又各掉一条。
