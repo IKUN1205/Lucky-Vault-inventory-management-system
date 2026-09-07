@@ -876,15 +876,27 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies, 
   const unsourced = discrepancyItems.filter(i => i.fixable === false)
   const unchecked = discrepancyItems.filter(i => i.fixable !== true && i.fixable !== false)
 
+  // ONE LINE, no per-SKU detail (Gary 2026-09-06: "太长 fixable 其实没必要
+  // 没人会做什么").
+  //
+  // This block used to name every fixable SKU and the rooms holding stock, so a
+  // counter could go record the Move. In practice nobody did — and the reason is
+  // structural, not laziness: the person reading this is mid-stream, and the fix
+  // belongs to whoever moved the goods, who is not in the room. Printing four
+  // lines of instructions that are never followed does two kinds of damage: it
+  // buries the block below it (the one that genuinely needs a human), and it
+  // trains people that most of this message is not for them.
+  //
+  // "Fixable" means the goods exist elsewhere in the system and the company
+  // total is already correct, so nothing is at risk while it waits. That is
+  // exactly the kind of item a machine should close, not a person — see
+  // inventory-sync/surplus_auto_move.py, which records the Move once the same
+  // SKU has been counted over in the same room repeatedly.
   if (fixable.length > 0) {
+    const units = fixable.reduce((n, i) => n + (Number(i.extra) || 0), 0)
     lines.push('')
-    lines.push(`✅ Fixable — record a Move in from below; company total unchanged:`)
-    for (const item of fixable) {
-      const from = (item.sources || [])
-        .map(s => `${String(s.name || '').replace(/^Stream Room\s*[-—]\s*/i, '')} has ${s.qty}`)
-        .join(', ')
-      lines.push(`  • ${shortCountName(item.name, lang)} +${item.extra || 0}${from ? `  ← ${from}` : ''}`)
-    }
+    lines.push(`✅ ${fixable.length} SKU(s) (+${units}) — stock exists elsewhere in the system, `
+      + `company total is right. Handled off-sheet, nothing to do here.`)
   }
 
   if (unsourced.length > 0) {

@@ -110,15 +110,30 @@ const isCounted = (v) => {
 // list — same blind-count flow, same rules. Until now they were structurally
 // excluded, which is why Master had literally zero app counts ever (Aldo
 // counted on paper and sent photos the same morning this was added).
+// Live rooms only. Front Store and Master Inventory were added on 2026-08-24
+// ("做一个点货和直播间一样") and are removed again on 2026-09-06 (OL-023) on the
+// usage record, not on principle:
+//
+//   in the 13 days they were available, live rooms were counted 43 times and
+//   the two ledger rooms exactly ONCE -- 09-02, Master, 115 rows, 74 of them
+//   negative, 1,686 units written off in one submit, retracted the next day.
+//
+// A blind sheet treats a blank row as zero, which is right for a stream room
+// where the counter walks the whole shelf, and wrong for Master, where nobody
+// counts 115 SKUs in one sitting and a skipped row is not an empty shelf. The
+// safeguards that made this survivable (negatives from a ledger room are never
+// read as sales, isLedgerRoomName in countRooms.js, the eight consumers taught
+// to exclude them) all stay -- they still guard the historical rows and the
+// retraction path. What goes away is the ability to start a new one here.
+//
+// Counting these rooms is still worth doing; it just cannot be a blind sheet.
 const STREAM_ROOM_NAMES = [
   'Stream Room - eBay LuckyVaultUS',
   'Stream Room - eBay SlabbiePatty',
   'Stream Room - TikTok RocketsHQ',
   'Stream Room - TikTok Packheads',
   'Stream Room - PokeCasino',
-  'Stream Room - PokeAuctionHouse',
-  'Front Store',
-  'Master Inventory'
+  'Stream Room - PokeAuctionHouse'
 ]
 
 export default function StreamCounts() {
@@ -1259,6 +1274,17 @@ export default function StreamCounts() {
                                   blind count is untouched. */}
                               {inv._caseHint && (
                                 <span className="block text-[11px] font-semibold text-red-300">⚠ {inv._caseHint}</span>
+                              )}
+                              {/* A pack row the book says is empty, pulled onto the
+                                  sheet because its box is here. Without the reason
+                                  it just looks like clutter and gets skipped — and
+                                  the whole point is that loose packs stop being
+                                  written on the box line. Still blind: it shows the
+                                  relationship, never a quantity. */}
+                              {inv.sibling_of && (
+                                <span className="block text-[11px] font-semibold text-amber-300">
+                                  ↳ loose packs from {inv.sibling_of} — count them here, not on the box line
+                                </span>
                               )}
                             </td>
                             <td className={`hidden sm:table-cell ${inv._isCase ? 'font-semibold text-red-300' : 'text-gray-400'}`}>{inv._unitLabel}</td>

@@ -165,10 +165,19 @@ export default function BuyListIntake() {
   const langById = useMemo(() => Object.fromEntries(products.map(p => [p.id, p.language])), [products])
 
   // Cost allocation. Per-line prices are honored where entered; whatever is
-  // left of the total is spread over the UNPRICED lines by market weight
-  // (average-weight fallback so a missing market price never reads as $0).
-  // The last allocated line absorbs the rounding remainder, so line totals
-  // always sum exactly to the money that was actually paid.
+  // left of the total is spread over the UNPRICED lines by weight, and the
+  // last allocated line absorbs the rounding remainder so line totals always
+  // sum exactly to the money that was actually paid.
+  //
+  // Weights come from the store's own written amount first, then TCG market,
+  // then the average. The store's number is NOT read as the price paid --
+  // Gary has confirmed those figures are market on some lists (09-01, 09-04)
+  // and paid on others (09-03), and nothing in the text tells them apart. But
+  // as a WEIGHT it beats TCG under either reading, and it is the line the
+  // store actually wrote. Ignoring it is what mis-costed Sully's 09-04 buy:
+  // she priced all 14 lines, TCG could price 6, so weighting by TCG alone put
+  // $718 on ten First Partner boxes she had written at $300 and $71.80 on a
+  // Mega Charizard UPC she had written at $240.
   const allocation = useMemo(() => {
     if (!activeLines.length || !(paidNum > 0) || unresolved.length > 0) return null
     const priced = activeLines.filter(l => priceOf(l) !== null)
@@ -182,9 +191,19 @@ export default function BuyListIntake() {
     if (remainder <= 0) {
       return { rows: null, pricedSum, remainder, blocked: 'line prices already reach the total paid — nothing left for the unpriced lines' }
     }
-    const weights = unpriced.map(l => {
+    // `listed` is already a LINE total (the store writes "2 prismatic - $300"
+    // meaning $300 for the pair), so it is not multiplied by qty the way a
+    // per-unit market price is.
+    const srcs = unpriced.map(l => {
+      const li = Number(l.listed)
+      if (Number.isFinite(li) && li > 0) return 'store-listed'
       const m = !feedDown && l.product_id ? marketFor(l.product_id, marketPrices) : null
-      return m && m.market > 0 ? m.market * l.qty : null
+      return m && m.market > 0 ? 'market' : 'avg'
+    })
+    const weights = unpriced.map((l, i) => {
+      if (srcs[i] === 'store-listed') return Number(l.listed)
+      if (srcs[i] === 'market') return marketFor(l.product_id, marketPrices).market * l.qty
+      return null
     })
     const knownUnits = unpriced.filter((l, i) => weights[i] !== null).reduce((n, l) => n + l.qty, 0)
     const knownSum = weights.filter(w => w !== null).reduce((a, b) => a + b, 0)
@@ -198,7 +217,10 @@ export default function BuyListIntake() {
         ? Math.round((remainder - allocated) * 100) / 100
         : Math.round((remainder * filled[i] / totalW) * 100) / 100
       allocated = Math.round((allocated + lineTotal) * 100) / 100
-      out.push({ line: l, lineTotal, method: weights[i] !== null ? 'market-weight' : 'avg-weight (no market price)' })
+      const method = srcs[i] === 'store-listed'
+        ? 'store-listed-weight'
+        : srcs[i] === 'market' ? 'market-weight' : 'avg-weight (no market price)'
+      out.push({ line: l, lineTotal, method })
     })
     return { rows: out, pricedSum, remainder: 0, blocked: null }
   }, [activeLines, unresolved.length, paidNum, marketPrices, feedDown])

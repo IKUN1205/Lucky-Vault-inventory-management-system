@@ -123,6 +123,16 @@ export function parseBuyList(text) {
     let qty = null;
     let name = line;
     let m;
+    // The amount the store wrote on the line, kept as a NUMBER as well as a
+    // note. It is still not treated as what we paid — Gary has confirmed it is
+    // the market figure on some lists (09-01, 09-04) and the paid figure on
+    // others (09-03), and nothing in the text tells them apart. But it is the
+    // best allocation WEIGHT available either way: on Sully's 09-04 buy the
+    // store priced all 14 lines and TCG could price only 6, so throwing these
+    // away and weighting by TCG alone put $718 of cost on ten First Partner
+    // boxes the store had valued at $300, and $71.80 on a Mega Charizard UPC
+    // they had written at $240.
+    let listed = null;
 
     // Trailing "$510" / "US$1,800.00" / "$1,800 USD" — recorded as a note, never as
     // a price and never as a quantity. Left in place it also breaks the "xN" rule,
@@ -135,6 +145,8 @@ export function parseBuyList(text) {
     // wrong quantity two rules later.
     if ((m = name.match(/^(.*?)\s*(?:US)?\$\s*([\d,]+(?:\.\d{1,2})?)\s*(?:USD)?\s*\.?\s*$/i))) {
       notes.push(`listed $${m[2]}`);
+      listed = Number(String(m[2]).replace(/,/g, ''));
+      if (!Number.isFinite(listed) || listed <= 0) listed = null;
       name = m[1].trim();
     }
     const note = notes.length ? notes.join('; ') : null;
@@ -165,7 +177,7 @@ export function parseBuyList(text) {
     }
 
     name = name.replace(/\s*[-–]\s*$/, '').replace(/\s+/g, ' ').trim();
-    rows.push({ raw, qty, name, note });
+    rows.push({ raw, qty, name, note, listed });
   }
   return rows;
 }

@@ -42,9 +42,22 @@ const out = appendSurplus([], REAL, 97).join('\n')
 console.log('\n--- rendered ---\n' + out + '\n----------------\n')
 
 ok('总数还在', out.includes('+97 units'))
-ok('分成两块', out.includes('✅ Fixable') && out.includes('No source anywhere'))
-ok('可修的点名来源房间', out.includes('Master Inventory has 36'), out)
-ok('可修的三条都在', ['Hololive', 'FB03', 'Epic Seven'].every(n => out.includes(n)))
+ok('仍然分成两块', out.includes('stock exists elsewhere') && out.includes('No source anywhere'))
+// 2026-09-06: the three assertions that used to live here pinned the OLD
+// behaviour — per-SKU names and "Master Inventory has 36" — i.e. they were
+// requiring exactly the verbosity Gary asked to remove ("太长 fixable 其实没
+// 必要 没人会做什么"). Same shape as the 8/26 lesson: an old assertion can be
+// the thing demanding the bug. Replaced with the new contract.
+ok('可修那块压成一行', (() => {
+  const seg = out.split('stock exists elsewhere')[1].split('\n\n')[0]
+  return !seg.includes('•')          // no per-SKU bullets
+})(), out)
+ok('可修那块不再点名来源房间', !out.includes('Master Inventory has 36'), out)
+ok('可修那块不再要求 Move', !out.includes('record a Move in from below'), out)
+ok('可修的条数和件数还在', out.includes('3 SKU(s) (+9)'), out)
+// The count must still be honest even though the names are gone — a collapsed
+// line that loses the number would just be a nicer way of hiding the problem.
+ok('可修的产品名不再出现在消息里', !['Hololive', 'FB03', 'Epic Seven'].some(n => out.includes(n)), out)
 ok('查无来路的不再被要求 Move',
    !out.split('No source anywhere')[1].includes('Record a Move'), out)
 ok('明说别动库存', out.includes('Do NOT adjust stock'))

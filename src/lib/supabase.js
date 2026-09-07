@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { isLedgerRoomName } from './countRooms.js'
+import { isBreakableBox, packSiblingRows } from './countSiblings.js'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://dqreqevbjszercgackuc.supabase.co'
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxcmVxZXZianN6ZXJjZ2Fja3VjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NzU4NzcsImV4cCI6MjA5MzA1MTg3N30.vDu1lA5SJLpA_mRhAF5JkVSreP_F4Q9g_Ta-9xm-UdU'
@@ -1546,7 +1547,43 @@ export const fetchInventoryForRoom = async (locationId) => {
   // two duplicates retired on 8/19 popped straight back onto the Packheads
   // sheet. Only an explicit active=false is excluded (never-set stays in),
   // same rule as the duplicate guard.
-  return (data || []).filter(r => r.product?.active !== false).sort((a, b) => {
+  const rows = (data || []).filter(r => r.product?.active !== false)
+
+  // A breakable box on the sheet drags its LOOSE PACK sibling on too, even at
+  // zero. Without this the packs a broken box turned into have nowhere to be
+  // written, so they land on the box row and read as surplus boxes — Marvel
+  // Allegiance was reported +22 that way twenty-four times by four counters,
+  // and priced at the box basis it looked like $2,618 against a real $81.84.
+  // The 48h zero grace above cannot reach these: that row had been zero for
+  // five days, and a row that has never held stock is never in the window.
+  //
+  // Fail-open: if the sibling lookup errors, the sheet is exactly what it was
+  // before. A count that cannot start is worse than a count missing a row.
+  try {
+    const boxes = rows.filter(r => isBreakableBox(r.product))
+    if (boxes.length) {
+      const { data: packProducts } = await supabase
+        .from('products')
+        .select('id, name, brand, language, type, variant, category, packs_per_box, active')
+        .eq('type', 'Pack')
+      const extra = packSiblingRows(rows, packProducts || [], (sib, from) => ({
+        id: `sibling:${sib.id}`,          // not a real inventory row id
+        product_id: sib.id,
+        location_id: locationId,
+        quantity: 0,
+        avg_cost_basis: null,
+        product: sib,
+        // The count page uses this to say why a zero row is on the sheet at
+        // all; without a reason it just looks like clutter and gets skipped.
+        sibling_of: from.product?.name || null,
+      }))
+      rows.push(...extra)
+    }
+  } catch (e) {
+    console.warn('[count] pack-sibling lookup failed; sheet unchanged', e)
+  }
+
+  return rows.sort((a, b) => {
     const brandCompare = (a.product?.brand || '').localeCompare(b.product?.brand || '')
     if (brandCompare !== 0) return brandCompare
     return (a.product?.name || '').localeCompare(b.product?.name || '')

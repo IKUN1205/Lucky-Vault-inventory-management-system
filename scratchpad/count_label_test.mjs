@@ -56,8 +56,14 @@ appendSurplus(out, [
     elsewhere: 0, streak: 2, since: '2026-08-17T00:00:00Z' },
 ], 21)
 const txt = out.join('\n')
-has(txt, 'Hololive: Ayakashi Vermillion · Booster Box +6', 'fixable line is short; this block really does mix EN and JP, so both are tagged')
-has(txt, 'Master Inventory has 36', 'the actionable half survives shortening')
+// 2026-09-06: the fixable block is now ONE line with no SKU names (Gary: "太长
+// fixable 其实没必要 没人会做什么"), so these two assertions were pinning the
+// removed behaviour. Language tagging still matters — it just has to be checked
+// where names still appear, i.e. the "no source" block.
+has(txt, '1 SKU(s) (+6)', 'fixable collapses to a count, and the count is still honest')
+hasnt(txt, 'Master Inventory has 36', 'fixable no longer names source rooms')
+hasnt(txt, 'Hololive', 'fixable no longer names SKUs')
+has(txt, 'Booster Box [JP] +12', 'this block mixes EN and JP, so the surviving names are tagged')
 hasnt(txt, 'One Piece |', 'no pipe columns left anywhere')
 hasnt(txt, '[JP] OP-13', 'the language prefix is stripped from the name')
 
