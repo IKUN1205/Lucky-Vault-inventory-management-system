@@ -467,14 +467,36 @@ export default async function handler(req, res) {
     let backsync = { skipped: 'env not set' }
     let soldRows = []
     try {
-      const soldQuery = await supabase
-        .from('slabs')
-        .select('cert_number, item_name, grading_company, market_price_usd, lv_price_usd, list_price_usd, last_sold_usd, sale_channel, sale_date, sale_price_usd')
-        .eq('status', 'sold')
-        .eq('deleted', false)
-        .not('cert_number', 'is', null)
-        .limit(5000)
-      soldRows = soldQuery.data || []
+      // PostgREST caps a response at 1000 rows server-side, so the old
+      // `.limit(5000)` silently returned 1000 of the 1351 sold slabs (verified
+      // 2026-09-08). Page explicitly, and ALWAYS with an order — an unordered
+      // paged read repeats and drops rows without erroring.
+      const SOLD_COLS = 'id, cert_number, item_name, grading_company, market_price_usd, lv_price_usd, list_price_usd, last_sold_usd, sale_channel, sale_date, sale_price_usd'
+      // Accumulate into a LOCAL array and only publish it once every page
+      // succeeded. Assigning page-by-page into `soldRows` would leave a partial
+      // result behind when page 2 throws — the catch below swallows the error,
+      // and the ledger step further down would then run against a short list
+      // and quietly under-archive. Half a result set is worse than none here.
+      const collected = []
+      let complete = false
+      for (let from = 0; from < 40000; from += 1000) {
+        const page = await supabase
+          .from('slabs')
+          .select(SOLD_COLS)
+          .eq('status', 'sold')
+          .eq('deleted', false)
+          .not('cert_number', 'is', null)
+          .order('id', { ascending: true })
+          .range(from, from + 999)
+        if (page.error) throw new Error(page.error.message)
+        const got = page.data || []
+        collected.push(...got)
+        if (got.length < 1000) { complete = true; break }
+      }
+      // Falling out of the loop with a full last page means the 40k bound cut
+      // us off mid-set. Don't treat a truncated read as the whole truth.
+      if (!complete) throw new Error(`sold-slab paging hit the 40000-row bound with a full page (${collected.length} read) — refusing a truncated result set`)
+      soldRows = collected
       const soldIds = new Set(soldRows.map(r => String(r.cert_number).trim()).filter(Boolean))
       backsync = await backsyncSoldStatus({
         spreadsheetId: SHEET_ID,
@@ -504,17 +526,58 @@ export default async function handler(req, res) {
     const LEDGER_APPEND_CAP = 80   // backfill was one-time; a burst above this = something's wrong
     let soldLedger = { appended: 0 }
     try {
-      const ledgerCol = await readRange(SHEET_ID, `${SOLD_LEDGER_TAB}!A1:A10000`)
+      // `A:A`, not `A1:A10000`. Both archives are append-only and never pruned;
+      // the moment one passes row 10000 a fixed bound would hide the oldest
+      // certs from the dedupe again and re-append them — permanently, since
+      // rows here are never deleted. Same class of bug as the TOTAL break below.
+      const ledgerCol = await readRange(SHEET_ID, `${SOLD_LEDGER_TAB}!A:A`)
       const inLedger = new Set()
-      let totalRowIdx = -1   // 0-based row index of the TOTAL row
+      let totalRowIdx = -1   // 0-based row index of the FIRST TOTAL row
+      // Scan the WHOLE column. This used to `break` at TOTAL, which made the
+      // dedupe blind to everything below it — and scripts/sold_pipeline.py in
+      // the slab-inventory repo appends after the last content row, i.e. BELOW
+      // TOTAL. On 2026-09-08 that was 261 cert rows invisible here, 143 of
+      // which this job wanted to append a second time. Rows in this tab are
+      // never deleted, so a duplicate is permanent.
       for (let r = 0; r < (ledgerCol || []).length; r++) {
         const v = String(ledgerCol[r]?.[0] || '').trim()
-        if (/^total$/i.test(v)) { totalRowIdx = r; break }
+        if (/^total$/i.test(v)) { if (totalRowIdx < 0) totalRowIdx = r; continue }
         if (/^\d+$/.test(v)) inLedger.add(v)
       }
+      // There are TWO archive destinations, not one: sold_pipeline.py maps
+      // Pokemon Master -> 'sold sheet' and One Piece Master -> 'OP sold sheet'.
+      // A cert archived into the OP tab is still archived. Fail CLOSED if this
+      // read throws — an incomplete dedupe set is exactly how duplicates get in.
+      const OP_LEDGER_TAB = 'OP sold sheet'
+      const opCol = await readRange(SHEET_ID, `${OP_LEDGER_TAB}!A:A`)
+      for (const row of opCol || []) {
+        const v = String(row?.[0] || '').trim()
+        if (/^\d+$/.test(v)) inLedger.add(v)
+      }
+      // A cert is archived exactly ONCE — after that it lives in inLedger and
+      // this job never revisits it. So an incomplete record archived today is
+      // incomplete permanently, even if the missing field is filled in later.
+      // Hold a slab back until its sale record is whole, and COUNT what's held:
+      // skipping is the decision, skipping silently is how a decision turns
+      // back into a mystery six weeks from now.
+      const hasVal = v => v !== null && v !== undefined && v !== ''
+      const pending = soldRows.filter(r => {
+        const c = String(r.cert_number || '').trim()
+        return c && !inLedger.has(c)
+      })
+      // 591 today — the approved 2026-08-26/28 status catch-up, which booked
+      // its revenue in prior months and carries no date or price.
+      const heldNoDate = pending.filter(r => !hasVal(r.sale_date)).length
+      const heldNoPrice = pending.filter(
+        r => hasVal(r.sale_date) && !hasVal(r.sale_price_usd)).length
       const missing = soldRows
         .map(r => ({ ...r, cert: String(r.cert_number).trim() }))
-        .filter(r => r.cert && !inLedger.has(r.cert))
+        // A sold ledger answers "when did this sell, and for how much". Require
+        // BOTH before archiving. The 2026-08-26/28 bulk reconciliation marked
+        // 764 slabs sold with neither (revenue was already booked in prior
+        // months) — those are status catch-ups, not sales.
+        .filter(r => r.cert && hasVal(r.sale_date) && hasVal(r.sale_price_usd)
+          && !inLedger.has(r.cert))
         // stable order: oldest sale first so the ledger reads chronologically
         .sort((a, b) => String(a.sale_date || '').localeCompare(String(b.sale_date || '')))
       // de-dupe within this batch (duplicate cert rows in the app)
@@ -534,9 +597,10 @@ export default async function handler(req, res) {
         if (sale) row[10] = row[10] ? `${row[10]} | sold: ${sale}` : `sold: ${sale}`
         newRows.push(row)
       }
+      console.log(`[sync-slabs-sheet] sold ledger: ${soldRows.length} sold in db, ${inLedger.size} already archived across both tabs, ${newRows.length} to append, ${heldNoDate} held back with no sale_date, ${heldNoPrice} with a date but no price`)
       if (newRows.length > LEDGER_APPEND_CAP) {
-        soldLedger = { appended: 0, skipped_cap: newRows.length }
-        await postLark(`⚠️ Slabs sync: ${newRows.length} sold slabs would be appended to "${SOLD_LEDGER_TAB}" in one run (cap ${LEDGER_APPEND_CAP}) — skipped as a safety stop, check the tab.`)
+        soldLedger = { appended: 0, skipped_cap: newRows.length, held_no_sale_date: heldNoDate, held_no_sale_price: heldNoPrice }
+        await postLark(`⚠️ Slabs sync: ${newRows.length} sold slabs would be appended to "${SOLD_LEDGER_TAB}" in one run (cap ${LEDGER_APPEND_CAP}) — skipped as a safety stop, check the tab. (${heldNoDate} more held back with no sale_date + ${heldNoPrice} with no price — NOT part of that count.)`)
       } else if (newRows.length > 0) {
         if (totalRowIdx >= 0) {
           // open space above TOTAL, then write into it
@@ -561,8 +625,12 @@ export default async function handler(req, res) {
             { range: `${SOLD_LEDGER_TAB}!A${start}:L${start + newRows.length - 1}`, values: newRows },
           ])
         }
-        soldLedger = { appended: newRows.length }
+        soldLedger = { appended: newRows.length, held_no_sale_date: heldNoDate, held_no_sale_price: heldNoPrice }
         console.log(`[sync-slabs-sheet] sold ledger: appended ${newRows.length} row(s)`)
+      } else {
+        // Nothing to append is the healthy steady state — but still carry the
+        // held-back count out, so "0 appended" never reads as "nothing pending".
+        soldLedger = { appended: 0, held_no_sale_date: heldNoDate, held_no_sale_price: heldNoPrice }
       }
     } catch (e) {
       console.warn('[sync-slabs-sheet] sold ledger threw (non-fatal):', e.message)
