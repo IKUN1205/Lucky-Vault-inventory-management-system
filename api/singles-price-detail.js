@@ -11,6 +11,7 @@
 //
 // Response: { found, name, market, detail } (all null when not found).
 
+import { fetchRetry } from './_lib/google-sheets.js'
 const SHEET_ID = '14nuc6ckt5iPRAFkm7P6NAupbn_uXLwGyUsuVzQGFw80'
 const SHEET_TABS = ['Master Singles', 'New Singles ']   // trailing space intentional
 const buildSheetUrl = (sheetName) =>
@@ -56,7 +57,9 @@ export default async function handler(req, res) {
     // header cell ("TCG ID") anyway. Keep the LAST match within a tab to
     // mirror the sync route's later-row-wins Map semantics.
     for (const tab of SHEET_TABS) {
-      const resp = await fetch(buildSheetUrl(tab))
+      // 同样带退避重试:这里失败是 `continue`,也就是**静默跳过一个 tab**,
+      // 结果是"查不到这张卡"——一次 Google 抖动会变成一个错误答案,比报错更糟。
+      const resp = await fetchRetry(buildSheetUrl(tab), {}, { tries: 3, label: 'gviz:detail' })
       if (!resp.ok) continue
       const rows = parseCSV(await resp.text())
       let match = null

@@ -20,7 +20,7 @@
 // could do is replay prices, no destructive side effects).
 
 import { createClient } from '@supabase/supabase-js'
-import { backsyncSoldStatus } from './_lib/google-sheets.js'
+import { backsyncSoldStatus, fetchRetry } from './_lib/google-sheets.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -161,7 +161,8 @@ export default async function handler(req, res) {
     const allRows = []   // { tab, row[] }
     for (const tab of SHEET_TABS) {
       const url = buildSheetUrl(tab.name)
-      const csvResp = await fetch(url)
+      // 带退避重试:Google 的 gviz 偶发 429/5xx,一次抖动不该炸掉整点这一轮。
+      const csvResp = await fetchRetry(url, {}, { tries: 4, label: 'gviz:' + tab.label })
       if (!csvResp.ok) {
         const msg = `Sheet fetch failed for "${tab.name}": HTTP ${csvResp.status}`
         console.error('[sync-singles-sheet]', msg)

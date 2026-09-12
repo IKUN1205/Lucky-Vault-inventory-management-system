@@ -40,8 +40,14 @@ const b64url = (buf) =>
 // caller throws with the real status + body as before. Network errors retry too.
 // Bounded (default 4 tries, ~0.4+0.8+1.6s ≈ 2.8s worst case) so it stays well
 // within the Vercel cron function budget.
+// 2026-09-12: exported. The gviz CSV endpoint (docs.google.com/.../gviz/tq)
+// is a DIFFERENT door into the same data and it was being called with a bare
+// fetch() — so the Sheets API path had this backoff while the CSV path had
+// none. A single transient 504 from Google there failed the whole hourly cron
+// and fired "⚠️ Hourly auto-audit FAILED — Gateway Timeout" at 08:45 PT.
+// Same upstream, same flakiness — it gets the same retry.
 const _RETRYABLE = new Set([429, 500, 502, 503, 504])
-async function fetchRetry(url, options = {}, { tries = 4, label = 'sheets' } = {}) {
+export async function fetchRetry(url, options = {}, { tries = 4, label = 'sheets' } = {}) {
   let lastResp = null
   let lastErr = null
   for (let attempt = 0; attempt < tries; attempt++) {
