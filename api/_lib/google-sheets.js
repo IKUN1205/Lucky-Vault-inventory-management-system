@@ -212,6 +212,23 @@ export async function appendRows(spreadsheetId, range, rows) {
   return await resp.json()
 }
 
+// Wipe the VALUES in a range (rows stay, formatting stays). Used by
+// daily-stream-plan ?clear=1 to redo a day tab's goods list.
+export async function clearRange(spreadsheetId, range) {
+  const token = await getAccessToken()
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/`
+    + `${encodeURIComponent(range)}:clear`
+  const resp = await fetchRetry(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+  }, { label: 'clearRange' })
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`clearRange failed (${resp.status}): ${text}`)
+  }
+  return await resp.json()
+}
+
 /**
  * Hourly back-sync helper used by sync-singles-sheet + sync-slabs-sheet.
  *

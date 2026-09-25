@@ -20,8 +20,12 @@
 //                    — expand the goods list into rows (one per unit) in that
 //                      streamer's tab for the day. Refuses if the tab already
 //                      has rows, unless ?force=1 (append anyway).
+//   POST ?clear=1 { date?, streamer }
+//                    — wipe the goods rows in that streamer's day tab so it
+//                      can be refilled (William reassigns a batch). Only works
+//                      on today's or a future date — past tabs are history.
 
-import { readRange, appendRows, getSheetIds, addSheetTab, moveSheetTab } from './_lib/google-sheets.js'
+import { readRange, appendRows, clearRange, getSheetIds, addSheetTab, moveSheetTab } from './_lib/google-sheets.js'
 
 const CRON_SECRET = process.env.CRON_SECRET
 const SHEET_ID = process.env.STREAM_PLAN_SHEET_ID
@@ -68,7 +72,7 @@ function findDayTab(tabTitles, md, name) {
 
 export default async function handler(req, res) {
   if (CRON_SECRET && req.headers.authorization !== `Bearer ${CRON_SECRET}`
-      && !req.query?.dry && !req.query?.date && !req.query?.fill) {
+      && !req.query?.dry && !req.query?.date && !req.query?.fill && !req.query?.clear) {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 
@@ -101,6 +105,29 @@ export default async function handler(req, res) {
       await appendRows(SHEET_ID, a1(tab, 'A1'), rows)
       return res.status(200).json({ ok: true, tab, rows_written: rows.length,
         items: items.map(i => `${i.name} ×${i.qty}${i.price != null ? ` @${i.price}` : ''}`) })
+    } catch (err) {
+      return res.status(500).json({ error: String(err?.message || err) })
+    }
+  }
+
+  // ---- clear: wipe a day tab's rows so the batch can be redone ---------
+  if (req.query?.clear) {
+    try {
+      const { streamer } = body
+      if (!streamer) {
+        return res.status(400).json({ error: 'POST JSON body needs { streamer } (date optional)' })
+      }
+      // Past tabs are the team's sales record — never wipe them.
+      if (date < ptToday()) {
+        return res.status(400).json({ error: `refusing to clear a past date (${date}) — batch tabs are history once the stream ran` })
+      }
+      const tabs = [...(await getSheetIds(SHEET_ID)).keys()]
+      const tab = findDayTab(tabs, md, streamer)
+      if (!tab) return res.status(404).json({ error: `no tab for ${streamer} on ${md}` })
+      const before = await readRange(SHEET_ID, a1(tab, 'A:A'))
+      const rowsBefore = Array.isArray(before) ? before.filter(r => r?.length).length : 0
+      await clearRange(SHEET_ID, a1(tab, 'A:C'))
+      return res.status(200).json({ ok: true, tab, rows_cleared: rowsBefore })
     } catch (err) {
       return res.status(500).json({ error: String(err?.message || err) })
     }
