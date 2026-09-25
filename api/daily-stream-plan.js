@@ -18,7 +18,7 @@
 //   new TikTok account→ "Stream Room - PokeCasino"       (Jacob / Jace)
 
 import { createClient } from '@supabase/supabase-js'
-import { readRange, appendRows, getSheetIds, addSheetTab, deleteRows } from './_lib/google-sheets.js'
+import { readRange, appendRows, getSheetIds, addSheetTab, deleteRows, batchUpdateValues } from './_lib/google-sheets.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -134,6 +134,31 @@ export default async function handler(req, res) {
 
   if (req.query?.dry) {
     return res.status(200).json({ ok: true, dry: true, date, header: HEADER, rows })
+  }
+
+  if (req.query?.setbatch) {
+    // Fill the Batch column (F) of one session row from chat: William pastes
+    // a surprise-set list, Claude posts { date, streamer, batch } here.
+    // Match = date cell (string or serial) + streamer name in column C.
+    try {
+      const body = typeof req.body === 'object' && req.body ? req.body : {}
+      const bDate = body.date || date
+      const bStreamer = body.streamer || req.query?.streamer
+      const bBatch = body.batch
+      if (!bStreamer || !bBatch) {
+        return res.status(400).json({ error: 'POST JSON body needs { streamer, batch } (date optional, defaults today)' })
+      }
+      const grid = await readRange(SHEET_ID, `${TAB}!A:C`)
+      const rowsArr = Array.isArray(grid) ? grid : []
+      const hit = rowsArr.findIndex(r => matchesDate(r?.[0], bDate) && String(r?.[2] || '').trim() === bStreamer)
+      if (hit < 0) {
+        return res.status(404).json({ error: `no row for ${bStreamer} on ${bDate} — run the daily plan first` })
+      }
+      await batchUpdateValues(SHEET_ID, [{ range: `${TAB}!F${hit + 1}`, values: [[bBatch]] }])
+      return res.status(200).json({ ok: true, date: bDate, streamer: bStreamer, row: hit + 1, batch: bBatch })
+    } catch (err) {
+      return res.status(500).json({ error: String(err?.message || err) })
+    }
   }
 
   if (req.query?.dedupe) {
