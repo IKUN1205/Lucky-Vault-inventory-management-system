@@ -21,7 +21,7 @@
 //                      streamer's tab for the day. Refuses if the tab already
 //                      has rows, unless ?force=1 (append anyway).
 
-import { readRange, appendRows, getSheetIds, addSheetTab } from './_lib/google-sheets.js'
+import { readRange, appendRows, getSheetIds, addSheetTab, moveSheetTab } from './_lib/google-sheets.js'
 
 const CRON_SECRET = process.env.CRON_SECRET
 const SHEET_ID = process.env.STREAM_PLAN_SHEET_ID
@@ -106,6 +106,24 @@ export default async function handler(req, res) {
     }
   }
 
+  // ---- movefront: pin the day's tabs to the front, roster order --------
+  if (req.query?.movefront) {
+    try {
+      const tabMap = await getSheetIds(SHEET_ID)
+      const titles = [...tabMap.keys()]
+      const dayTabs = ROSTER
+        .map(s => findDayTab(titles, md, s.displayName))
+        .filter(Boolean)
+      for (let i = 0; i < dayTabs.length; i++) {
+        await moveSheetTab(SHEET_ID, tabMap.get(dayTabs[i]), i)
+      }
+      const after = [...(await getSheetIds(SHEET_ID)).keys()].slice(0, dayTabs.length + 2)
+      return res.status(200).json({ ok: true, moved: dayTabs, tab_bar_now_starts_with: after })
+    } catch (err) {
+      return res.status(500).json({ error: String(err?.message || err) })
+    }
+  }
+
   // ---- daily: create today's empty tabs, one per on-shift streamer -----
   const onShift = ROSTER.filter(s => s.days.includes(dow))
   if (!onShift.length) {
@@ -123,7 +141,9 @@ export default async function handler(req, res) {
         would_create: names,
         skipped: onShift.filter(s => findDayTab(tabs, md, s.displayName)).map(s => s.displayName) })
     }
-    for (const n of names) await addSheetTab(SHEET_ID, n)   // created EMPTY
+    // Created EMPTY and pinned to the FRONT of the tab bar (William 2026-09-24:
+    // today's tabs first so he sees them without scrolling), in roster order.
+    for (let i = 0; i < names.length; i++) await addSheetTab(SHEET_ID, names[i], i)
     return res.status(200).json({ ok: true, date, batchNo, created: names,
       skipped: onShift.filter(s => findDayTab(tabs, md, s.displayName)).map(s => s.displayName) })
   } catch (err) {

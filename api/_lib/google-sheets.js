@@ -482,14 +482,15 @@ export function cellA1(tabName, row, col) {
  * No-op guard is the CALLER's job (check getSheetIds first) — Sheets API
  * errors if a tab with the same title already exists.
  */
-export async function addSheetTab(spreadsheetId, title) {
+export async function addSheetTab(spreadsheetId, title, index) {
   const token = await getAccessToken()
+  const properties = index == null ? { title } : { title, index }
   const resp = await fetchRetry(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] }),
+      body: JSON.stringify({ requests: [{ addSheet: { properties } }] }),
     },
     { label: 'addSheetTab' }
   )
@@ -527,5 +528,29 @@ export async function deleteRows(spreadsheetId, sheetId, startIndex, count) {
   if (!resp.ok) {
     const text = await resp.text()
     throw new Error(`deleteRows failed (${resp.status}): ${text}`)
+  }
+}
+
+
+/**
+ * Move an existing tab to a position in the tab bar (0 = first).
+ * Idempotent-ish: moving to the index it already occupies is a no-op.
+ */
+export async function moveSheetTab(spreadsheetId, sheetId, index) {
+  const token = await getAccessToken()
+  const resp = await fetchRetry(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requests: [{ updateSheetProperties: { properties: { sheetId, index }, fields: 'index' } }],
+      }),
+    },
+    { label: 'moveSheetTab' }
+  )
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`moveSheetTab failed (${resp.status}): ${text}`)
   }
 }
