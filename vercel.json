@@ -37,6 +37,10 @@
     {
       "path": "/api/sync-digest-eod",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/daily-stream-plan",
+      "schedule": "0 12 * * *"
     }
   ]
 }

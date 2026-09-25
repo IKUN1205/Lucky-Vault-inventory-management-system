@@ -476,3 +476,27 @@ export function colToA1(col) {
 export function cellA1(tabName, row, col) {
   return `${tabName}!${colToA1(col)}${row + 1}`
 }
+
+/**
+ * Create a new tab (sheet) in the spreadsheet. Returns its sheetId.
+ * No-op guard is the CALLER's job (check getSheetIds first) — Sheets API
+ * errors if a tab with the same title already exists.
+ */
+export async function addSheetTab(spreadsheetId, title) {
+  const token = await getAccessToken()
+  const resp = await fetchRetry(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] }),
+    },
+    { label: 'addSheetTab' }
+  )
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`addSheetTab failed (${resp.status}): ${text}`)
+  }
+  const data = await resp.json()
+  return data.replies?.[0]?.addSheet?.properties?.sheetId
+}
