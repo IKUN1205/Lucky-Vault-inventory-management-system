@@ -500,3 +500,32 @@ export async function addSheetTab(spreadsheetId, title) {
   const data = await resp.json()
   return data.replies?.[0]?.addSheet?.properties?.sheetId
 }
+
+/**
+ * Delete rows [startIndex, startIndex+count) (0-based, header = row 0).
+ * Like insertRows, NOT routed through fetchRetry: deleteDimension is a
+ * relative mutation — a blind retry after a lost response would delete
+ * EXTRA rows. A rare transient just fails this call; caller re-runs.
+ */
+export async function deleteRows(spreadsheetId, sheetId, startIndex, count) {
+  if (!count || count <= 0) return
+  const token = await getAccessToken()
+  const resp = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requests: [{
+          deleteDimension: {
+            range: { sheetId, dimension: 'ROWS', startIndex, endIndex: startIndex + count },
+          },
+        }],
+      }),
+    }
+  )
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`deleteRows failed (${resp.status}): ${text}`)
+  }
+}

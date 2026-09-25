@@ -18,7 +18,7 @@
 //   new TikTok account→ "Stream Room - PokeCasino"       (Jacob / Jace)
 
 import { createClient } from '@supabase/supabase-js'
-import { readRange, appendRows, getSheetIds, addSheetTab } from './_lib/google-sheets.js'
+import { readRange, appendRows, getSheetIds, addSheetTab, deleteRows } from './_lib/google-sheets.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
@@ -65,6 +65,14 @@ function ptToday() {
 }
 // Day-of-week for a YYYY-MM-DD, DST-safe (noon UTC trick).
 const dowOf = ymd => new Date(`${ymd}T12:00:00Z`).getUTCDay()
+// Google Sheets date serial (epoch 1899-12-30). USER_ENTERED parses our
+// YYYY-MM-DD into a date cell, and UNFORMATTED_VALUE reads it back as this
+// serial number — so date matching must accept both forms.
+const sheetSerial = ymd => {
+  const [y, m, d] = ymd.split('-').map(Number)
+  return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 86400000)
+}
+const matchesDate = (cell, ymd) => cell === ymd || Number(cell) === sheetSerial(ymd)
 
 // Top sealed stock at a location, as a compact "Name ×N" list.
 async function stockRef(supabase, locationName, topN = 8) {
@@ -128,6 +136,27 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, dry: true, date, header: HEADER, rows })
   }
 
+  if (req.query?.dedupe) {
+    // One-off repair: keep the FIRST block of rows for `date`, delete the rest.
+    try {
+      const tabs = await getSheetIds(SHEET_ID)
+      const sheetId = tabs.get(TAB)
+      if (sheetId == null) return res.status(404).json({ error: `tab ${TAB} not found` })
+      const colA = await readRange(SHEET_ID, `${TAB}!A:A`)
+      const hits = []
+      ;(Array.isArray(colA) ? colA : []).forEach((row, i) => {
+        if (matchesDate(row?.[0], date)) hits.push(i)   // 0-based incl. header row 0
+      })
+      const extras = hits.slice(sessions.length)         // beyond the first block
+      for (const idx of extras.reverse()) {              // bottom-up keeps indexes valid
+        await deleteRows(SHEET_ID, sheetId, idx, 1)
+      }
+      return res.status(200).json({ ok: true, date, kept: Math.min(hits.length, sessions.length), deleted: extras.length })
+    } catch (err) {
+      return res.status(500).json({ error: String(err?.message || err) })
+    }
+  }
+
   try {
     // Ensure the tab exists (create + header on first run).
     const tabs = await getSheetIds(SHEET_ID)
@@ -142,7 +171,7 @@ export default async function handler(req, res) {
       // on an array grabs the iterator method. Flatten the array itself.
       const existing = await readRange(SHEET_ID, `${TAB}!A:A`)
       const dates = (Array.isArray(existing) ? existing : []).flat()
-      if (dates.includes(date)) {
+      if (dates.some(v => matchesDate(v, date))) {
         return res.status(200).json({ ok: true, date, skipped: 'already written (use ?force=1 to append again)' })
       }
     }
