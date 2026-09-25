@@ -137,8 +137,11 @@ export default async function handler(req, res) {
     }
     // Idempotency: skip if this date already written (unless force).
     if (!req.query?.force) {
+      // readRange returns the rows array directly (NOT the API envelope) —
+      // and Array.prototype.values is a built-in function, so `existing?.values`
+      // on an array grabs the iterator method. Flatten the array itself.
       const existing = await readRange(SHEET_ID, `${TAB}!A:A`)
-      const dates = (existing?.values || []).flat()
+      const dates = (Array.isArray(existing) ? existing : []).flat()
       if (dates.includes(date)) {
         return res.status(200).json({ ok: true, date, skipped: 'already written (use ?force=1 to append again)' })
       }
