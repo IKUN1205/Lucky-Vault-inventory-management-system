@@ -1,6 +1,8 @@
 // api/daily-stream-plan.js
-// Daily 5 AM PT (12:00 UTC) cron: creates one EMPTY batch tab per on-shift
-// streamer in the Mystery sheet, pinned to the front of the tab bar.
+// Daily 2 PM PT (21:00 UTC) cron: creates one EMPTY batch tab per streamer
+// on shift TOMORROW in the Mystery sheet, pinned to the front of the tab
+// bar. Prep happens the day before (William 2026-09-26): tabs exist by the
+// evening so he can send the goods lists for the next day.
 //
 // Tab names are just "BATCH<n>" (William 2026-09-26: no streamer name or
 // date in the title anymore). Every tab gets its own number — max BATCH<n>
@@ -20,7 +22,8 @@
 //
 // Manual:
 //   ?dry=1           — show which tabs would be created (nothing written)
-//   ?date=YYYY-MM-DD — act on that date instead of today (PT)
+//   ?date=YYYY-MM-DD — act on that date instead of the default (PT). The
+//                      create mode defaults to TOMORROW; fill/clear to today.
 //   POST ?fill=1  { batch } or { streamer, date? }, plus items:[{name,price,qty}]
 //                    — expand the goods list into rows (one per unit).
 //                      Refuses if the tab already has rows, unless ?force=1.
@@ -55,6 +58,11 @@ function ptToday() {
   return `${g('year')}-${g('month')}-${g('day')}`
 }
 const dowOf = ymd => new Date(`${ymd}T12:00:00Z`).getUTCDay()
+function ptPlusDays(n) {
+  const d = new Date(`${ptToday()}T12:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
+}
 const mdOf = ymd => `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8, 10))}`
 // Tab names may contain "/" — always quote them in A1 ranges.
 const a1 = (tab, ref) => `'${tab}'!${ref}`
@@ -131,9 +139,11 @@ export default async function handler(req, res) {
   }
 
   const body = (typeof req.body === 'object' && req.body) ? req.body : {}
-  const date = req.query?.date || body.date || ptToday()
+  const explicitDate = req.query?.date || body.date || null
+  // fill/clear/movefront default to today; the daily CREATE mode defaults
+  // to TOMORROW (prep runs the afternoon before).
+  const date = explicitDate || ptToday()
   const md = mdOf(date)
-  const dow = dowOf(date)
 
   // ---- fill: expand a goods list into one-row-per-unit -----------------
   if (req.query?.fill) {
@@ -213,24 +223,26 @@ export default async function handler(req, res) {
     }
   }
 
-  // ---- daily: create the day's empty tabs, one per on-shift streamer ---
-  const onShift = ROSTER.filter(s => s.days.includes(dow))
+  // ---- daily: create TOMORROW's empty tabs, one per on-shift streamer --
+  const target = explicitDate || ptPlusDays(1)
+  const targetMd = mdOf(target)
+  const onShift = ROSTER.filter(s => s.days.includes(dowOf(target)))
   if (!onShift.length) {
-    return res.status(200).json({ ok: true, date, message: '当天没人排班,不建 tab', created: [] })
+    return res.status(200).json({ ok: true, date: target, message: '当天没人排班,不建 tab', created: [] })
   }
 
   try {
     const tabMap = await getSheetIds(SHEET_ID)
     const tabs = [...tabMap.keys()]
-    const logged = new Set((await logRows(date)).map(r => String(r[2] || '').toLowerCase()))
+    const logged = new Set((await logRows(target)).map(r => String(r[2] || '').toLowerCase()))
     const todo = onShift.filter(s => !logged.has(s.displayName.toLowerCase())
-      && !findDayTab(tabs, md, s.displayName))
+      && !findDayTab(tabs, targetMd, s.displayName))
     const skipped = onShift.filter(s => !todo.includes(s)).map(s => s.displayName)
     const batchNo = maxBatchNumber(tabs) + 1
     const plan = todo.map((s, i) => ({ tab: `BATCH${batchNo + i}`, streamer: s.displayName }))
 
     if (req.query?.dry) {
-      return res.status(200).json({ ok: true, dry: true, date, would_create: plan, skipped })
+      return res.status(200).json({ ok: true, dry: true, date: target, would_create: plan, skipped })
     }
     // _LOG lives at the far end of the tab bar; create it on first use.
     if (!tabMap.has(LOG_TAB)) await addSheetTab(SHEET_ID, LOG_TAB)
@@ -239,9 +251,9 @@ export default async function handler(req, res) {
     for (let i = 0; i < plan.length; i++) await addSheetTab(SHEET_ID, plan[i].tab, i)
     if (plan.length) {
       await appendRows(SHEET_ID, a1(LOG_TAB, 'A1'),
-        plan.map(p => [`'${date}`, Number(p.tab.replace('BATCH', '')), p.streamer]))
+        plan.map(p => [`'${target}`, Number(p.tab.replace('BATCH', '')), p.streamer]))
     }
-    return res.status(200).json({ ok: true, date, created: plan, skipped })
+    return res.status(200).json({ ok: true, date: target, created: plan, skipped })
   } catch (err) {
     console.error('[daily-stream-plan] failed:', err)
     return res.status(500).json({ error: String(err?.message || err) })
