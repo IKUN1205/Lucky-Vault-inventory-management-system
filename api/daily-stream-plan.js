@@ -1,40 +1,45 @@
 // api/daily-stream-plan.js
-// Daily 5 AM PT (12:00 UTC) cron: creates each on-shift streamer's EMPTY
-// batch tab in the Mystery sheet, named exactly like the team's manual ones:
-//   "M/D BATCH<n> <Streamer>"   e.g.  "9/25 BATCH25 LEXI"
+// Daily 5 AM PT (12:00 UTC) cron: creates one EMPTY batch tab per on-shift
+// streamer in the Mystery sheet, pinned to the front of the tab bar.
 //
-// Format learned from the team's real tabs (2026-09-24 screenshot):
-//   - one tab per streamer per day, created blank (no header row)
-//   - BATCH number auto-continues: max BATCH<n> across all tab titles + 1;
-//     every tab created in the same run shares that new number
-//   - rows are added later, one ROW PER UNIT: col A = product name (William's
-//     wording), col B = sell price (he sends it with the goods list),
-//     col C = #number — left for the team to fill during prep/stream
-//   - existing tabs are NEVER modified; a streamer who already has a tab for
-//     the day is skipped
+// Tab names are just "BATCH<n>" (William 2026-09-26: no streamer name or
+// date in the title anymore). Every tab gets its own number — max BATCH<n>
+// across ALL tab titles (old "M/D BATCH<n> <Streamer>" ones included) + 1.
+//
+// Who each BATCH belongs to lives in the "_LOG" tab at the far END of the
+// tab bar: one row per created tab — date | batch | streamer. The cron uses
+// it to stay idempotent (a re-run skips already-logged streamers), and
+// fill/clear use it to resolve "streamer + date" → tab. The date is written
+// with a leading apostrophe so Sheets keeps it as text (no serial-number
+// round-trip surprises).
+//
+// Rows are added later, one ROW PER UNIT: col A = product name (William's
+// wording), col B = sell price (he sends it with the goods list),
+// col C = #number — left for the team to fill during prep/stream.
+// Existing tabs are NEVER modified; pre-2026-09-26 tabs keep their old names.
 //
 // Manual:
 //   ?dry=1           — show which tabs would be created (nothing written)
 //   ?date=YYYY-MM-DD — act on that date instead of today (PT)
-//   POST ?fill=1 { date?, streamer, items: [{ name, price, qty }] }
-//                    — expand the goods list into rows (one per unit) in that
-//                      streamer's tab for the day. Refuses if the tab already
-//                      has rows, unless ?force=1 (append anyway).
-//   POST ?clear=1 { date?, streamer }
-//                    — wipe the goods rows in that streamer's day tab so it
-//                      can be refilled (William reassigns a batch). Only works
-//                      on today's or a future date — past tabs are history.
+//   POST ?fill=1  { batch } or { streamer, date? }, plus items:[{name,price,qty}]
+//                    — expand the goods list into rows (one per unit).
+//                      Refuses if the tab already has rows, unless ?force=1.
+//   POST ?clear=1 { batch } or { streamer, date? }
+//                    — wipe the goods rows so the batch can be refilled
+//                      (William reassigns a batch). Tabs from past days are
+//                      refused — a streamed batch tab is the sales record.
 
 import { readRange, appendRows, clearRange, getSheetIds, addSheetTab, moveSheetTab } from './_lib/google-sheets.js'
 
 const CRON_SECRET = process.env.CRON_SECRET
 const SHEET_ID = process.env.STREAM_PLAN_SHEET_ID
   || '14VritEQcTHAxg2VYybPsK9aC9tLKKwe_yqJxrf4rSl0'
+const LOG_TAB = '_LOG'
 
 export const config = { maxDuration: 60 }
 
 // ---- roster + shifts (PT). getDay(): Sun=0 … Sat=6 ---------------------
-// displayName matches the team's tab spelling exactly (LEXI is caps).
+// displayName matches how William refers to each streamer (LEXI is caps).
 const ROSTER = [
   { displayName: 'Quynh', days: [1, 2, 4, 5] },
   { displayName: 'LEXI',  days: [1, 2, 4, 5, 6] },
@@ -51,10 +56,10 @@ function ptToday() {
 }
 const dowOf = ymd => new Date(`${ymd}T12:00:00Z`).getUTCDay()
 const mdOf = ymd => `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8, 10))}`
-// Tab names contain "/" — always quote them in A1 ranges.
+// Tab names may contain "/" — always quote them in A1 ranges.
 const a1 = (tab, ref) => `'${tab}'!${ref}`
 
-// Highest BATCH<n> across every tab title (manual or ours).
+// Highest BATCH<n> across every tab title (old format, new format, manual).
 function maxBatchNumber(tabTitles) {
   let max = 0
   for (const t of tabTitles) {
@@ -64,10 +69,59 @@ function maxBatchNumber(tabTitles) {
   return max
 }
 
-// A streamer's existing tab for the day, regardless of batch number.
+// Old-format tab ("M/D BATCH<n> <Streamer>") for a streamer on a day.
 function findDayTab(tabTitles, md, name) {
   const re = new RegExp(`^${md.replace('/', '\\/')} BATCH\\d+ ${name}$`, 'i')
   return tabTitles.find(t => re.test(t)) || null
+}
+
+// _LOG rows ([date, batch, streamer]), optionally only for one date.
+// Missing tab (first run) reads as empty.
+async function logRows(dateFilter) {
+  const rows = await readRange(SHEET_ID, a1(LOG_TAB, 'A:C')).catch(() => [])
+  const list = (Array.isArray(rows) ? rows : []).filter(r => r?.length >= 2)
+  return dateFilter ? list.filter(r => String(r[0]).trim() === dateFilter) : list
+}
+
+// fill/clear tab resolution: by batch number, or by streamer (+date).
+async function resolveTab({ batch, streamer, date, md, tabs }) {
+  if (batch != null) {
+    const exact = tabs.find(t => t === `BATCH${Number(batch)}`)
+    if (exact) return exact
+    // old-format tabs also carry a batch number (may be shared by several
+    // streamers on the same day — need the streamer to disambiguate)
+    const re = new RegExp(`^\\d+\\/\\d+ BATCH${Number(batch)} `, 'i')
+    const matches = tabs.filter(t => re.test(t))
+    if (streamer) {
+      const hit = matches.find(t => t.toLowerCase().endsWith(` ${String(streamer).toLowerCase()}`))
+      if (hit) return hit
+    }
+    return matches.length === 1 ? matches[0] : null
+  }
+  if (streamer) {
+    const log = await logRows(date)
+    const hit = [...log].reverse()
+      .find(r => String(r[2] || '').toLowerCase() === String(streamer).toLowerCase())
+    if (hit) {
+      const t = tabs.find(x => x === `BATCH${Number(hit[1])}`)
+      if (t) return t
+    }
+    return findDayTab(tabs, md, streamer)
+  }
+  return null
+}
+
+// The PT date a tab belongs to, for the clear guard: old-format tabs carry
+// M/D in the title; new-format ones are looked up in _LOG. Unknown → null.
+async function tabDate(tab, year) {
+  const old = /^(\d+)\/(\d+) BATCH\d+ /.exec(tab)
+  if (old) return `${year}-${String(old[1]).padStart(2, '0')}-${String(old[2]).padStart(2, '0')}`
+  const m = /^BATCH(\d+)$/.exec(tab)
+  if (m) {
+    const hit = (await logRows()).find(r => Number(r[1]) === Number(m[1]))
+    if (hit) return String(hit[0]).trim()
+  }
+  return null
 }
 
 export default async function handler(req, res) {
@@ -84,13 +138,13 @@ export default async function handler(req, res) {
   // ---- fill: expand a goods list into one-row-per-unit -----------------
   if (req.query?.fill) {
     try {
-      const { streamer, items } = body
-      if (!streamer || !Array.isArray(items) || !items.length) {
-        return res.status(400).json({ error: 'POST JSON body needs { streamer, items: [{name, price, qty}] } (date optional)' })
+      const { batch, streamer, items } = body
+      if ((batch == null && !streamer) || !Array.isArray(items) || !items.length) {
+        return res.status(400).json({ error: 'POST JSON body needs { batch } or { streamer, date? }, plus items: [{name, price, qty}]' })
       }
       const tabs = [...(await getSheetIds(SHEET_ID)).keys()]
-      const tab = findDayTab(tabs, md, streamer)
-      if (!tab) return res.status(404).json({ error: `no tab for ${streamer} on ${md} — create the day's tabs first` })
+      const tab = await resolveTab({ batch, streamer, date, md, tabs })
+      if (!tab) return res.status(404).json({ error: `no tab found for ${batch != null ? `BATCH${batch}` : `${streamer} on ${md}`}` })
       if (!req.query?.force) {
         const existing = await readRange(SHEET_ID, a1(tab, 'A1:A3'))
         if (Array.isArray(existing) && existing.some(r => r?.length)) {
@@ -113,17 +167,19 @@ export default async function handler(req, res) {
   // ---- clear: wipe a day tab's rows so the batch can be redone ---------
   if (req.query?.clear) {
     try {
-      const { streamer } = body
-      if (!streamer) {
-        return res.status(400).json({ error: 'POST JSON body needs { streamer } (date optional)' })
-      }
-      // Past tabs are the team's sales record — never wipe them.
-      if (date < ptToday()) {
-        return res.status(400).json({ error: `refusing to clear a past date (${date}) — batch tabs are history once the stream ran` })
+      const { batch, streamer } = body
+      if (batch == null && !streamer) {
+        return res.status(400).json({ error: 'POST JSON body needs { batch } or { streamer, date? }' })
       }
       const tabs = [...(await getSheetIds(SHEET_ID)).keys()]
-      const tab = findDayTab(tabs, md, streamer)
-      if (!tab) return res.status(404).json({ error: `no tab for ${streamer} on ${md}` })
+      const tab = await resolveTab({ batch, streamer, date, md, tabs })
+      if (!tab) return res.status(404).json({ error: `no tab found for ${batch != null ? `BATCH${batch}` : `${streamer} on ${md}`}` })
+      // Past tabs are the team's sales record — never wipe them.
+      const today = ptToday()
+      const belongs = await tabDate(tab, today.slice(0, 4))
+      if (belongs && belongs < today) {
+        return res.status(400).json({ error: `refusing to clear "${tab}" (${belongs}) — batch tabs are history once the stream ran` })
+      }
       const before = await readRange(SHEET_ID, a1(tab, 'A:A'))
       const rowsBefore = Array.isArray(before) ? before.filter(r => r?.length).length : 0
       await clearRange(SHEET_ID, a1(tab, 'A:C'))
@@ -133,13 +189,19 @@ export default async function handler(req, res) {
     }
   }
 
-  // ---- movefront: pin the day's tabs to the front, roster order --------
+  // ---- movefront: pin a date's batch tabs to the front, roster order ---
   if (req.query?.movefront) {
     try {
       const tabMap = await getSheetIds(SHEET_ID)
       const titles = [...tabMap.keys()]
+      const log = await logRows(date)
       const dayTabs = ROSTER
-        .map(s => findDayTab(titles, md, s.displayName))
+        .map(s => {
+          const hit = [...log].reverse()
+            .find(r => String(r[2] || '').toLowerCase() === s.displayName.toLowerCase())
+          return (hit && titles.find(t => t === `BATCH${Number(hit[1])}`))
+            || findDayTab(titles, md, s.displayName)
+        })
         .filter(Boolean)
       for (let i = 0; i < dayTabs.length; i++) {
         await moveSheetTab(SHEET_ID, tabMap.get(dayTabs[i]), i)
@@ -151,28 +213,35 @@ export default async function handler(req, res) {
     }
   }
 
-  // ---- daily: create today's empty tabs, one per on-shift streamer -----
+  // ---- daily: create the day's empty tabs, one per on-shift streamer ---
   const onShift = ROSTER.filter(s => s.days.includes(dow))
   if (!onShift.length) {
     return res.status(200).json({ ok: true, date, message: '当天没人排班,不建 tab', created: [] })
   }
 
   try {
-    const tabs = [...(await getSheetIds(SHEET_ID)).keys()]
-    const todo = onShift.filter(s => !findDayTab(tabs, md, s.displayName))
+    const tabMap = await getSheetIds(SHEET_ID)
+    const tabs = [...tabMap.keys()]
+    const logged = new Set((await logRows(date)).map(r => String(r[2] || '').toLowerCase()))
+    const todo = onShift.filter(s => !logged.has(s.displayName.toLowerCase())
+      && !findDayTab(tabs, md, s.displayName))
+    const skipped = onShift.filter(s => !todo.includes(s)).map(s => s.displayName)
     const batchNo = maxBatchNumber(tabs) + 1
-    const names = todo.map(s => `${md} BATCH${batchNo} ${s.displayName}`)
+    const plan = todo.map((s, i) => ({ tab: `BATCH${batchNo + i}`, streamer: s.displayName }))
 
     if (req.query?.dry) {
-      return res.status(200).json({ ok: true, dry: true, date, batchNo,
-        would_create: names,
-        skipped: onShift.filter(s => findDayTab(tabs, md, s.displayName)).map(s => s.displayName) })
+      return res.status(200).json({ ok: true, dry: true, date, would_create: plan, skipped })
     }
+    // _LOG lives at the far end of the tab bar; create it on first use.
+    if (!tabMap.has(LOG_TAB)) await addSheetTab(SHEET_ID, LOG_TAB)
     // Created EMPTY and pinned to the FRONT of the tab bar (William 2026-09-24:
     // today's tabs first so he sees them without scrolling), in roster order.
-    for (let i = 0; i < names.length; i++) await addSheetTab(SHEET_ID, names[i], i)
-    return res.status(200).json({ ok: true, date, batchNo, created: names,
-      skipped: onShift.filter(s => findDayTab(tabs, md, s.displayName)).map(s => s.displayName) })
+    for (let i = 0; i < plan.length; i++) await addSheetTab(SHEET_ID, plan[i].tab, i)
+    if (plan.length) {
+      await appendRows(SHEET_ID, a1(LOG_TAB, 'A1'),
+        plan.map(p => [`'${date}`, Number(p.tab.replace('BATCH', '')), p.streamer]))
+    }
+    return res.status(200).json({ ok: true, date, created: plan, skipped })
   } catch (err) {
     console.error('[daily-stream-plan] failed:', err)
     return res.status(500).json({ error: String(err?.message || err) })
