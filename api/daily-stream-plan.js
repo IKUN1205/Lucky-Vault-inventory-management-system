@@ -257,6 +257,9 @@ export default async function handler(req, res) {
             || findDayTab(titles, md, s.displayName)
         })
         .filter(Boolean)
+      // Bar reads descending — highest batch number leftmost.
+      const batchNum = t => Number(/BATCH(\d+)/i.exec(t)?.[1] || 0)
+      dayTabs.sort((a, b) => batchNum(b) - batchNum(a))
       for (let i = 0; i < dayTabs.length; i++) {
         await moveSheetTab(SHEET_ID, tabMap.get(dayTabs[i]), i)
       }
@@ -290,9 +293,10 @@ export default async function handler(req, res) {
     }
     // _LOG lives at the far end of the tab bar; create it on first use.
     if (!tabMap.has(LOG_TAB)) await addSheetTab(SHEET_ID, LOG_TAB)
-    // Created EMPTY and pinned to the FRONT of the tab bar (William 2026-09-24:
-    // today's tabs first so he sees them without scrolling), in roster order.
-    for (let i = 0; i < plan.length; i++) await addSheetTab(SHEET_ID, plan[i].tab, i)
+    // Created EMPTY and pinned to the FRONT of the tab bar. William 2026-09-28:
+    // the bar reads DESCENDING (42, 41, 40 …), so insert each new tab at the
+    // very front in ascending order — the highest number ends up leftmost.
+    for (let i = 0; i < plan.length; i++) await addSheetTab(SHEET_ID, plan[i].tab, 0)
     if (plan.length) {
       await appendRows(SHEET_ID, a1(LOG_TAB, 'A1'),
         plan.map(p => [`'${target}`, Number(p.tab.replace('BATCH', '')), p.streamer]))
