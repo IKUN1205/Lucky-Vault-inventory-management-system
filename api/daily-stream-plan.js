@@ -100,9 +100,11 @@ async function resolveTab({ batch, streamer, date, md, tabs }) {
   if (batch != null) {
     const exact = tabs.find(t => t === `BATCH${Number(batch)}`)
     if (exact) return exact
-    // old-format tabs also carry a batch number (may be shared by several
-    // streamers on the same day — need the streamer to disambiguate)
-    const re = new RegExp(`^\\d+\\/\\d+ BATCH${Number(batch)} `, 'i')
+    // The team renames tabs freely ("10/01 BATCH42 QUYNH 1/2",
+    // "BATCH43 LEXI 9/29", "Jace 9/30 BATCH45") — any title carrying the
+    // batch number as a whole word still resolves. \b keeps BATCH4 from
+    // matching BATCH42.
+    const re = new RegExp(`\\bBATCH\\s*${Number(batch)}\\b`, 'i')
     const matches = tabs.filter(t => re.test(t))
     if (streamer) {
       const hit = matches.find(t => t.toLowerCase().endsWith(` ${String(streamer).toLowerCase()}`))
@@ -126,7 +128,10 @@ async function resolveTab({ batch, streamer, date, md, tabs }) {
 // The PT date a tab belongs to, for the clear guard: old-format tabs carry
 // M/D in the title; new-format ones are looked up in _LOG. Unknown → null.
 async function tabDate(tab, year) {
-  const old = /^(\d+)\/(\d+) BATCH\d+ /.exec(tab)
+  // Date at the start ("10/01 BATCH42 QUYNH 1/2") or end ("BATCH44 LEXII
+  // 9/30") of a renamed title. Middle dates ("Jace 9/30 BATCH45") are left
+  // to the ledger — a loose match would misread part labels like "1/2".
+  const old = /^(\d{1,2})\/(\d{1,2})\s/.exec(tab) || /\s(\d{1,2})\/(\d{1,2})$/.exec(tab)
   if (old) return `${year}-${String(old[1]).padStart(2, '0')}-${String(old[2]).padStart(2, '0')}`
   const m = /^BATCH(\d+)$/.exec(tab)
   if (m) {
