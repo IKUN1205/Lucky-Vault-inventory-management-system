@@ -1,9 +1,15 @@
 import { createClient } from '@supabase/supabase-js'
 import { isLedgerRoomName } from './countRooms.js'
-import { isBreakableBox, packSiblingRows } from './countSiblings.js'
+import { isBreakableBox, packSiblingRows, pinnedPackIds } from './countSiblings.js'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://dqreqevbjszercgackuc.supabase.co'
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxcmVxZXZianN6ZXJjZ2Fja3VjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NzU4NzcsImV4cCI6MjA5MzA1MTg3N30.vDu1lA5SJLpA_mRhAF5JkVSreP_F4Q9g_Ta-9xm-UdU'
+// No fallback project. Until 2026-10-02 a missing env var silently fell back to the OLD project (dqreqevbjszercgackuc,
+// retired by the 9/12 switch), so a build or a local dev server without the variables wrote the company's counts into a
+// database nobody reads any more (F124). A build without the variables must fail loudly instead.
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY are not set — refusing to start against an unknown database')
+}
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
@@ -1581,6 +1587,33 @@ export const fetchInventoryForRoom = async (locationId) => {
     }
   } catch (e) {
     console.warn('[count] pack-sibling lookup failed; sheet unchanged', e)
+  }
+
+  // Loose-pack SKUs a room always counts (PINNED_PACKS_BY_ROOM, F124 2026-10-02 — Rockets' RTYH packs lived in the notes
+  // because no pack row ever reached its sheet). Same fail-open rule as the siblings: a lookup error leaves the sheet as is.
+  try {
+    const { data: loc } = await supabase.from('locations').select('name').eq('id', locationId).maybeSingle()
+    const pinned = pinnedPackIds(loc?.name, rows)
+    if (pinned.length) {
+      const { data: prods } = await supabase
+        .from('products')
+        .select('id, name, brand, language, type, variant, category, packs_per_box, active')
+        .in('id', pinned)
+      for (const p of prods || []) {
+        if (p.active === false) continue
+        rows.push({
+          id: `pinned:${p.id}`,            // not a real inventory row id
+          product_id: p.id,
+          location_id: locationId,
+          quantity: 0,
+          avg_cost_basis: null,
+          product: p,
+          pinned_pack: true,
+        })
+      }
+    }
+  } catch (e) {
+    console.warn('[count] pinned-pack lookup failed; sheet unchanged', e)
   }
 
   return rows.sort((a, b) => {

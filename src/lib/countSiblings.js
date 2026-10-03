@@ -114,3 +114,30 @@ export function packSiblingRows(rows, packProducts, makeRow) {
   }
   return out
 }
+
+// Loose-pack rows that are ALWAYS on a room's count sheet, even at zero.
+//
+// Gary 2026-10-02 (F124, 「备注就是因为没有 sku」): Rockets breaks One Piece boxes into packs every show (RTYH), but none of
+// these pack SKUs ever reached its sheet — the boxes are not linked to them by name ("Japanese OP 17 Booster Box" shares no
+// word with "THE WORLD'S STRONGEST WARRIORS"), and a pack row that has never held stock in the room is never in the 48h
+// window. So the counter wrote "OP-17 JP Packs 298 / EB-03 JP Packs 278 / OP-13 53 packs" into the notes, where no report
+// can read them, and RTYH consumption could not be measured from counts at all.
+//
+// Listed by product id, not by name matching: a wrong row would route a pack count onto somebody else's SKU. A pinned row
+// with no stock behaves like a sibling row: the count is recorded (stream_count_items.actual_qty), and because a count never
+// creates inventory, a positive count shows up as "needs transfer-in" until the packs are booked by a break or a move.
+export const PINNED_PACKS_BY_ROOM = {
+  'Stream Room - TikTok RocketsHQ': [
+    '4dc01fec-b577-48b3-8cd3-7d13efc5dc06', // LOOSE PACK · [JP] THE WORLD'S STRONGEST WARRIORS (JP OP-17)
+    '047ce18c-f0cd-45b4-b477-09b788667511', // [JP] EB-03 Heroines Edition Booster Pack
+    '9547821f-f426-47a9-a2e0-3ad835699a93', // [EN] OP-13 Carrying On His Will Booster Pack (the room's OP-13 boxes are EN)
+    '703616c7-66e0-4e2d-b943-ac6395a64b22', // The World's Strongest Warriors Booster Pack (OP17) — EN OP-17
+  ],
+}
+
+// Ids pinned for this room that are not already on the sheet.
+export function pinnedPackIds(roomName, rows) {
+  const want = PINNED_PACKS_BY_ROOM[String(roomName || '').trim()] || []
+  const present = new Set((rows || []).map(r => r.product_id))
+  return want.filter(id => !present.has(id))
+}

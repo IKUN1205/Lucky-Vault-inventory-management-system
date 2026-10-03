@@ -1286,6 +1286,11 @@ export default function StreamCounts() {
                                   ↳ loose packs from {inv.sibling_of} — count them here, not on the box line
                                 </span>
                               )}
+                              {inv.pinned_pack && !inv.sibling_of && (
+                                <span className="block text-[11px] font-semibold text-amber-300">
+                                  ↳ loose packs — count every loose pack of this kind in the room here, not in the notes
+                                </span>
+                              )}
                             </td>
                             <td className={`hidden sm:table-cell ${inv._isCase ? 'font-semibold text-red-300' : 'text-gray-400'}`}>{inv._unitLabel}</td>
                             <td className="text-right">
