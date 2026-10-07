@@ -27,7 +27,6 @@ const PAGE_SECTIONS = [
   { title: 'Overview', items: [
     { path: '/', label: 'Dashboard' },
     { path: '/inventory', label: 'View Inventory' },
-    { path: '/manual-inventory', label: 'Manual Inventory' },
   ]},
   { title: 'Receive', items: [
     { path: '/purchased-items', label: 'Purchased Items' },

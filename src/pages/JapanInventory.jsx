@@ -24,7 +24,9 @@ const extractLaunchName = (fullName, category) => {
 export default function JapanInventory() {
   const { toasts, addToast, removeToast } = useToast()
 
-  // Edit (name / qty / cost) is open to anyone with /jp/inventory access.
+  // Edit (name / cost) is open to anyone with /jp/inventory access.
+  // Quantity is never typed in (Gary 2026-10-07: 改数字不可以) — stock only
+  // changes through acquisitions, stream sales and shipments.
   // Rationale: the Japan team needs to fix typos + cost basis as part of
   // daily work; the previous admin-only gate (isAdmin via Team Management
   // access) blocked legitimate users like hua. Page-level access is the
@@ -44,7 +46,7 @@ export default function JapanInventory() {
   // editForm holds the buffered values. Admin-only — the Actions column
   // hides for non-admins so the button doesn't tease them.
   const [editingId, setEditingId] = useState(null)
-  const [editForm, setEditForm] = useState({ name: '', quantity: '', avg_cost_basis: '' })
+  const [editForm, setEditForm] = useState({ name: '', avg_cost_basis: '' })
   const [editSaving, setEditSaving] = useState(false)
 
   useEffect(() => { load() }, [])
@@ -53,26 +55,23 @@ export default function JapanInventory() {
     setEditingId(r.id)
     setEditForm({
       name: r.product?.name || '',
-      quantity: String(r.quantity ?? 0),
       avg_cost_basis: String(r.avg_cost_basis ?? 0),
     })
   }
   const cancelEdit = () => {
     setEditingId(null)
-    setEditForm({ name: '', quantity: '', avg_cost_basis: '' })
+    setEditForm({ name: '', avg_cost_basis: '' })
   }
 
   const saveEdit = async (r) => {
     try {
       setEditSaving(true)
       const nextName = (editForm.name || '').trim()
-      const nextQty = parseInt(editForm.quantity, 10)
       const nextCost = parseFloat(editForm.avg_cost_basis)
       if (!nextName) { addToast('Product name cannot be empty', 'error'); return }
-      if (!Number.isFinite(nextQty)) { addToast('Quantity must be a number', 'error'); return }
       if (!Number.isFinite(nextCost) || nextCost < 0) { addToast('Cost must be a non-negative number', 'error'); return }
 
-      // Two-table update: products.name (if changed) + inventory.quantity +
+      // Two-table update: products.name (if changed) +
       // inventory.avg_cost_basis. Skip the products update when name didn't
       // change so we don't bump updated_at unnecessarily and so non-admin
       // users (if we ever loosen the gate) can't pivot via this path.
@@ -86,7 +85,6 @@ export default function JapanInventory() {
       const { error: iErr } = await supabase
         .from('inventory')
         .update({
-          quantity: nextQty,
           avg_cost_basis: nextCost,
           last_updated: new Date().toISOString(),
         })
@@ -95,7 +93,7 @@ export default function JapanInventory() {
 
       addToast('✓ Saved', 'success')
       setEditingId(null)
-      setEditForm({ name: '', quantity: '', avg_cost_basis: '' })
+      setEditForm({ name: '', avg_cost_basis: '' })
       load()
     } catch (err) {
       console.error('[JapanInventory] saveEdit failed:', err)
@@ -321,17 +319,7 @@ export default function JapanInventory() {
                       </td>
                       <td className="py-2 text-blue-300 align-middle">{r.product?.language || '—'}</td>
                       <td className="py-2 text-right align-middle">
-                        {isEditing ? (
-                          <input
-                            type="number"
-                            value={editForm.quantity}
-                            onChange={(e) => setEditForm(f => ({ ...f, quantity: e.target.value }))}
-                            className="w-20 text-right text-sm"
-                            min="0"
-                          />
-                        ) : (
-                          <span className="text-white font-semibold">{(r.quantity || 0).toLocaleString()}</span>
-                        )}
+                        <span className="text-white font-semibold">{(r.quantity || 0).toLocaleString()}</span>
                       </td>
                       <td className="py-2 text-right align-middle">
                         {isEditing ? (

@@ -13,7 +13,6 @@ import {
   Star,
   BarChart3,
   Plus,
-  PackagePlus,
   ClipboardList,
   Boxes,
   Loader2,
@@ -33,12 +32,6 @@ const actions = [
     label: 'Add New Product', 
     icon: Plus, 
     color: 'from-emerald-500 to-emerald-700'
-  },
-  { 
-    path: '/manual-inventory', 
-    label: 'Manual Inventory', 
-    icon: PackagePlus, 
-    color: 'from-teal-500 to-teal-700'
   },
   { 
     path: '/purchased-items', 

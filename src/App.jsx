@@ -20,7 +20,6 @@ import BusinessExpenses from './pages/BusinessExpenses'
 import ViewInventory from './pages/ViewInventory'
 import HighValueTracking from './pages/HighValueTracking'
 import AddProduct from './pages/AddProduct'
-import ManualInventory from './pages/ManualInventory'
 import Reports from './pages/Reports'
 import StreamCounts from './pages/StreamCounts'
 import InventoryAudit from './pages/InventoryAudit'
@@ -156,9 +155,6 @@ function AppRoutes() {
       } />
       <Route path="/add-product" element={
         <ProtectedRoute path="/add-product"><Layout><AddProduct /></Layout></ProtectedRoute>
-      } />
-      <Route path="/manual-inventory" element={
-        <ProtectedRoute path="/manual-inventory"><Layout><ManualInventory /></Layout></ProtectedRoute>
       } />
       <Route path="/reports" element={
         <ProtectedRoute path="/reports"><Layout><Reports /></Layout></ProtectedRoute>

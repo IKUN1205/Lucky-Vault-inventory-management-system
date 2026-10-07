@@ -19,7 +19,6 @@ import {
   Menu,
   X,
   Plus,
-  PackagePlus,
   ClipboardList,
   ClipboardCheck,
   TrendingUp,
@@ -53,16 +52,10 @@ const SIDEBAR_COLLAPSED_KEY = 'lv:sidebar-collapsed'
 // see what you have → receive → operate → sell → report → admin.
 const navSections = [
   {
-    // Manual Inventory lives in Overview (not Receive) — it's a quick
-    // stock-adjust tool used to reconcile a known mismatch ("the system
-    // says 10 but we count 8"), not a receive-from-vendor step. Keeping
-    // it adjacent to View Inventory makes that "check then nudge" flow
-    // a single sidebar group.
     title: 'Overview',
     items: [
       { path: '/', label: 'Dashboard', icon: Home },
       { path: '/inventory', label: 'View Inventory', icon: Eye },
-      { path: '/manual-inventory', label: 'Manual Inventory', icon: PackagePlus },
     ]
   },
   {

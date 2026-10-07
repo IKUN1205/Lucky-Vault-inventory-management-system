@@ -4,7 +4,7 @@ import { ToastContainer, useToast } from '../components/Toast'
 import Instructions from '../components/Instructions'
 import { LangChip } from '../components/ProductChips'
 import ProductThumb from '../components/ProductThumb'
-import { Eye, Package, Search, Edit2, Save, X, Trash2, ArrowUp, ArrowDown, ArrowUpDown, ChevronDown, ChevronUp, Layers, Diamond } from 'lucide-react'
+import { Eye, Package, Search, ArrowUp, ArrowDown, ArrowUpDown, ChevronDown, ChevronUp, Layers, Diamond } from 'lucide-react'
 
 // All cost values stored in inventory.avg_cost_basis are USD-denominated —
 // they're converted at acquisition time using the rates in src/lib/supabase.js.
@@ -47,14 +47,8 @@ export default function ViewInventory() {
   // click again to flip asc/desc. Sort is applied within each location group
   // so "highest-value first" works the way you'd expect per shelf.
   const [sort, setSort] = useState({ field: 'totalValue', direction: 'desc' })
-  const [editingId, setEditingId] = useState(null)
-  // applyToAll defaults ON because the typical mental model is "this product
-  // costs $X" — same across locations. Staff who legitimately want a
-  // per-location cost (rare — different intake batches at different prices)
-  // can uncheck it. Bug-fix 2026-06-04: previously the cost edit only hit
-  // the one location row, which surprised staff editing at Master expecting
-  // Stream Rooms to follow.
-  const [editForm, setEditForm] = useState({ quantity: '', avg_cost_basis: '', applyToAll: true })
+  // No inline edit / delete here (Gary 2026-10-07: 改数字不可以). Stock only
+  // changes through transfers, intake, counts and sales, which leave records.
 
   // Per-location buckets of sellable singles / slabs, plus which buckets the
   // user has expanded. Collapsed by default — sealed stays the headline; the
@@ -208,84 +202,6 @@ export default function ViewInventory() {
     }
   }
 
-  const startEdit = (inv) => {
-    setEditingId(inv.id)
-    setEditForm({
-      quantity: inv.quantity.toString(),
-      avg_cost_basis: inv.avg_cost_basis?.toString() || '0',
-      applyToAll: true,
-    })
-  }
-
-  const cancelEdit = () => {
-    setEditingId(null)
-    setEditForm({ quantity: '', avg_cost_basis: '', applyToAll: true })
-  }
-
-  const saveEdit = async (invId) => {
-    try {
-      const newQty = parseInt(editForm.quantity) || 0
-      const newCost = parseFloat(editForm.avg_cost_basis) || 0
-      // Always update the row the user actually clicked Edit on (quantity
-      // is genuinely per-location, so this must stay row-scoped).
-      const { error } = await supabase
-        .from('inventory')
-        .update({ quantity: newQty, avg_cost_basis: newCost })
-        .eq('id', invId)
-      if (error) throw error
-
-      // If "Apply to all locations" is checked, also push the new cost to
-      // every other inventory row for the same product. We have to look up
-      // the product_id first because the table row only knows its own id.
-      // Quantity is never propagated — each location's qty is independent.
-      let propagated = 0
-      if (editForm.applyToAll) {
-        const target = inventory.find(i => i.id === invId)
-        const productId = target?.product_id || target?.product?.id
-        if (productId) {
-          const { data: others, error: othersErr } = await supabase
-            .from('inventory')
-            .update({ avg_cost_basis: newCost })
-            .eq('product_id', productId)
-            .neq('id', invId)
-            .select('id')
-          if (othersErr) throw othersErr
-          propagated = (others || []).length
-        }
-      }
-
-      addToast(
-        propagated > 0
-          ? `Updated — cost applied to ${propagated + 1} location${propagated + 1 === 1 ? '' : 's'}`
-          : 'Inventory updated!'
-      )
-      setEditingId(null)
-      loadInventory()
-    } catch (error) {
-      console.error('Error updating inventory:', error)
-      addToast('Failed to update inventory', 'error')
-    }
-  }
-
-  const deleteInventory = async (invId) => {
-    if (!confirm('Are you sure you want to delete this inventory record?')) return
-    
-    try {
-      const { error } = await supabase
-        .from('inventory')
-        .delete()
-        .eq('id', invId)
-
-      if (error) throw error
-
-      addToast('Inventory deleted!')
-      loadInventory()
-    } catch (error) {
-      console.error('Error deleting inventory:', error)
-      addToast('Failed to delete inventory', 'error')
-    }
-  }
-
   // Filter inventory
   const filteredInventory = inventory.filter(inv => {
     if (filters.brand && inv.product?.brand !== filters.brand) return false
@@ -427,13 +343,11 @@ export default function ViewInventory() {
 
       <Instructions>
         <div className="space-y-3 text-gray-300">
-          <p className="font-medium text-white">View and manage inventory:</p>
+          <p className="font-medium text-white">View inventory:</p>
           <ul className="list-disc list-inside space-y-2 ml-2">
             <li><span className="text-vault-gold">Filter</span> by location, brand, or type</li>
             <li><span className="text-vault-gold">Search</span> a card name, cert #, or TCG ID to see which location it's at (covers sealed, singles & slabs). Card search stays within the selected Location, but ignores the Brand / Market / Sealed filters.</li>
             <li>See <span className="text-vault-gold">quantity</span> and <span className="text-vault-gold">cost basis</span> per item</li>
-            <li>Click <span className="text-vault-gold">Edit</span> to adjust quantities directly</li>
-            <li>Click <span className="text-vault-gold">Delete</span> to remove a line item</li>
           </ul>
           <p className="text-slate-400 text-xs mt-3">💡 Inventory is grouped by location</p>
         </div>
@@ -606,12 +520,10 @@ export default function ViewInventory() {
                     <th className="pb-3 font-medium text-right cursor-pointer select-none hover:text-white transition-colors" onClick={() => handleSort('totalValue')}>
                       TOTAL VALUE<SortArrow field="totalValue" />
                     </th>
-                    <th className="pb-3 font-medium text-right">ACTIONS</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-vault-border">
                   {sortItems(items).map(inv => {
-                    const isEditing = editingId === inv.id
                     const launchName = extractLaunchName(inv.product?.name, inv.product?.category)
 
                     return (
@@ -637,85 +549,14 @@ export default function ViewInventory() {
                         <td className="py-3 text-gray-400">{inv.product?.type}</td>
                         <td className="py-3 text-gray-400">{inv.product?.language}</td>
                         <td className="py-3 text-right">
-                          {isEditing ? (
-                            <input
-                              type="number"
-                              value={editForm.quantity}
-                              onChange={(e) => setEditForm(f => ({ ...f, quantity: e.target.value }))}
-                              className="w-20 text-right py-1 px-2 text-sm"
-                              min="0"
-                            />
-                          ) : (
-                            <span className="font-medium">{inv.quantity}</span>
-                          )}
+                          <span className="font-medium">{inv.quantity}</span>
                         </td>
                         <td className="py-3 text-right">
-                          {isEditing ? (
-                            <div className="flex flex-col items-end gap-1">
-                              <input
-                                type="number"
-                                value={editForm.avg_cost_basis}
-                                onChange={(e) => setEditForm(f => ({ ...f, avg_cost_basis: e.target.value }))}
-                                className="w-24 text-right py-1 px-2 text-sm"
-                                min="0"
-                                step="0.01"
-                              />
-                              {/* Default ON — most edits should propagate so all
-                                  locations show the same cost for the same SKU. */}
-                              <label className="flex items-center gap-1 text-[10px] text-gray-400 cursor-pointer select-none whitespace-nowrap">
-                                <input
-                                  type="checkbox"
-                                  checked={editForm.applyToAll}
-                                  onChange={(e) => setEditForm(f => ({ ...f, applyToAll: e.target.checked }))}
-                                  className="w-3 h-3 accent-vault-gold"
-                                />
-                                Apply to all locations
-                              </label>
-                            </div>
-                          ) : (
-                            <span className="text-gray-400">${inv.avg_cost_basis?.toFixed(2) || '0.00'}</span>
-                          )}
+                          <span className="text-gray-400">${inv.avg_cost_basis?.toFixed(2) || '0.00'}</span>
                         </td>
                         <td className="py-3 text-right text-vault-gold">{fmtUsd(pricesByProduct[inv.product_id ?? inv.product?.id]?.recommended_sell_usd)}</td>
                         <td className="py-3 text-right text-vault-gold font-medium">
                           ${(inv.quantity * (inv.avg_cost_basis || 0)).toFixed(2)}
-                        </td>
-                        <td className="py-3 text-right">
-                          {isEditing ? (
-                            <div className="flex items-center justify-end gap-1">
-                              <button
-                                onClick={() => saveEdit(inv.id)}
-                                className="p-1 text-green-400 hover:text-green-300"
-                                title="Save"
-                              >
-                                <Save size={16} />
-                              </button>
-                              <button
-                                onClick={cancelEdit}
-                                className="p-1 text-gray-400 hover:text-white"
-                                title="Cancel"
-                              >
-                                <X size={16} />
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-end gap-1">
-                              <button
-                                onClick={() => startEdit(inv)}
-                                className="p-1 text-gray-500 hover:text-white"
-                                title="Edit"
-                              >
-                                <Edit2 size={16} />
-                              </button>
-                              <button
-                                onClick={() => deleteInventory(inv.id)}
-                                className="p-1 text-gray-500 hover:text-red-400"
-                                title="Delete"
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          )}
                         </td>
                       </tr>
                     )
