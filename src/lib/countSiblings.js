@@ -133,6 +133,17 @@ export const PINNED_PACKS_BY_ROOM = {
     '9547821f-f426-47a9-a2e0-3ad835699a93', // [EN] OP-13 Carrying On His Will Booster Pack (the room's OP-13 boxes are EN)
     '703616c7-66e0-4e2d-b943-ac6395a64b22', // The World's Strongest Warriors Booster Pack (OP17) — EN OP-17
   ],
+  // Gary 2026-10-06 「继续work on packheads 他们没sku的问题」. Same shape as Rockets: each of these pack rows was counted
+  // at book 0 at Packheads (30 days to 10-06: EB-03 EN 12 counts up to 93, OP-13 EN 7 up to 107, OP-15 EN 6 up to 77,
+  // OP-17 EN 39 on 09-28) and fell off the sheet again once its box sold out; JP OP-13 packs sold 61 in "$1 start"
+  // auctions (10-06, 14 days of orders) with no row to count them on.
+  'Stream Room - TikTok Packheads': [
+    'e9287a75-d8bd-4a89-b0e9-e87550395f6a', // [EN] EB-03 Heroines Edition Booster Pack (loose; the sleeved row is separate)
+    '9547821f-f426-47a9-a2e0-3ad835699a93', // [EN] OP-13 Carrying On His Will Booster Pack
+    'a8656675-ad8b-45df-a049-45f4fa277965', // [JP] OP-13 Carrying On His Will Booster Pack ("$1 start packs (Japanese)")
+    '3a468a57-f9a7-44c8-bc81-ab0b25e05a9a', // LOOSE PACK · [EN] OP-15 Adventure On Kami's Island
+    '703616c7-66e0-4e2d-b943-ac6395a64b22', // The World's Strongest Warriors Booster Pack (OP17) — EN OP-17 loose
+  ],
 }
 
 // Ids pinned for this room that are not already on the sheet.

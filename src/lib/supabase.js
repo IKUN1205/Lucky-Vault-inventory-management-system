@@ -1555,6 +1555,34 @@ export const fetchInventoryForRoom = async (locationId) => {
   // same rule as the duplicate guard.
   const rows = (data || []).filter(r => r.product?.active !== false)
 
+  // Goods a recent count found that the book does not hold stay on the sheet until a count says they are gone (Gary
+  // 2026-10-06 「继续work on packheads 他们没sku的问题」). The 48h zero grace above is a clock, and Packheads does not
+  // count every day: OP-15 EN loose packs counted 77 on 10-02 and 10-03 and Terastal Gathering 17 on 10-03, all at book
+  // 0, then the 55h gap to the next count dropped both rows, and the counter had nowhere to write them. Same for the OP-10
+  // EN boxes after a false zero on 09-12: five sold since with no row anywhere. fetchOpenSurplus is the same "latest
+  // count above book, not acted on since" set the report already uses, so the row leaves once a count says 0 or a Move
+  // or Box Break books the goods. Book stays 0 here, so these rows can record a surplus but never a sale. Added before
+  // the sibling pass so a carried breakable box still brings its loose-pack row.
+  try {
+    const open = await fetchOpenSurplus(locationId)
+    const present = new Set(rows.map(r => r.product_id))
+    for (const o of open) {
+      if (present.has(o.product_id) || !o.product || o.product.active === false) continue
+      present.add(o.product_id)
+      rows.push({
+        id: `surplus:${o.product_id}`,     // not a real inventory row id
+        product_id: o.product_id,
+        location_id: locationId,
+        quantity: 0,
+        avg_cost_basis: null,
+        product: o.product,
+        carried_surplus: true,
+      })
+    }
+  } catch (e) {
+    console.warn('[count] open-surplus carry failed; sheet unchanged', e)
+  }
+
   // A breakable box on the sheet drags its LOOSE PACK sibling on too, even at
   // zero. Without this the packs a broken box turned into have nowhere to be
   // written, so they land on the box row and read as surplus boxes — Marvel

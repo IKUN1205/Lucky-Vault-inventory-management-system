@@ -1291,6 +1291,11 @@ export default function StreamCounts() {
                                   ↳ loose packs — count every loose pack of this kind in the room here, not in the notes
                                 </span>
                               )}
+                              {inv.carried_surplus && !inv.sibling_of && !inv.pinned_pack && (
+                                <span className="block text-[11px] font-semibold text-amber-300">
+                                  ↳ a recent count found these in this room — include them in your count (0 if gone)
+                                </span>
+                              )}
                             </td>
                             <td className={`hidden sm:table-cell ${inv._isCase ? 'font-semibold text-red-300' : 'text-gray-400'}`}>{inv._unitLabel}</td>
                             <td className="text-right">
