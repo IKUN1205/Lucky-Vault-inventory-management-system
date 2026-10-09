@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement,
   fetchUsers, lookupScannedCode,
-  moveSingleToLocation, moveSlabToLocation, markSlabAsSold, markSingleAsSold,
+  moveSingleToLocation, moveSlabToLocation, markSlabAsSold, sellSingleQtySplit,
   createStorefrontSale,
   fetchSinglesAtLocation, fetchSlabsAtLocation,
   searchProductsForStorefront, searchSinglesForStorefront, searchSlabsForStorefront,
@@ -215,22 +215,40 @@ export default function MovedInventory() {
 
   const addSingleToCart = (single, quantity = 1) => {
     if (!single) return
-    // Mystery Game: a single is sold IN PLACE (whole matched row, location-
-    // agnostic) — skip the FROM-location stock check and pre-fill a reference
-    // price (market × row qty) so it's a "priced" line; blank ones hit the bucket.
+    // Mystery Game: a single is sold IN PLACE (location-agnostic) — skip the
+    // FROM-location stock check and pre-fill a reference price (market × qty)
+    // so it's a "priced" line; blank ones hit the bucket.
+    // Gary 2026-10-08: ONE card per scan by default. This used to take the
+    // whole row's quantity, so selling 1 card of a 18-card stack marked all 18
+    // sold (Sully's 10/08 game: 30 cards sold, 174 recorded). Scanning the same
+    // card again adds one more; the Qty box raises it by hand. Submit splits the
+    // row (sellSingleQtySplit), the same way a normal single sale does.
     if (mysteryGame) {
-      if (cart.some(c => c.kind === 'single' && c.single_id === single.id)) {
-        addToast('Single already in cart', 'info'); return
-      }
       const rowQty = single.quantity || 1
-      const ref = single.current_market_price_usd != null
-        ? Number(single.current_market_price_usd) * rowQty : ''
-      setCart(prev => [...prev, {
-        kind: 'single', key: `single-${single.id}`, single_id: single.id,
-        single, available_qty: rowQty, quantity: rowQty,
-        sale_price: ref === '' ? '' : String(ref),
-      }])
-      addToast(`Added: ${single.card_name}`, 'success')
+      const unitRef = single.current_market_price_usd != null
+        ? Number(single.current_market_price_usd) : null
+      const refFor = (q) => (unitRef == null ? '' : String(Math.round(unitRef * q * 100) / 100))
+      // Find-or-add inside ONE functional update (Codex 10/08): a check against
+      // the outer `cart` can be stale after an awaited lookup and would append a
+      // second line with the same key.
+      setCart(prev => {
+        const existing = prev.find(c => c.kind === 'single' && c.single_id === single.id)
+        if (!existing) {
+          return [...prev, {
+            kind: 'single', key: `single-${single.id}`, single_id: single.id,
+            single, available_qty: rowQty, quantity: 1,
+            unit_ref_price: unitRef, price_is_ref: unitRef != null,
+            sale_price: refFor(1),
+          }]
+        }
+        if (existing.quantity >= existing.available_qty) return prev
+        return prev.map(c => {
+          if (c.key !== existing.key) return c
+          const q = Math.min(c.quantity + 1, c.available_qty)
+          return { ...c, quantity: q, ...(c.price_is_ref ? { sale_price: refFor(q) } : {}) }
+        })
+      })
+      addToast(`Added: ${single.card_name} (scan again for another copy)`, 'success')
       return
     }
     const stockRow = singlesAtFrom.find(s => s.id === single.id)
@@ -371,7 +389,8 @@ export default function MovedInventory() {
 
   // ---------- cart editing ----------
   const updateLineQty = (key, qty) => {
-    const newQty = Math.max(1, Number(qty) || 1)
+    // Whole units only — the Qty box would otherwise pass 1.5 straight through.
+    const newQty = Math.max(1, Math.floor(Number(qty)) || 1)
     setCart(prev => prev.map(c => {
       if (c.key !== key) return c
       if (c.kind === 'slab') return c   // slabs always qty=1
@@ -388,6 +407,11 @@ export default function MovedInventory() {
       }
       const capped = Math.min(newQty, maxQty)
       if (capped !== newQty) addToast(`Capped to available: ${capped}`, 'info')
+      // Mystery Game single still on its auto reference price: keep the line
+      // price = market × qty. A price the cashier typed is left alone.
+      if (mysteryGame && c.kind === 'single' && c.price_is_ref && c.unit_ref_price != null) {
+        return { ...c, quantity: capped, sale_price: String(Math.round(c.unit_ref_price * capped * 100) / 100) }
+      }
       return { ...c, quantity: capped }
     }))
   }
@@ -402,7 +426,8 @@ export default function MovedInventory() {
   // ---------- mystery game submit (mark each item as sold) ----------
   // Sells all three kinds at the storefront, lightweight (no POS/payment):
   //   slab   → markSlabAsSold   (status flip, in place)
-  //   single → markSingleAsSold (status flip, whole matched row, in place)
+  //   single → sellSingleQtySplit (the line's qty; splits the row when fewer
+  //            than the row holds, whole-row status flip only when all of it)
   //   sealed → storefront_sales row + inventory decrement at the FROM location
   // All share one transaction_id and the 'Mystery Game' tag. Priceless lines
   // (no entered/reference price) equal-split the bucket total.
@@ -448,8 +473,13 @@ export default function MovedInventory() {
               sold_by_id: movedById || null, transaction_id: transactionId, transaction_type: 'sale',
             })
           } else if (item.kind === 'single') {
-            await markSingleAsSold(item.single_id, {
-              sale_price_usd: price, sale_channel: 'in_person', sale_date: date,
+            // singles.sale_price_usd is PER UNIT (SellSingleModal / POS split
+            // convention, which the daily summary multiplies by quantity); the
+            // cart price here is the LINE total, so divide — full precision, no
+            // cent rounding, so total × qty adds back up.
+            const qty = Math.max(1, Math.floor(Number(item.quantity)) || 1)
+            await sellSingleQtySplit(item.single_id, qty, {
+              sale_price_usd: price / qty, sale_channel: 'in_person', sale_date: date,
               sale_fees_usd: null, buyer_name: null, sale_notes: 'Mystery Game',
               sold_by_id: movedById || null, transaction_id: transactionId, transaction_type: 'sale',
             })
@@ -927,7 +957,7 @@ export default function MovedInventory() {
                   key={item.key}
                   item={item}
                   onQtyChange={(q) => updateLineQty(item.key, q)}
-                  onSalePriceChange={(v) => setCart(prev => prev.map(c => c.key === item.key ? { ...c, sale_price: v } : c))}
+                  onSalePriceChange={(v) => setCart(prev => prev.map(c => c.key === item.key ? { ...c, sale_price: v, price_is_ref: false } : c))}
                   onRemove={() => removeLine(item.key)}
                   mysteryGame={mysteryGame}
                   disabled={submitting}
@@ -1057,7 +1087,7 @@ function CartRow({ item, onQtyChange, onRemove, onSalePriceChange, mysteryGame, 
       <div className="col-span-3 md:col-span-3">
         {mysteryGame ? (
           <div className="space-y-1">
-            {item.kind === 'sealed' && (
+            {(item.kind === 'sealed' || item.kind === 'single') && (
               <div>
                 <label className="block text-[10px] uppercase tracking-wider text-gray-500">
                   Qty {max > 1 && <span className="text-gray-600 normal-case">/ {max}</span>}
