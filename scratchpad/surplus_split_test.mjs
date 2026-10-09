@@ -57,7 +57,12 @@ ok('可修那块不再要求 Move', !out.includes('record a Move in from below')
 ok('可修的条数和件数还在', out.includes('3 SKU(s) (+9)'), out)
 // The count must still be honest even though the names are gone — a collapsed
 // line that loses the number would just be a nicer way of hiding the problem.
-ok('可修的产品名不再出现在消息里', !['Hololive', 'FB03', 'Epic Seven'].some(n => out.includes(n)), out)
+// 2026-10-09 Gary「加一下 错误的sku」: the names come back, as ONE line with
+// no per-SKU instructions — he has to see which SKUs came out wrong.
+ok('可修的产品名在一行里列出', (() => {
+  const seg = out.split('stock exists elsewhere')[1].split('\n\n')[0]
+  return ['Hololive', 'FB03', 'Epic Seven'].every(n => seg.includes(n)) && seg.trim().split('\n').length === 2
+})(), out)
 ok('查无来路的不再被要求 Move',
    !out.split('No source anywhere')[1].includes('Record a Move'), out)
 ok('明说别动库存', out.includes('Do NOT adjust stock'))
@@ -67,8 +72,10 @@ const unsourced = out.split('No source anywhere')[1]
 ok('最老的那条露出来了(Prismatic Clash 连报 11 场)', unsourced.includes('Prismatic Clash'), unsourced)
 ok('连报次数印出来', unsourced.includes('11 counts running'))
 ok('挂了多久印出来', /open \d+d/.test(unsourced))
-ok('超出上限的有交代,不能看起来像全部了',
-   unsourced.includes('and 1 more') && /\+\d+ units\. Full list/.test(unsourced), unsourced)
+// 2026-10-09: no cap any more — every unsourced SKU is listed.
+ok('查无来路的全部列出,没有「… and N more」',
+   ['OP-16', 'Uma Musume', 'ST01', 'Prismatic Clash', 'DanDaDan'].every(n => unsourced.includes(n))
+   && !unsourced.includes('more,'), unsourced)
 
 // A failed lookup must not read as either bucket.
 const UNCHECKED = [{ name: 'Something', extra: 5, streak: 2, since: null,
@@ -101,7 +108,7 @@ const MANY = [
 const m = appendSurplus([], MANY, 72).join('\n')
 ok('最大的一条永远不会被上限挤掉', m.includes('THE BIG ONE'), m)
 ok('最老的也还在', m.includes('ancient tiny'))
-ok('被省略的仍然报数', /and 2 more, \+2 units/.test(m), m)
+ok('一条都不省略', ['old tiny', 'older tiny', 'stale tiny', 'stale tiny 2'].every(n => m.includes(n)) && !m.includes('more,'), m)
 
 console.log(`\n${pass + fails.length} 个用例,${fails.length} 个失败`)
 process.exit(fails.length ? 1 : 0)

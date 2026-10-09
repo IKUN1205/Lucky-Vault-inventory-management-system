@@ -62,7 +62,7 @@ const txt = out.join('\n')
 // where names still appear, i.e. the "no source" block.
 has(txt, '1 SKU(s) (+6)', 'fixable collapses to a count, and the count is still honest')
 hasnt(txt, 'Master Inventory has 36', 'fixable no longer names source rooms')
-hasnt(txt, 'Hololive', 'fixable no longer names SKUs')
+has(txt, 'Hololive', 'fixable SKUs named on one line (Gary 2026-10-09 「加一下 错误的sku」)')
 has(txt, 'Booster Box [JP] +12', 'this block mixes EN and JP, so the surviving names are tagged')
 hasnt(txt, 'One Piece |', 'no pipe columns left anywhere')
 hasnt(txt, '[JP] OP-13', 'the language prefix is stripped from the name')

@@ -136,6 +136,22 @@ const STREAM_ROOM_NAMES = [
   'Stream Room - PokeAuctionHouse'
 ]
 
+// eBay rooms are run by a handful of people, so once one of these rooms is
+// picked the Streamer / Counted By lists show only them (Gary 2026-10-09
+// "ebay channel 就那么几个人 其实可以点了channel之后不要那么多人"). "Them" is
+// read from the room's own counts, so the list follows whoever actually works
+// there instead of a name list someone has to maintain. People added in the
+// last couple of weeks are kept too, so a new hire can do a first count, and
+// "Show everyone…" brings the full list back.
+const ROSTER_ROOM_NAMES = [
+  'Stream Room - eBay LuckyVaultUS',
+  'Stream Room - eBay SlabbiePatty',
+  'Stream Room - PokeCasino'
+]
+const ROSTER_DAYS = 60
+const NEW_PERSON_DAYS = 14
+const SHOW_EVERYONE = '__everyone'
+
 export default function StreamCounts() {
   const { toasts, addToast, removeToast } = useToast()
   
@@ -144,6 +160,9 @@ export default function StreamCounts() {
   const [users, setUsers] = useState([])
   const [inventory, setInventory] = useState([])
   const [recentCounts, setRecentCounts] = useState([])
+  // Every count loaded at start — only used to work out who works each room.
+  const [allCounts, setAllCounts] = useState([])
+  const [showEveryone, setShowEveryone] = useState(false)
   // Surplus this room was already carrying BEFORE this count, keyed by product.
   // Loaded with the room's inventory and deliberately never rendered on the
   // counting screen — the count is blind, and showing it would leak how far off
@@ -214,6 +233,7 @@ export default function StreamCounts() {
       )
       setLocations(streamRooms)
       setUsers(userData)
+      setAllCounts(countsData)
       setRecentCounts(countsData.slice(0, 10)) // Last 10 counts
     } catch (error) {
       console.error('Error loading data:', error)
@@ -296,6 +316,11 @@ export default function StreamCounts() {
 
   const handleFormChange = (e) => {
     const { name, value } = e.target
+    if (value === SHOW_EVERYONE) {
+      setShowEveryone(true)
+      return
+    }
+    if (name === 'location_id') setShowEveryone(false)
     setForm(f => ({ ...f, [name]: value }))
     
     // Handle "other" selection
@@ -327,6 +352,25 @@ export default function StreamCounts() {
   // streaming and sales are already recorded elsewhere — the streamer field
   // disappears and every "sold" label becomes "short vs book".
   const ledgerRoom = isLedgerRoomName(locations.find(l => l.id === form.location_id)?.name)
+
+  // People offered in the Streamer / Counted By lists for the picked room.
+  const roomPeople = (() => {
+    const roomName = locations.find(l => l.id === form.location_id)?.name || ''
+    if (showEveryone || !ROSTER_ROOM_NAMES.some(n => n.toLowerCase() === roomName.toLowerCase())) return users
+    const since = Date.now() - ROSTER_DAYS * 864e5
+    const ids = new Set()
+    for (const c of allCounts) {
+      if (c.location_id !== form.location_id || !(new Date(c.count_time).getTime() >= since)) continue
+      if (c.streamer_id) ids.add(c.streamer_id)
+      if (c.counted_by_id) ids.add(c.counted_by_id)
+    }
+    if (ids.size === 0) return users            // nobody counted here lately: no basis to narrow
+    const fresh = Date.now() - NEW_PERSON_DAYS * 864e5
+    return users.filter(u => ids.has(u.id)
+      || new Date(u.created_at).getTime() >= fresh
+      || u.id === form.streamer_id || u.id === form.counted_by_id)
+  })()
+  const narrowed = roomPeople !== users
 
   const handleStartCount = async () => {
     // Validate form
@@ -986,9 +1030,10 @@ export default function StreamCounts() {
                   required
                 >
                   <option value="">Select streamer...</option>
-                  {users.map(user => (
+                  {roomPeople.map(user => (
                     <option key={user.id} value={user.id}>{user.name}</option>
                   ))}
+                  {narrowed && <option value={SHOW_EVERYONE}>Show everyone…</option>}
                   <option value="other">+ Add New Streamer</option>
                 </select>
 
@@ -1017,9 +1062,10 @@ export default function StreamCounts() {
                   required
                 >
                   <option value="">Who is counting...</option>
-                  {users.map(user => (
+                  {roomPeople.map(user => (
                     <option key={user.id} value={user.id}>{user.name}</option>
                   ))}
+                  {narrowed && <option value={SHOW_EVERYONE}>Show everyone…</option>}
                   <option value="other">+ Add New Person</option>
                 </select>
                 

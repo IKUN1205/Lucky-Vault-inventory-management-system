@@ -836,7 +836,6 @@ function daysOpen(since) {
   return Math.max(0, Math.floor((Date.now() - t) / 86400000))
 }
 
-const MAX_UNSOURCED_SHOWN = 4
 
 /**
  * Surplus, split by whether anything can actually be done about it.
@@ -858,6 +857,7 @@ const MAX_UNSOURCED_SHOWN = 4
  */
 // roomName is optional so standalone callers keep working; without it the
 // wording defaults to the stream-room version.
+const MAX_UNSOURCED_LINES = 60
 export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies, dominant = undefined, roomName = null) {
   if (!discrepancyItems.length) return lines
   // Default keeps standalone callers (and the tests) honest: decide from
@@ -897,6 +897,12 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies, 
     lines.push('')
     lines.push(`✅ ${fixable.length} SKU(s) (+${units}) — stock exists elsewhere in the system, `
       + `company total is right. Handled off-sheet, nothing to do here.`)
+    // Names only, one line (Gary 2026-10-09 "加一下 错误的sku": the SKUs that
+    // came out wrong have to be visible here, not just a count of them).
+    const named = [...fixable].sort((a, b) => (Number(b.extra) || 0) - (Number(a.extra) || 0))
+    const head = named.slice(0, MAX_UNSOURCED_LINES)
+    const more = named.length - head.length
+    lines.push(`  ${head.map(i => `${shortCountName(i.name, lang)} +${i.extra || 0}`).join(' · ')}${more > 0 ? ` · … and ${more} more` : ''}`)
   }
 
   if (unsourced.length > 0) {
@@ -906,16 +912,14 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies, 
     // weeks, and sorting by size buries exactly those. But the cap must never
     // hide the biggest — on 2026-08-12 one SKU was +67 of the +97, and a list
     // that leaves it out to make room for a +1 is worse than no list.
+    // Every line is listed (Gary 2026-10-09 "加一下 错误的sku": the old cap of
+    // 4 with "… and 2 more" hid exactly the SKUs he needed to see). The only
+    // limit left is a safety one that a real count never reaches, so a runaway
+    // count cannot push the message past Lark's size limit.
     const byAge = (a, b) => (daysOpen(b.since) ?? -1) - (daysOpen(a.since) ?? -1)
     const sorted = [...unsourced].sort(byAge)
-    const shown = sorted.slice(0, MAX_UNSOURCED_SHOWN)
-    const biggest = unsourced.reduce((m, i) =>
-      (Number(i.extra) || 0) > (Number(m.extra) || 0) ? i : m, unsourced[0])
-    if (!shown.includes(biggest)) {
-      shown[shown.length - 1] = biggest
-      shown.sort(byAge)
-    }
-    const hidden = sorted.filter(i => !shown.includes(i))
+    const shown = sorted.slice(0, MAX_UNSOURCED_LINES)
+    const hidden = sorted.slice(MAX_UNSOURCED_LINES)
     for (const item of shown) {
       const age = daysOpen(item.since)
       const streak = Number(item.streak) || 1
@@ -927,7 +931,6 @@ export function appendSurplus(lines, discrepancyItems = [], totalDiscrepancies, 
     }
     if (hidden.length > 0) {
       const restUnits = hidden.reduce((n, i) => n + (Number(i.extra) || 0), 0)
-      // Never let the cap read as "that was all of them".
       lines.push(`  … and ${hidden.length} more, +${restUnits} units. Full list on the count report.`)
     }
   }
