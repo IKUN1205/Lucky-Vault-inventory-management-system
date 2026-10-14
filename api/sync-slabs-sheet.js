@@ -54,7 +54,9 @@ const SHEET_ID = '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI'
 // New-arrival staging tabs ("New Input" / "OP NEW") are intentionally NOT
 // synced — boss moves slabs into a Master tab when they're ready.
 const TAB_CONFIG = [
-  { tab: 'Pokemon Master',   mp: 6, ls: 5, list: 7, lv: 9, note: 10, cost: 17, intake: 14, location: 12, status: 11 },
+  // D-20261013-24 (Gary 2026-10-13): Pokemon slabs live on 'Pokemon Master 2026-10', built from Mario's October
+  // full scan. The old 'Pokemon Master' tab is frozen — no app code reads or writes it any more.
+  { tab: 'Pokemon Master 2026-10',   mp: 6, ls: 5, list: 7, lv: 9, note: 10, cost: 17, intake: 14, location: 12, status: 11 },
   // One Piece Master now uses the SAME layout as Pokemon Master (the tab was
   // restructured; corrected 2026-06-24). Keeping the maps identical.
   { tab: 'One Piece Master', mp: 6, ls: 5, list: 7, lv: 9, note: 10, cost: 17, intake: 14, location: 12, status: 11 },
@@ -503,7 +505,7 @@ export default async function handler(req, res) {
         // Back-sync ONLY into the two canonical Master tabs per boss
         // directive 2026-06-04. The new-arrival tabs (OP NEW / New Input)
         // are for fresh slabs that haven't sold yet — no point scanning.
-        tabs: ['Pokemon Master', 'One Piece Master'],
+        tabs: ['Pokemon Master 2026-10', 'One Piece Master'],
         idColumn: 0,         // Cert is col A
         statusColumn: 11,    // Status is col L
         soldIdsInDb: soldIds,

@@ -30,7 +30,7 @@ const SHEET_CONFIG = {
   },
   slab: {
     spreadsheetId: '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI',
-    tabs: ['Pokemon Master', 'One Piece Master'],
+    tabs: ['Pokemon Master 2026-10', 'One Piece Master'],
     idColumn: 0,         // A = Cert
     statusColumn: 11,    // L = Status
   },

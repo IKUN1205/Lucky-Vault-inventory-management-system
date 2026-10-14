@@ -48,7 +48,7 @@ const SHEET_CONFIG = {
     // is col M (12) on BOTH tabs — the old col-P (15) for One Piece was
     // reading the blank Listed-Date column.
     tabs: [
-      { name: 'Pokemon Master',   locationColumn: 12 },
+      { name: 'Pokemon Master 2026-10',   locationColumn: 12 },
       { name: 'One Piece Master', locationColumn: 12 },
     ],
     idColumn: 0,         // A = Cert

@@ -42,7 +42,7 @@ const SHEET_ID = '1yaJ7MjUt8_iXTNU-Ss2WKYZYoXux0qjZjlRzNrePTuI'
 // to match Pokemon Master; corrected 2026-06-24): Location is col M (12) and
 // Status col L (11) on BOTH — same maps as sync-slabs-sheet.js TAB_CONFIG.
 const TABS = [
-  { tab: 'Pokemon Master',   locationColumn: 12, statusColumn: 11 },
+  { tab: 'Pokemon Master 2026-10',   locationColumn: 12, statusColumn: 11 },
   { tab: 'One Piece Master', locationColumn: 12, statusColumn: 11 },
 ]
 
