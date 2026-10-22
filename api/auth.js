@@ -9,9 +9,10 @@
 //
 // Wrong PINs, through the auth_attempts table (service key only). Every PIN attempt first writes its row (as a
 // failure) and then counts, so a burst of parallel requests from one address sees itself and is refused together:
-//   - an address with more than IP_LIMIT failures in IP_WINDOW_MIN minutes is refused (429) until the window passes.
-//     Only failures FROM that address count, so outsiders can't lock the store out; the store itself would need
-//     IP_LIMIT typos in 10 minutes.
+//   - an address with more than IP_LIMIT failures in IP_WINDOW_MIN minutes is refused (429) until the window passes:
+//     OUTSIDE_LIMIT (5) for any address, OFFICE_LIMIT (30) for the company network (env OFFICE_IPS, comma list), where
+//     the whole store shares one address and typos add up (Gary 10/22「五次错 除了公司内网 block ip」).
+//     Only failures FROM that address count, so outsiders can't lock the store out.
 //   - before that, each attempt waits 1 s more per failure past IP_FREE (max MAX_DELAY_MS);
 //   - while failures across all addresses in GLOBAL_WINDOW_MIN minutes exceed GLOBAL_FREE (many addresses guessing),
 //     everyone waits GLOBAL_DELAY_MS but nobody is refused, so a distributed guesser can't lock the store out.
@@ -26,7 +27,8 @@ import {
 export const config = { maxDuration: 20 }
 
 const IP_WINDOW_MIN = 10
-const IP_LIMIT = 30
+const OUTSIDE_LIMIT = 5
+const OFFICE_LIMIT = 30
 const IP_FREE = 5
 const MAX_DELAY_MS = 8000
 const GLOBAL_WINDOW_MIN = 60
@@ -34,6 +36,9 @@ const GLOBAL_FREE = 100
 const GLOBAL_DELAY_MS = 4000
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
+const officeIps = () => new Set(String(process.env.OFFICE_IPS || '').split(',').map(s => s.trim()).filter(Boolean))
+const ipLimit = (ip) => (officeIps().has(ip) ? OFFICE_LIMIT : OUTSIDE_LIMIT)
 
 // Write this attempt (as a failure), then count. -> { id, block, delayMs }
 async function beginAttempt(supabase, ip, kind) {
@@ -57,7 +62,7 @@ async function beginAttempt(supabase, ip, kind) {
   const allFails = all.count || 0
   const ipDelay = ipFails > IP_FREE ? Math.min(MAX_DELAY_MS, (ipFails - IP_FREE) * 1000) : 0
   const globalDelay = allFails > GLOBAL_FREE ? GLOBAL_DELAY_MS : 0
-  return { id: ins.data.id, block: ipFails > IP_LIMIT, delayMs: Math.max(ipDelay, globalDelay) }
+  return { id: ins.data.id, block: ipFails > ipLimit(ip), delayMs: Math.max(ipDelay, globalDelay) }
 }
 
 async function markOk(supabase, id) {

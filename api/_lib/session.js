@@ -163,7 +163,10 @@ export async function requireSession(req, res, { admin = false, allowCron = fals
   return user
 }
 
+// Vercel sets x-vercel-forwarded-for / x-real-ip itself; x-forwarded-for only as a fallback.
 export function clientIp(req) {
-  const xf = String(req.headers?.['x-forwarded-for'] || '').split(',')[0].trim()
-  return xf || req.headers?.['x-real-ip'] || req.socket?.remoteAddress || 'unknown'
+  const h = req.headers || {}
+  const first = (v) => String(v || '').split(',')[0].trim()
+  return first(h['x-vercel-forwarded-for']) || first(h['x-real-ip']) || first(h['x-forwarded-for'])
+    || req.socket?.remoteAddress || 'unknown'
 }
