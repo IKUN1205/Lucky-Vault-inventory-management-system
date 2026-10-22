@@ -20,6 +20,7 @@
 // hit a use case that needs more, we add UI-driven pagination.
 
 import chromium from '@sparticuz/chromium'
+import { requireSession } from './_lib/session.js'
 import puppeteer from 'puppeteer-core'
 
 export const config = {
@@ -108,6 +109,8 @@ function explodeOrderToLines(o) {
 }
 
 export default async function handler(req, res) {
+  const who = await requireSession(req, res, { admin: true })   // debug route: admins only (D-20261021-04)
+  if (!who) return
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Use GET or POST' })
   }

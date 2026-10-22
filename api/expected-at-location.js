@@ -16,6 +16,7 @@
 // staff can see at a glance where the sheet thinks it belongs.
 
 import { createClient } from '@supabase/supabase-js'
+import { requireSession } from './_lib/session.js'
 import { readRange } from './_lib/google-sheets.js'
 
 // Sheet schemas — KEEP IN SYNC with api/audit-cards.js and api/sheet-mark-sold.js.
@@ -79,7 +80,6 @@ async function loadSheetSnapshot(cfg) {
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
-  || 'https://dqreqevbjszercgackuc.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
   || process.env.SUPABASE_ANON_KEY
   || process.env.VITE_SUPABASE_ANON_KEY
@@ -87,6 +87,8 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 export const config = { maxDuration: 30 }
 
 export default async function handler(req, res) {
+  const who = await requireSession(req, res)     // signed-in staff only (D-20261021-04)
+  if (!who) return
   const { kind, location } = req.query || req.body || {}
   if (!kind || !['single', 'slab'].includes(kind)) {
     return res.status(400).json({ error: 'kind must be "single" or "slab"' })

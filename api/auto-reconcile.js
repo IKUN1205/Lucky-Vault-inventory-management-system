@@ -14,6 +14,7 @@
 // avoid an extra HTTP hop. Total runtime ~30-40s.
 
 import { createClient } from '@supabase/supabase-js'
+import { requireSession } from './_lib/session.js'
 import {
   harvestTikTokOrders,
   clusterLiveSessions,
@@ -278,10 +279,12 @@ export default async function handler(req, res) {
   if (req.method !== 'POST' && req.method !== 'GET') {
     return res.status(405).json({ ok: false, error: 'Use GET or POST' })
   }
+  const who = await requireSession(req, res)     // signed-in staff only (D-20261021-04)
+  if (!who) return
   const body = req.method === 'POST' ? (req.body || {}) : {}
   const countId = req.query.count_id || body.count_id
   const triggeredBy = req.query.trigger || body.trigger || 'manual_reconcile'  // or 'auto_after_count'
-  const triggeredByUserId = body.triggered_by_user_id || null
+  const triggeredByUserId = who.id || null          // the signed-in user, not a client-supplied id
 
   if (!countId) {
     return res.status(400).json({ ok: false, error: 'Required: count_id' })

@@ -6,7 +6,11 @@
 
 export const config = { maxDuration: 10 }
 
+import { requireSession } from './_lib/session.js'
+
 export default async function handler(req, res) {
+  const who = await requireSession(req, res, { admin: true })   // debug route: admins only (D-20261021-04)
+  if (!who) return
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON
   if (!raw) return res.status(500).json({ error: 'GOOGLE_SERVICE_ACCOUNT_JSON not set' })
   try {

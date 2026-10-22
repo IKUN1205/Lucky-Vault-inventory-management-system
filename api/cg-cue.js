@@ -31,18 +31,10 @@
 
 export const config = { maxDuration: 30 }
 
-const SUPABASE_URL =
-  process.env.VITE_SUPABASE_URL ||
-  process.env.SUPABASE_URL ||
-  'https://dqreqevbjszercgackuc.supabase.co'
-
-// Service role works too, but broadcast only needs a valid project key —
-// fall back through the same chain the rest of the app uses.
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_KEY ||
-  process.env.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxcmVxZXZianN6ZXJjZ2Fja3VjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NzU4NzcsImV4cCI6MjA5MzA1MTg3N30.vDu1lA5SJLpA_mRhAF5JkVSreP_F4Q9g_Ta-9xm-UdU'
+// Current project only, public anon key: broadcast needs nothing more, and this route is open to the Stream Deck,
+// so it must never act with the service key (D-20261021-04). No fallback to the retired project.
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL
+const SUPABASE_KEY = process.env.VITE_SUPABASE_ANON_KEY
 
 const VALID_ANIMS = new Set(['sold', 'welcome', 'hype', 'countdown', 'auction', 'clear'])
 

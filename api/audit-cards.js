@@ -16,11 +16,11 @@
 // All mutations go through /api/sheet-mark-sold or the regular sync.
 
 import { createClient } from '@supabase/supabase-js'
+import { requireSession } from './_lib/session.js'
 import { readRange } from './_lib/google-sheets.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
-  || 'https://dqreqevbjszercgackuc.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
   || process.env.SUPABASE_ANON_KEY
   || process.env.VITE_SUPABASE_ANON_KEY
@@ -556,6 +556,8 @@ export async function runFullAudit(supabase, kind, { locationFilter = null } = {
 }
 
 export default async function handler(req, res) {
+  const who = await requireSession(req, res)     // signed-in staff only (D-20261021-04)
+  if (!who) return
   const q = req.query || req.body || {}
   const { kind, mode, id, location } = q
   const cfg = SHEET_CONFIG[kind]

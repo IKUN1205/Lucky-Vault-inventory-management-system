@@ -17,6 +17,7 @@
 //   curl https://lucky-vault-inventory-management-sy.vercel.app/api/tiktok-pagination-probe
 
 import chromium from '@sparticuz/chromium'
+import { requireSession } from './_lib/session.js'
 import puppeteer from 'puppeteer-core'
 import { parseCookieHeader } from './_lib/tiktok.js'
 
@@ -25,6 +26,8 @@ export const config = {
 }
 
 export default async function handler(req, res) {
+  const who = await requireSession(req, res, { admin: true })   // debug route: admins only (D-20261021-04)
+  if (!who) return
   const rawCookie = process.env.TIKTOK_COOKIE
   if (!rawCookie) {
     return res.status(500).json({ ok: false, error: 'TIKTOK_COOKIE env var not set' })

@@ -17,7 +17,6 @@ import { createClient } from '@supabase/supabase-js'
 // the cron works without the user having to add new env vars in Vercel.
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
-  || 'https://dqreqevbjszercgackuc.supabase.co'
 // Prefer service role key (bypasses RLS) but fall back to the anon key if not
 // set. The anon key is already shipped to the browser, so using it server-side
 // adds no new exposure.

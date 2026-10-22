@@ -16,6 +16,7 @@
 // debugging cookie issues.
 
 import chromium from '@sparticuz/chromium'
+import { requireSession } from './_lib/session.js'
 import puppeteer from 'puppeteer-core'
 
 export const config = {
@@ -54,6 +55,8 @@ function parseCookieHeader(raw) {
 }
 
 export default async function handler(req, res) {
+  const who = await requireSession(req, res, { admin: true })   // debug route: admins only (D-20261021-04)
+  if (!who) return
   const started = Date.now()
   const stages = []
   const log = (stage, extra = {}) => stages.push({ stage, t: Date.now() - started, ...extra })

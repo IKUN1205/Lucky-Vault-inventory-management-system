@@ -27,6 +27,7 @@
 // safety-net racing the on-sale call, the audit racing both) are safe.
 
 import { createClient } from '@supabase/supabase-js'
+import { requireSession } from './_lib/session.js'
 import {
   readRange, batchUpdateValues, cellA1,
   getSheetIds, applyRowStrikethrough,
@@ -34,7 +35,6 @@ import {
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
-  || 'https://dqreqevbjszercgackuc.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
   || process.env.SUPABASE_ANON_KEY
   || process.env.VITE_SUPABASE_ANON_KEY
@@ -128,6 +128,8 @@ export default async function handler(req, res) {
     return respond(res, 405, 'bad_request',
       `Only POST is supported here (got ${req.method}).`, { method: req.method })
   }
+  const who = await requireSession(req, res)     // signed-in staff only (D-20261021-04)
+  if (!who) return
   const { kind, id } = (req.body && typeof req.body === 'object') ? req.body : {}
   const cfg = SHEET_CONFIG[kind]
   if (!cfg) {

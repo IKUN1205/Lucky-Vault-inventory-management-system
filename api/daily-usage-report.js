@@ -17,11 +17,11 @@
 // Manual: ?date=YYYY-MM-DD | ?today=1 (current partial day) | &dry=1.
 
 import { createClient } from '@supabase/supabase-js'
+import { requireSession } from './_lib/session.js'
 import { isLedgerRoomName } from '../src/lib/countRooms.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
-  || 'https://dqreqevbjszercgackuc.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
   || process.env.SUPABASE_ANON_KEY
   || process.env.VITE_SUPABASE_ANON_KEY
@@ -264,11 +264,14 @@ function buildText(d) {
 export default async function handler(req, res) {
   const q = req.query || {}
   const isManual = q.date || q.today || q.week
-  // Cron (no manual param) requires the secret; manual reads are open.
+  // Cron (no manual param) requires the secret; a manual read (the Dashboard) needs a signed-in user.
   if (CRON_SECRET && !isManual) {
     if ((req.headers.authorization || '') !== `Bearer ${CRON_SECRET}`) {
       return res.status(401).json({ error: 'Unauthorized' })
     }
+  } else if (isManual) {
+    const who = await requireSession(req, res, { allowCron: true })
+    if (!who) return
   }
   if (!SUPABASE_KEY) return res.status(500).json({ error: 'Supabase key not configured' })
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } })

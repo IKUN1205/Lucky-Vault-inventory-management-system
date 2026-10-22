@@ -857,24 +857,15 @@ export default function StreamCounts() {
             count_id: streamCount.id,
             trigger: 'auto_after_count',
           })
-          let sent = false
-          if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-            // Blob with explicit JSON mimetype so the API route's
-            // express-style body parser still sees req.body as JSON.
-            const blob = new Blob([payload], { type: 'application/json' })
-            sent = navigator.sendBeacon(url, blob)
-          }
-          if (!sent) {
-            // Best-effort fallback. keepalive: true asks the browser to
-            // continue the request through page unload — same intent as
-            // sendBeacon but on the fetch API.
-            fetch(url, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: payload,
-              keepalive: true,
-            }).catch(err => console.error('[auto-reconcile] request failed:', err))
-          }
+          // fetch with keepalive, not sendBeacon: a beacon can't carry the
+          // X-LV-Session header the route now requires (D-20261021-04), and
+          // keepalive also lets the request outlive a page unload.
+          fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+            keepalive: true,
+          }).catch(err => console.error('[auto-reconcile] request failed:', err))
           addToast('Auto-reconcile started — check Audit History in ~30 seconds.', 'info')
         }
       } catch (err) {

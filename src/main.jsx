@@ -3,6 +3,10 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './index.css'
 import { startStaleBundleWatch } from './lib/staleBundle'
+import { installApiSession } from './lib/apiSession'
+
+// Every /api/ call carries the staff session (D-20261021-04).
+installApiSession()
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

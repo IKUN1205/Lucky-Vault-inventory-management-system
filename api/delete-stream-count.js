@@ -27,6 +27,7 @@
 //   400 / 403 / 404 / 409 / 410 / 500 with error string
 
 import { createClient } from '@supabase/supabase-js'
+import { requireSession } from './_lib/session.js'
 
 export const config = {
   // Inventory reversal in retract mode iterates over every item — still
@@ -160,12 +161,12 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
   }
 
-  const { count_id, caller_user_id, reason, mode } = req.body || {}
+  // The caller is the signed-in admin from the session (D-20261021-04); a caller_user_id in the body is ignored.
+  const caller = await requireSession(req, res, { admin: true })
+  if (!caller) return
+  const { count_id, reason, mode } = req.body || {}
   if (!count_id || typeof count_id !== 'string') {
     return res.status(400).json({ ok: false, error: 'count_id is required' })
-  }
-  if (!caller_user_id || typeof caller_user_id !== 'string') {
-    return res.status(400).json({ ok: false, error: 'caller_user_id is required' })
   }
   if (!reason || typeof reason !== 'string' || !reason.trim()) {
     return res.status(400).json({ ok: false, error: 'reason is required (admin must document why)' })
@@ -181,22 +182,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ ok: false, error: err.message })
   }
 
-  // ---- Admin gate: caller must have /users in allowed_pages ----
-  const { data: caller, error: callerErr } = await supabase
-    .from('users')
-    .select('id, name, allowed_pages, active, can_login')
-    .eq('id', caller_user_id)
-    .maybeSingle()
-  if (callerErr || !caller) {
-    return res.status(403).json({ ok: false, error: 'Caller user not found' })
-  }
-  if (caller.active === false || caller.can_login === false) {
-    return res.status(403).json({ ok: false, error: 'Caller is inactive or login-disabled' })
-  }
-  const allowed = Array.isArray(caller.allowed_pages) ? caller.allowed_pages : []
-  if (!allowed.includes('/users')) {
-    return res.status(403).json({ ok: false, error: 'Caller is not an admin (needs /users access)' })
-  }
+  // (Admin gate: requireSession above — active, can_login, /users in allowed_pages, re-read from the DB.)
 
   // ---- Load the count being deleted ----
   const { data: count, error: cErr } = await supabase

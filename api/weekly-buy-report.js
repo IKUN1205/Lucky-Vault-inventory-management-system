@@ -27,11 +27,11 @@
 // fallback.
 
 import { createClient } from '@supabase/supabase-js'
+import { requireSession } from './_lib/session.js'
 import { isLedgerRoomName } from '../src/lib/countRooms.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
-  || 'https://dqreqevbjszercgackuc.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
   || process.env.SUPABASE_ANON_KEY
   || process.env.VITE_SUPABASE_ANON_KEY
@@ -110,6 +110,9 @@ export default async function handler(req, res) {
     if ((req.headers.authorization || '') !== `Bearer ${CRON_SECRET}`) {
       return res.status(401).json({ error: 'Unauthorized' })
     }
+  } else if (req.query?.week || req.query?.current) {
+    const who = await requireSession(req, res, { allowCron: true })   // manual reads: signed-in staff (D-20261021-04)
+    if (!who) return
   }
   if (!SUPABASE_KEY) return res.status(500).json({ error: 'Supabase key not configured' })
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } })

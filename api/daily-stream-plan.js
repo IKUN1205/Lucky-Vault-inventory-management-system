@@ -37,6 +37,7 @@
 //                      price: rows go in with B blank, price patched later.
 
 import { readRange, appendRows, clearRange, batchUpdateValues, getSheetIds, addSheetTab, moveSheetTab } from './_lib/google-sheets.js'
+import { requireSession } from './_lib/session.js'
 
 const CRON_SECRET = process.env.CRON_SECRET
 const SHEET_ID = process.env.STREAM_PLAN_SHEET_ID
@@ -142,9 +143,13 @@ async function tabDate(tab, year) {
 }
 
 export default async function handler(req, res) {
-  if (CRON_SECRET && req.headers.authorization !== `Bearer ${CRON_SECRET}`
-      && !req.query?.dry && !req.query?.date && !req.query?.fill && !req.query?.clear
-      && !req.query?.price) {
+  // The scheduled run carries the cron secret; any manual run (dry / date / fill / clear / price) needs a signed-in
+  // user. Before D-20261021-04 the manual parameters skipped the check entirely.
+  const isManualPlan = !!(req.query?.dry || req.query?.date || req.query?.fill || req.query?.clear || req.query?.price)
+  if (isManualPlan) {
+    const who = await requireSession(req, res, { allowCron: true })
+    if (!who) return
+  } else if (CRON_SECRET && req.headers.authorization !== `Bearer ${CRON_SECRET}`) {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 

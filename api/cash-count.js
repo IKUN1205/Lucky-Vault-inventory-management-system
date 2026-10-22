@@ -29,10 +29,10 @@
 // morning SHORTs; 7/24's −$1,880.40 was $1,235.40 re-counted history).
 
 import { createClient } from '@supabase/supabase-js'
+import { requireSession } from './_lib/session.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
   || process.env.VITE_SUPABASE_URL
-  || 'https://dqreqevbjszercgackuc.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
   || process.env.SUPABASE_ANON_KEY
   || process.env.VITE_SUPABASE_ANON_KEY
@@ -180,6 +180,8 @@ async function postLark(text) {
 }
 
 export default async function handler(req, res) {
+  const me = await requireSession(req, res)      // signed-in staff only (D-20261021-04)
+  if (!me) return
   if (!SUPABASE_KEY) return res.status(500).json({ error: 'Supabase key not configured' })
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } })
 
@@ -229,8 +231,8 @@ export default async function handler(req, res) {
         difference: exp.baseline ? null : difference,
         cash_net_since: exp.cash_net_since,
         cash_removed_usd: +removed.toFixed(2),
-        counted_by_id: b.counted_by_id || null,
-        counted_by_name: b.counted_by_name || null,
+        counted_by_id: me.id,                       // the signed-in user, not a client-supplied id
+        counted_by_name: me.name || null,
         notes: b.notes || null,
       }
       const { data: inserted, error: insErr } = await supabase

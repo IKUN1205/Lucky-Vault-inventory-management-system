@@ -6,6 +6,7 @@ import {
   searchProductsForStorefront,
   searchSinglesForStorefront,
   searchSlabsForStorefront,
+  USER_COLUMNS,
 } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
@@ -83,7 +84,7 @@ export default function PlatformSales() {
   const selectedChannel = CHANNELS.find(c => c.id === channelId) || null
 
   useEffect(() => {
-    supabase.from('users').select('*').eq('active', true).order('name').then(({ data }) => {
+    supabase.from('users').select(USER_COLUMNS).eq('active', true).order('name').then(({ data }) => {
       // Filter to the streamer whitelist + sort by the whitelist's order
       // (Yaz first, etc.) so the dropdown isn't alphabetical noise.
       const byName = new Map((data || []).map(u => [u.name?.toLowerCase(), u]))

@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { isLedgerRoomName } from './countRooms.js'
 import { isBreakableBox, packSiblingRows, pinnedPackIds } from './countSiblings.js'
+import { postJson } from './apiSession.js'
 
 // No fallback project. Until 2026-10-02 a missing env var silently fell back to the OLD project (dqreqevbjszercgackuc,
 // retired by the 9/12 switch), so a build or a local dev server without the variables wrote the company's counts into a
@@ -48,8 +49,11 @@ export const fetchLocations = async (type = null) => {
   return data || []
 }
 
+// Explicit columns: the PIN columns are not readable with the public key (D-20261021-04).
+export const USER_COLUMNS = 'id,email,name,role,primary_region,can_login,high_value_access,active,created_at,updated_at,allowed_pages'
+
 export const fetchUsers = async (canLogin = null) => {
-  let query = supabase.from('users').select('*').eq('active', true)
+  let query = supabase.from('users').select(USER_COLUMNS).eq('active', true)
   if (canLogin !== null) query = query.eq('can_login', canLogin)
   const { data, error } = await query.order('name')
   if (error) throw error
@@ -1482,14 +1486,11 @@ export const fetchStockElsewhere = async (productIds, excludeLocationId) => {
   return out
 }
 
+// A name for counts (no PIN, can't sign in). The server writes it: the public key can't write users (D-20261021-04).
 export const createUser = async (name) => {
-  const { data, error } = await supabase
-    .from('users')
-    .insert({ name, active: true, can_login: false })
-    .select()
-    .single()
-  if (error) throw error
-  return data
+  const { data } = await postJson('/api/users-admin?action=create-basic', { name })
+  if (!data?.ok) throw new Error(data?.error || 'Could not add the name')
+  return data.user
 }
 
 // BLIND product list for the Inventory Audit page: which products are at this

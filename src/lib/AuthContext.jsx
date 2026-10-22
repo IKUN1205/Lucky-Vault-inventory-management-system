@@ -1,142 +1,99 @@
-import React, { createContext, useContext, useState, useEffect } from 'react'
-import { supabase } from './supabase'
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react'
+import { getSessionToken, setSessionToken, postJson } from './apiSession'
 
 const AuthContext = createContext(null)
+
+// Sign-in is checked on the server (api/auth.js, D-20261021-04 step 1). The browser never reads the users table
+// for PINs any more; it keeps a signed session token and a copy of its own user row (no PIN) for display.
+const USER_KEY = 'luckyvault_user'
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
+  const picker = useRef(null)          // signed list of ids from a shared-PIN login, for loginAs()
+
+  const signIn = (u, token) => {
+    setSessionToken(token)
+    setUser(u)
+    localStorage.setItem(USER_KEY, JSON.stringify(u))
+  }
+
+  const signOut = () => {
+    setSessionToken('')
+    setUser(null)
+    localStorage.removeItem(USER_KEY)
+  }
 
   useEffect(() => {
-    // Check for existing session in localStorage
-    const savedUser = localStorage.getItem('luckyvault_user')
-    if (savedUser) {
-      try {
-        const parsed = JSON.parse(savedUser)
-        // Verify user still exists and is active
-        verifyUser(parsed.id)
-      } catch (e) {
-        localStorage.removeItem('luckyvault_user')
-        setLoading(false)
-      }
-    } else {
+    // A user saved by the old build (no session token) has to sign in once with the new flow.
+    if (!getSessionToken()) {
+      localStorage.removeItem(USER_KEY)
       setLoading(false)
+      return
     }
+    verifyUser()
   }, [])
 
-  // Both verifyUser (session restore) and login (fresh PIN entry) honour
-  // both `active` and `can_login`. The users schema has both — `active`
-  // marks a kept-but-frozen account, `can_login` is the more granular
-  // "can this person use the app right now" toggle. Previously only
-  // `active` was checked, so a user with `can_login=false` could still
-  // sign in, defeating the purpose of the column.
-  //
-  // can_login is checked in JS after the fetch (rather than as a filter)
-  // so legacy rows where the column is NULL are treated as "allowed" —
-  // only an explicit `false` blocks access.
-  const verifyUser = async (userId) => {
+  // Restore the session: the server re-reads the row (active / can_login / pages) and slides the expiry.
+  // Only a definite "no" (401/403) signs out; a network blip keeps the saved row so the screen stays usable.
+  const verifyUser = async () => {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', userId)
-        .eq('active', true)
-        .single()
-
-      if (data && !error && data.can_login !== false) {
-        setUser(data)
-        localStorage.setItem('luckyvault_user', JSON.stringify(data))
+      const { status, data } = await postJson('/api/auth?action=session')
+      if (data?.ok && data.user) {
+        signIn(data.user, data.token)
+      } else if (status === 401 || status === 403) {
+        signOut()
       } else {
-        localStorage.removeItem('luckyvault_user')
+        const saved = localStorage.getItem(USER_KEY)
+        if (saved) setUser(JSON.parse(saved))
       }
     } catch (e) {
-      localStorage.removeItem('luckyvault_user')
+      try {
+        const saved = localStorage.getItem(USER_KEY)
+        if (saved) setUser(JSON.parse(saved))
+      } catch { signOut() }
     } finally {
       setLoading(false)
     }
   }
 
-  // Login supports shared PINs: multiple users can have the same 4-digit
-  // PIN (e.g. all streamers using 1234). Behaviour by match count:
-  //   0 candidates → "Invalid PIN"
-  //   1 candidate  → log them in directly (the simple case)
-  //   2+ candidates → return { needsPicker, candidates } so the Login
-  //                   page can show "who are you?" and call loginAs(id)
-  // The previous implementation used .single(), which errored on 2+ matches
-  // — that's why "all streamers share 1234" silently broke logins.
+  // Same result shapes as before, so Login.jsx is unchanged:
+  //   { success, user } | { success:false, error } | { success:false, needsPicker, candidates }
   const login = async (pin) => {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('pin', pin)
-        .eq('active', true)
-
-      if (error) {
-        return { success: false, error: 'Login failed' }
+      const { data } = await postJson('/api/auth?action=login', { pin })
+      if (data?.ok && data.user) {
+        signIn(data.user, data.token)
+        return { success: true, user: data.user }
       }
-      const candidates = (data || []).filter(u => u.can_login !== false)
-      if (candidates.length === 0) {
-        // Either no row matched, or every match has can_login=false
-        const anyDisabled = (data || []).some(u => u.can_login === false)
-        return {
-          success: false,
-          error: anyDisabled
-            ? 'Account is disabled — contact your admin.'
-            : 'Invalid PIN',
-        }
+      if (data?.needsPicker) {
+        picker.current = data.picker
+        return { success: false, needsPicker: true, candidates: data.candidates || [] }
       }
-      if (candidates.length === 1) {
-        const u = candidates[0]
-        setUser(u)
-        localStorage.setItem('luckyvault_user', JSON.stringify(u))
-        return { success: true, user: u }
-      }
-      // 2+ matches — let the Login page show a picker. Pass back just
-      // the minimum info needed for the picker (id + name + role).
-      return {
-        success: false,
-        needsPicker: true,
-        candidates: candidates.map(u => ({
-          id: u.id,
-          name: u.name,
-          role: u.role,
-        })),
-      }
+      return { success: false, error: data?.error || 'Login failed' }
     } catch (e) {
       return { success: false, error: 'Login failed' }
     }
   }
 
-  // Finalise login for a specific user id (used after the PIN picker
-  // when 2+ users shared a PIN). We re-fetch the row to avoid trusting
-  // anything from the client-side candidate list, and re-validate the
-  // active / can_login gates.
+  // Finish a shared-PIN login for one of the people the server offered.
   const loginAs = async (userId) => {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', userId)
-        .eq('active', true)
-        .single()
-      if (error || !data) {
-        return { success: false, error: 'User not found' }
+      const { data } = await postJson('/api/auth?action=login-as', { picker: picker.current, user_id: userId })
+      picker.current = null
+      if (data?.ok && data.user) {
+        signIn(data.user, data.token)
+        return { success: true, user: data.user }
       }
-      if (data.can_login === false) {
-        return { success: false, error: 'Account is disabled — contact your admin.' }
-      }
-      setUser(data)
-      localStorage.setItem('luckyvault_user', JSON.stringify(data))
-      return { success: true, user: data }
+      return { success: false, error: data?.error || 'Login failed' }
     } catch (e) {
       return { success: false, error: 'Login failed' }
     }
   }
 
   const logout = () => {
-    setUser(null)
-    localStorage.removeItem('luckyvault_user')
+    picker.current = null
+    signOut()
   }
 
   const hasAccess = (path) => {
@@ -154,20 +111,11 @@ export function AuthProvider({ children }) {
     return user?.allowed_pages?.includes('/users')
   }
 
-  // Accept the PIN if ANY active, non-disabled user with that PIN has
-  // admin access (i.e. /users in allowed_pages). Doesn't use .single()
-  // because PINs can be shared across users.
+  // True if this PIN belongs to an active, non-disabled admin (/users). Checked on the server.
   const verifyAdminPin = async (pin) => {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('pin', pin)
-        .eq('active', true)
-      if (error) return false
-      return (data || []).some(
-        u => u.can_login !== false && u.allowed_pages?.includes('/users')
-      )
+      const { data } = await postJson('/api/auth?action=verify-admin', { pin })
+      return data?.ok === true && data.valid === true
     } catch (e) {
       return false
     }
@@ -176,7 +124,7 @@ export function AuthProvider({ children }) {
   // Refresh user data (after permissions change)
   const refreshUser = async () => {
     if (user?.id) {
-      await verifyUser(user.id)
+      await verifyUser()
     }
   }
 

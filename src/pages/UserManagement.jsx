@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, USER_COLUMNS } from '../lib/supabase'
+import { postJson } from '../lib/apiSession'
 import { useAuth } from '../lib/AuthContext'
 import { FEATURE_FLAGS } from '../lib/featureFlags'
 import { ToastContainer, useToast } from '../components/Toast'
@@ -150,7 +151,7 @@ export default function UserManagement() {
       const [usersRes, locationsRes, roomsRes] = await Promise.all([
         supabase
           .from('users')
-          .select('*')
+          .select(USER_COLUMNS)
           .order('name'),
         supabase
           .from('locations')
@@ -183,10 +184,8 @@ export default function UserManagement() {
     return Math.floor(1000 + Math.random() * 9000).toString()
   }
 
-  // Check if PIN is unique
-  const isPinUnique = (pin, excludeUserId = null) => {
-    return !users.some(u => u.pin === pin && u.id !== excludeUserId && u.active)
-  }
+  // PINs are checked and stored on the server (api/users-admin.js): it rejects a PIN already in use and only
+  // ever shows a new PIN once, in the toast. The list below never sees anyone's PIN (D-20261021-04).
 
   const handleAddUser = async (e) => {
     e.preventDefault()
@@ -196,35 +195,17 @@ export default function UserManagement() {
       return
     }
 
-    // Generate PIN if not set
-    let pin = newUser.pin
-    if (!pin) {
-      pin = generatePin()
-      // Make sure it's unique
-      while (!isPinUnique(pin)) {
-        pin = generatePin()
-      }
-    } else if (!isPinUnique(pin)) {
-      addToast('This PIN is already in use', 'error')
-      return
-    }
-
     setSubmitting(true)
     try {
-      // Create user
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .insert({
-          name: newUser.name.trim(),
-          pin: pin,
-          active: true,
-          can_login: true,
-          allowed_pages: newUser.allowed_pages
-        })
-        .select()
-        .single()
-
-      if (userError) throw userError
+      // Create user (server picks a free PIN when the box is empty)
+      const { data: res } = await postJson('/api/users-admin?action=create', {
+        name: newUser.name.trim(),
+        pin: newUser.pin || undefined,
+        allowed_pages: newUser.allowed_pages,
+      })
+      if (!res?.ok) throw new Error(res?.error || 'Failed to add user')
+      const userData = res.user
+      const pin = res.pin
 
       // Add room assignments
       if (newUser.rooms.length > 0) {
@@ -245,7 +226,7 @@ export default function UserManagement() {
       if (error.message?.includes('duplicate')) {
         addToast('A user with this name or PIN already exists', 'error')
       } else {
-        addToast('Failed to add user', 'error')
+        addToast(error.message || 'Failed to add user', 'error')
       }
     } finally {
       setSubmitting(false)
@@ -255,6 +236,7 @@ export default function UserManagement() {
   const openEditModal = (user) => {
     setEditingUser({
       ...user,
+      pin: '',            // blank = keep the current PIN
       allowed_pages: user.allowed_pages || ['/'],
       // Existing rows without can_login (NULL) are treated as enabled
       // for backwards-compat; only an explicit false disables.
@@ -274,28 +256,20 @@ export default function UserManagement() {
       return
     }
 
-    if (editingUser.pin && !isPinUnique(editingUser.pin, editingUser.id)) {
-      addToast('This PIN is already in use', 'error')
-      return
-    }
-
     setSubmitting(true)
     try {
-      const { error } = await supabase
-        .from('users')
-        .update({
-          name: editingUser.name.trim(),
-          pin: editingUser.pin,
-          allowed_pages: editingUser.allowed_pages,
-          // Default to true on save so the toggle's "on by default" state
-          // sticks even on rows that pre-date the can_login column. The
-          // UI ensures editingUser.can_login is always set explicitly
-          // when the modal opens.
-          can_login: editingUser.can_login !== false,
-        })
-        .eq('id', editingUser.id)
-
-      if (error) throw error
+      const { data: res } = await postJson('/api/users-admin?action=update', {
+        id: editingUser.id,
+        name: editingUser.name.trim(),
+        pin: editingUser.pin || undefined,      // only sent when a new PIN was typed
+        allowed_pages: editingUser.allowed_pages,
+        // Default to true on save so the toggle's "on by default" state
+        // sticks even on rows that pre-date the can_login column. The
+        // UI ensures editingUser.can_login is always set explicitly
+        // when the modal opens.
+        can_login: editingUser.can_login !== false,
+      })
+      if (!res?.ok) throw new Error(res?.error || 'Failed to update user')
 
       addToast('User updated!')
       
@@ -308,29 +282,18 @@ export default function UserManagement() {
       loadData()
     } catch (error) {
       console.error('Error updating user:', error)
-      addToast('Failed to update user', 'error')
+      addToast(error.message || 'Failed to update user', 'error')
     } finally {
       setSubmitting(false)
     }
   }
 
   const resetUserPin = async (userId) => {
-    const newPin = generatePin()
-    // Make sure it's unique
-    let pin = newPin
-    while (!isPinUnique(pin, userId)) {
-      pin = generatePin()
-    }
-
     try {
-      const { error } = await supabase
-        .from('users')
-        .update({ pin })
-        .eq('id', userId)
+      const { data: res } = await postJson('/api/users-admin?action=reset-pin', { id: userId })
+      if (!res?.ok) throw new Error(res?.error || 'Failed to reset PIN')
 
-      if (error) throw error
-
-      addToast(`PIN reset to: ${pin}`)
+      addToast(`PIN reset to: ${res.pin}`)
       loadData()
     } catch (error) {
       console.error('Error resetting PIN:', error)
@@ -340,12 +303,8 @@ export default function UserManagement() {
 
   const toggleUserActive = async (user) => {
     try {
-      const { error } = await supabase
-        .from('users')
-        .update({ active: !user.active })
-        .eq('id', user.id)
-
-      if (error) throw error
+      const { data: res } = await postJson('/api/users-admin?action=set-active', { id: user.id, active: !user.active })
+      if (!res?.ok) throw new Error(res?.error || 'Failed to update user')
 
       addToast(user.active ? 'User deactivated' : 'User activated')
       loadData()
@@ -622,7 +581,7 @@ export default function UserManagement() {
                       <td>
                         <div className="flex items-center gap-2">
                           <code className="bg-vault-dark px-2 py-1 rounded text-vault-gold">
-                            {user.pin || '----'}
+                            ••••
                           </code>
                           <button
                             onClick={() => resetUserPin(user.id)}
@@ -740,6 +699,7 @@ export default function UserManagement() {
                       value={editingUser.pin || ''}
                       onChange={(e) => setEditingUser({ ...editingUser, pin: e.target.value.replace(/\D/g, '').slice(0, 4) })}
                       maxLength={4}
+                      placeholder="Leave blank to keep the current PIN"
                       className="flex-1"
                     />
                     <button

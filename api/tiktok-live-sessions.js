@@ -9,12 +9,15 @@
 //   curl https://lucky-vault-inventory-management-sy.vercel.app/api/tiktok-live-sessions
 
 import { harvestLiveSessionsFromAnalytics } from './_lib/tiktok.js'
+import { requireSession } from './_lib/session.js'
 
 export const config = {
   maxDuration: 90,
 }
 
 export default async function handler(req, res) {
+  const who = await requireSession(req, res, { admin: true })   // debug route: admins only (D-20261021-04)
+  if (!who) return
   const rawCookie = process.env.TIKTOK_COOKIE
   if (!rawCookie) {
     return res.status(500).json({ ok: false, error: 'TIKTOK_COOKIE env var not set' })
