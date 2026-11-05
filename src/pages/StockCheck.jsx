@@ -1,23 +1,29 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle, Loader2, MapPin, Play, ScanLine, Search } from 'lucide-react'
-import { fetchLocations, listStockPendingSales, resolveStockPending, supabase } from '../lib/supabase'
+import { fetchLocations, listStockPendingSales, moveStockBetweenRooms, resolveStockPending, supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
-import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, ZONES, ZONE_LETTERS, ZONE_MAX, loweredShare, planStockFix, resultCsv } from '../lib/stockCheck'
+import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, STORE_ZONE, UNSORTED, ZONES, dayOf, isBigZone, isOverLimit, loweredShare, planZoneSubmit, resultCsv, zoneMax } from '../lib/stockCheck'
 
-// Stock Check: John scans the Pokemon singles zone by zone (A1..J5). Where he
-// scans a card is where the system says it is. When the round is finished, he
-// confirms and any difference becomes his number. Sales and intake go on as usual.
+// Stock Check: John scans the Pokemon singles zone by zone. Inventory: A1..J5 and Unsorted. Store: one big zone.
+// Where he scans a card is where the system says it is. He can submit the zones he has finished at any time:
+// only those zones are replaced, the others keep what they had (stock_zone_qty). Sales and intake go on as usual.
 // Tables: scripts/create_stock_check_tables.sql. Rules: src/lib/stockCheck.js.
 
 const PAGE = 1000
 
 // Gary 2026-11-04: singles stock is only these two.
 const INVENTORY_ROOM = '6d89a23e-c250-4dcd-81cf-2b4dd26c7592'
+const STORE_ROOM = 'c4cf3dab-94d7-4c2c-a4b4-214977feec06'
 const STOCK_ROOMS = [
   { id: INVENTORY_ROOM, label: 'Inventory (TCGplayer Singles)' },
-  { id: 'c4cf3dab-94d7-4c2c-a4b4-214977feec06', label: 'Storefront (Front Store)' },
+  { id: STORE_ROOM, label: 'Storefront (Front Store)' },
 ]
+// Gary 11/05: copies can move between these two, from Find a card.
+const MOVE_TO = {
+  [INVENTORY_ROOM]: { id: STORE_ROOM, label: 'Storefront / 门店' },
+  [STORE_ROOM]: { id: INVENTORY_ROOM, label: 'Inventory / 库房' },
+}
 
 async function readAllPages(build) {
   const all = []
@@ -50,9 +56,26 @@ async function readRoomRows(locationId) {
   return rows
 }
 
-// Ids sold from this room in the last few days: their copy may still be here, waiting to ship.
-async function readRecentlySold(locationId) {
-  const since = new Date(Date.now() - RECENT_SALE_DAYS * 86400000).toLocaleDateString('en-CA')
+// What each zone of this room held when it was last submitted. Map "zone|id" -> { qty, at }
+async function readLedger(locationId) {
+  const data = await readAllPages(() => supabase.from('stock_zone_qty').select('zone, tcg_id, qty, scanned_at').eq('location_id', locationId).order('zone').order('tcg_id'))
+  return new Map(data.map(r => [`${r.zone}|${r.tcg_id}`, { qty: r.qty, at: r.scanned_at }]))
+}
+
+// Ids of this room with a move between rooms since a time. The audit log is keyed by row, so rows says which id it was.
+async function readMovedIds(rows, since) {
+  const data = await readAllPages(() => supabase.from('singles_audit_log').select('id, single_id, payload').eq('event_type', 'moved').gte('acted_at', since).order('id'))
+  const idOfRow = new Map()
+  for (const [id, rs] of rows) for (const r of rs) idOfRow.set(r.id, id)
+  // Some moves log only the source row and name the other end in the payload.
+  return new Set(data.flatMap(d => [idOfRow.get(d.single_id), idOfRow.get(d.payload?.dest_single_id)]).filter(Boolean))
+}
+
+// Ids sold from this room in the last few days, or since the round began: their copy may still be here, or a scan may be older than the sale.
+async function readRecentlySold(locationId, roundStart) {
+  const days = new Date(Date.now() - RECENT_SALE_DAYS * 86400000).toLocaleDateString('en-CA')
+  const began = dayOf(roundStart)
+  const since = began < days ? began : days
   const data = await readAllPages(() => supabase
     .from('singles')
     .select('id, tcg_id')
@@ -120,6 +143,7 @@ export default function StockCheck() {
   }
 
   const locationName = locations.find(l => l.id === locationId)?.name || ''
+  const roomZones = locationId === INVENTORY_ROOM ? [...ZONES, UNSORTED] : [STORE_ZONE]
   const expected = useMemo(() => new Map((round?.expected || []).map(e => [String(e.id), e])), [round])
 
   useEffect(() => {
@@ -271,6 +295,13 @@ export default function StockCheck() {
     })
     dirty.current.add(key)
     scanVersion.current++
+    // A scan reopens a finished zone: it is not submitted until it is finished again.
+    if ((roundRef.current?.zones_done || []).includes(z)) {
+      const done = roundRef.current.zones_done.filter(x => x !== z)
+      setRound(r => ({ ...r, zones_done: done }))
+      supabase.from('stock_check_rounds').update({ zones_done: done }).eq('id', roundRef.current.id)
+        .then(({ error }) => { if (error) addToast(`Could not reopen ${z}: ${error.message}`, 'error') })
+    }
     clearTimeout(flushTimer.current)
     flushTimer.current = setTimeout(() => flush(), 1500)
     setPlan(null); setApplyResult(null)
@@ -302,14 +333,14 @@ export default function StockCheck() {
     setTimeout(() => inputRef.current?.focus(), 50)
   }
 
-  const overfull = () => ZONES.filter(z => (zoneCounts.get(z) || 0) > ZONE_MAX)
+  const overfull = () => roomZones.filter(z => isOverLimit(z, zoneCounts.get(z) || 0))
 
   // Read from the scans themselves: a scan can land while the save below is waiting.
   const zoneOver = (z) => {
     let n = 0
     for (const [k, q] of scansRef.current) if (k.startsWith(`${z}|`)) n += q
-    if (n <= ZONE_MAX) return false
-    addToast(`${z} has more than ${ZONE_MAX} cards. Check this zone again. / 超过 ${ZONE_MAX} 张，请重新检查`, 'error')
+    if (!isOverLimit(z, n)) return false
+    addToast(`${z} has more than ${zoneMax(z)} cards. Check this zone again. / 超过 ${zoneMax(z)} 张，请重新检查`, 'error')
     return true
   }
 
@@ -318,19 +349,28 @@ export default function StockCheck() {
     const ok = await flush()
     if (!ok) { addToast('Scans could not be saved yet. Try again in a moment.', 'error'); return }
     if (zoneOver(zone)) return
+    // Nothing scanned, but the records say this zone holds cards: done means it really is empty, and the next submit empties it.
+    const scannedHere = [...scansRef.current].some(([k, q]) => q > 0 && k.startsWith(`${zone}|`))
+    if (!scannedHere) {
+      const { data: held, error: heldErr } = await supabase.from('stock_zone_qty').select('qty').eq('location_id', round.location_id).eq('zone', zone)
+      if (heldErr) { addToast(`Could not read this zone's records: ${heldErr.message}`, 'error'); return }
+      const n = (held || []).reduce((s, h) => s + (Number(h.qty) || 0), 0)
+      if (n > 0 && !confirm(`Nothing scanned in ${zone}, but the records show ${n} cards here. Is it really empty? OK = mark it empty. Cancel = keep its records.\n${zone} 没扫到东西，但记录有 ${n} 张。确实空了吗？确定 = 记为空；取消 = 保留记录。`)) return
+    }
     const done = [...new Set([...(round.zones_done || []), zone])]
     const { error } = await supabase.from('stock_check_rounds').update({ zones_done: done }).eq('id', round.id)
     if (error) { addToast(`Could not mark the zone done: ${error.message}`, 'error'); return }
     setRound(r => ({ ...r, zones_done: done }))
-    const next = ZONES[ZONES.indexOf(zone) + 1]
+    const next = isBigZone(zone) ? null : ZONES[ZONES.indexOf(zone) + 1]     // the big zones are a pass of their own
     if (next) await openZone(next)
     else setZone(null)
   }
 
-  // ─── Finish: compare, confirm, change stock ─────────────────────────
-  const checkDifferences = async () => {
+  // ─── Submit: compare, confirm, change stock ────────────────────────
+  // finishing = false: the finished zones go in, the round stays open. true: same, and the round ends.
+  const checkDifferences = async (finishing) => {
     if (overfull().length) {
-      addToast(`More than ${ZONE_MAX} cards in ${overfull().join(', ')}. Check again before finishing. / 超过 ${ZONE_MAX} 张，请先重新检查`, 'error')
+      addToast(`Too many cards in ${overfull().join(', ')}. Check again first. / 超过上限，请先重新检查`, 'error')
       return
     }
     if (!beginOp()) return
@@ -340,8 +380,25 @@ export default function StockCheck() {
       const ok = await flush()
       if (!ok) throw new Error('Some scans are not saved yet')
       setZone(null)
-      const [rows, recentlySold] = await Promise.all([readRoomRows(locationId), readRecentlySold(locationId)])
-      const p = planStockFix({ expected, totals, rows, recentlySold })
+      const ledger = await readLedger(locationId)
+      const withRecords = new Set([...ledger.keys()].map(k => k.split('|')[0]))
+      const withScans = new Set(roomZones.filter(z => (zoneCounts.get(z) || 0) > 0))
+      // A done zone with records and no scans was confirmed empty in finishZone: a scan would have reopened it.
+      const submit = new Set(roomZones.filter(z => zonesDone.has(z) && (withScans.has(z) || withRecords.has(z))))
+      const unfinished = [...withScans].filter(z => !zonesDone.has(z))
+      if (finishing && unfinished.length) {
+        addToast(`Finish ${unfinished.join(', ')} first. / 先点这些小区的完成：${unfinished.join(', ')}`, 'error')
+        return
+      }
+      if (!finishing && submit.size === 0) {
+        addToast('No finished zone with scans yet. Press done on a zone first. / 还没有扫完的小区，先点小区完成', 'error')
+        return
+      }
+      const [rows, recentlySold] = await Promise.all([readRoomRows(locationId), readRecentlySold(locationId, round.started_at)])
+      const movedIds = await readMovedIds(rows, round.started_at)
+      const names = new Map([...rows].map(([id, rs]) => [id, cardName(rs[0])]))
+      for (const [id, e] of expected) if (!names.has(id)) names.set(id, e.name)
+      const p = planZoneSubmit({ submit, scans, ledger, rows, names, recentlySold, movedIds, finishing })
       if (p.extras.length) {
         const ids = p.extras.map(e => e.id)
         const found = {}
@@ -357,10 +414,10 @@ export default function StockCheck() {
         p.extras = p.extras.map(e => ({ ...e, name: found[e.id]?.name || '', where: found[e.id] ? `app has it at: ${found[e.id].places.join(', ')}` : 'no live stock in the app' }))
       }
       if (version !== scanVersion.current) {
-        addToast('You scanned while it was comparing. Press Finish round again.', 'error')
+        addToast('You scanned while it was comparing. Press submit again.', 'error')
         return
       }
-      setPlan({ ...p, version })
+      setPlan({ ...p, version, finishing, submit: [...submit], unfinished, ledger })
       setIncludeZeroed(false)
       setApplyResult(null)
     } catch (err) {
@@ -381,73 +438,106 @@ export default function StockCheck() {
     const line = (group, l, outcome) => ({ group, ...l, zones: zones(l.id), outcome, rowId: undefined, rowQty: undefined })
     return [
       ...plan.fixes.map(l => line('difference', l, outcomes?.[l.id] || 'not changed')),
-      ...plan.zeroed.map(l => line('scanned none', l, outcomes?.[l.id] || 'not changed')),
+      ...plan.zeroed.map(l => line('needs the box ticked', l, outcomes?.[l.id] || 'not changed')),
       ...plan.people.map(l => line('needs a person', { ...l, name: l.name }, l.reason)),
       ...plan.extras.map(l => line('not in this room', { ...l, to: '' }, l.where)),
     ]
   }
 
-  const applyPlan = async () => {
-    if (blocked || planLines.length === 0 || busyRef.current) return
-    if (plan.version !== scanVersion.current) { setPlan(null); return }
-    if (!confirm(`Change stock for ${planLines.length} card${planLines.length === 1 ? '' : 's'} in ${locationName} to your scanned numbers?`)) return
-    if (!beginOp()) return
-    try {
-    const outcomes = {}
-    let changed = 0, skipped = 0, failed = 0, logFailed = 0
-    for (let i = 0; i < planLines.length; i++) {
-      const l = planLines[i]
-      setApplying({ done: i, total: planLines.length })
-      // Only if the row still holds the number we just read. A sale in between loses here, and the next check sees it.
-      const { data, error } = await supabase.from('singles')
-        .update({ quantity: l.to })
-        .eq('id', l.rowId).eq('location_id', round.location_id).eq('quantity', l.rowQty).eq('status', 'in_inventory').eq('deleted', false)
-        .select('id')
-      if (error) { failed++; outcomes[l.id] = `failed: ${error.message}`; continue }
-      if (!data || data.length !== 1) { skipped++; outcomes[l.id] = 'stock moved just now: not changed'; continue }
-      changed++
-      outcomes[l.id] = `changed ${l.rowQty} → ${l.to}`
-      const { error: logErr } = await supabase.from('singles_audit_log').insert({
-        single_id: l.rowId,
-        event_type: 'updated',
-        summary: `Stock check: qty ${l.rowQty} → ${l.to} (scanned ${l.scanned})`,
-        payload: { stock_check: true, round_id: round.id, location: locationName, scanned: l.scanned, before: l.rowQty, after: l.to, app_at_start: l.start, zones: zonesById.get(l.id) || [] },
-        acted_by_id: user?.id || null,
-      })
-      if (logErr) logFailed++
+  // Card by card, its zones first, then its stock. If the page dies between the two, one card's stock change is lost and
+  // the next finish lists it; the other order could apply the change twice on the next submit.
+  const writeZones = async (entries) => {
+    const at = new Date().toISOString()
+    const keep = entries.filter(e => e.qty > 0).map(e => ({ location_id: round.location_id, zone: e.zone, tcg_id: e.id, qty: e.qty, scanned_at: e.at || at, scanned_by_id: user?.id || null }))
+    for (let i = 0; i < keep.length; i += 500) {
+      const { error } = await supabase.from('stock_zone_qty').upsert(keep.slice(i, i + 500), { onConflict: 'location_id,zone,tcg_id' })
+      if (error) return error
     }
-    setApplying(null)
-    const lines = resultLines(outcomes)
-    const summary = { changed, skipped, failed, logFailed }
-    setApplyResult({ ...summary, lines })
-    if (skipped === 0 && failed === 0) {
-      const { error } = await supabase.from('stock_check_rounds')
-        .update({ status: 'applied', finished_at: new Date().toISOString(), finished_by_id: user?.id || null, result: { ...summary, lines } })
-        .eq('id', round.id)
-      if (error) addToast(`Stock changed, but the round could not be closed: ${error.message}`, 'error')
-      else setRound(r => ({ ...r, status: 'applied' }))
+    for (const e of entries.filter(x => x.qty <= 0)) {
+      const { error } = await supabase.from('stock_zone_qty').delete().eq('location_id', round.location_id).eq('zone', e.zone).eq('tcg_id', e.id)
+      if (error) return error
     }
-    setPlan(null)
-    } finally {
-      setApplying(null)
-      endOp()
-    }
+    return null
   }
 
-  const finishNoChanges = async () => {
+  const applyPlan = async () => {
+    if (blocked || busyRef.current) return
     if (plan.version !== scanVersion.current) { setPlan(null); return }
-    if (!confirm('Close this round? No stock needs changing.')) return
+    const ask = planLines.length
+      ? `Change stock for ${planLines.length} card${planLines.length === 1 ? '' : 's'} in ${locationName}?`
+      : (plan.finishing ? 'Close this round? No stock needs changing.' : 'Save these zones? No stock needs changing.')
+    if (!confirm(ask)) return
     if (!beginOp()) return
     try {
-      const lines = resultLines({})
-      const { error } = await supabase.from('stock_check_rounds')
-        .update({ status: 'applied', finished_at: new Date().toISOString(), finished_by_id: user?.id || null, result: { changed: 0, skipped: 0, failed: 0, logFailed: 0, lines } })
-        .eq('id', round.id)
-      if (error) { addToast(`Could not close the round: ${error.message}`, 'error'); return }
-      setApplyResult({ changed: 0, skipped: 0, failed: 0, logFailed: 0, lines })
-      setRound(r => ({ ...r, status: 'applied' }))
+      // Another browser may have submitted since this plan was made: applying it too would change stock twice.
+      let fresh
+      try {
+        fresh = await readLedger(round.location_id)
+      } catch (err) {
+        addToast(`Nothing changed: could not read the zones (${err.message}). Try again. / 分区读取失败，库存没改，再试一次`, 'error')
+        return
+      }
+      if (fresh.size !== plan.ledger.size || [...fresh].some(([k, v]) => plan.ledger.get(k)?.qty !== v.qty)) {
+        setPlan(null)
+        addToast('Zones were saved from somewhere else just now. Nothing changed: submit again. / 分区刚被别处保存过，这次没改，请重新提交', 'error')
+        return
+      }
+      const ticked = new Set(includeZeroed ? plan.zeroed.map(l => l.id) : [])
+      const writable = [...plan.changes.keys()].filter(id => !plan.hold.has(id) && !(plan.holdUnlessTicked.has(id) && !ticked.has(id)))
+      const entriesOf = (id) => (plan.changes.get(id) || []).map(c => ({ ...c, id }))
+      const beforeOf = (id) => entriesOf(id).map(e => {
+        const old = plan.ledger.get(`${e.zone}|${id}`)
+        return { zone: e.zone, id, qty: old?.qty || 0, at: old?.at }
+      })
+      // Cards whose stock does not change: only their zones. Saving these twice changes nothing.
+      const lineIds = new Set(planLines.map(l => l.id))
+      const zoneErr = await writeZones(writable.filter(id => !lineIds.has(id)).flatMap(entriesOf))
+      if (zoneErr) {
+        addToast(`Stock not changed, but some zones may be saved (${zoneErr.message}). Submit again. / 库存没改，部分分区可能已存，请重新提交`, 'error')
+        setPlan(null)
+        return
+      }
+      const outcomes = {}
+      let changed = 0, skipped = 0, failed = 0, logFailed = 0, backFailed = 0
+      const putBack = async (id) => { if (await writeZones(beforeOf(id))) backFailed++ }
+      for (let i = 0; i < planLines.length; i++) {
+        const l = planLines[i]
+        setApplying({ done: i, total: planLines.length })
+        const lineZoneErr = await writeZones(entriesOf(l.id))
+        if (lineZoneErr) { failed++; outcomes[l.id] = `failed: ${lineZoneErr.message}`; await putBack(l.id); continue }
+        // Only if the row still holds the number we just read. A sale in between loses here, and the next submit sees it.
+        const { data, error } = await supabase.from('singles')
+          .update({ quantity: l.to })
+          .eq('id', l.rowId).eq('location_id', round.location_id).eq('quantity', l.rowQty).eq('status', 'in_inventory').eq('deleted', false)
+          .select('id')
+        if (error) { failed++; outcomes[l.id] = `failed: ${error.message}`; await putBack(l.id); continue }
+        if (!data || data.length !== 1) { skipped++; outcomes[l.id] = 'stock moved just now: not changed'; await putBack(l.id); continue }
+        changed++
+        outcomes[l.id] = `changed ${l.rowQty} → ${l.to}`
+        const { error: logErr } = await supabase.from('singles_audit_log').insert({
+          single_id: l.rowId,
+          event_type: 'updated',
+          summary: `Stock check: qty ${l.rowQty} → ${l.to} (zones ${l.start} → ${l.scanned}, other zones ${l.others})`,
+          payload: { stock_check: true, round_id: round.id, location: locationName, zones_before: l.start, zones_scanned: l.scanned, other_zones: l.others, before: l.rowQty, after: l.to, zones: zonesById.get(l.id) || [] },
+          acted_by_id: user?.id || null,
+        })
+        if (logErr) logFailed++
+      }
+      setApplying(null)
+      if (backFailed) addToast(`Zones of ${backFailed} cards could not be put back. Tell Gary. / 有分区没恢复，告诉 Gary`, 'error')
+      const lines = resultLines(outcomes)
+      const summary = { changed, skipped, failed, logFailed }
+      setApplyResult({ ...summary, lines, submitted: plan.submit })
+      if (plan.finishing && skipped === 0 && failed === 0) {
+        const { error } = await supabase.from('stock_check_rounds')
+          .update({ status: 'applied', finished_at: new Date().toISOString(), finished_by_id: user?.id || null, result: { ...summary, lines } })
+          .eq('id', round.id)
+        if (error) addToast(`Stock changed, but the round could not be closed: ${error.message}`, 'error')
+        else setRound(r => ({ ...r, status: 'applied' }))
+      }
       setPlan(null)
     } finally {
+      setApplying(null)
       endOp()
     }
   }
@@ -464,13 +554,13 @@ export default function StockCheck() {
           <ScanLine className="text-vault-gold" /> Stock Check / 库存核对
         </h1>
         <p className="text-gray-400 mt-1 text-sm">
-          Pokemon singles only. Scan zone by zone: where you scan a card is where the system says it is. Stock changes only when you confirm at the end.
-          <br />只核对宝可梦单卡。按小区依次扫，在哪个小区扫到，系统就记在哪。最后确认才改库存。
+          Pokemon singles only. Scan zone by zone: where you scan a card is where the system says it is. You can submit finished zones at any time: only those zones change, the others stay as they were.
+          <br />只核对宝可梦单卡。按小区依次扫，在哪个小区扫到，系统就记在哪。随时可以提交已完成的小区：只更新这几个小区，其他小区不动。
         </p>
       </div>
 
       <StockPendingSales addToast={addToast} user={user} />
-      <FindCard addToast={addToast} />
+      <FindCard addToast={addToast} user={user} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <MapPin size={14} className="text-gray-500" />
@@ -510,29 +600,29 @@ export default function StockCheck() {
         <>
           <div className="mb-3 text-sm text-gray-300 flex flex-wrap items-center gap-x-4 gap-y-1">
             <span>Scanned <b className="text-white">{scannedUnits}</b> of <b className="text-white">{expectedUnits}</b> in the app at the start</span>
-            <span>Zones done <b className="text-white">{zonesDone.size}</b> of {ZONES.length}</span>
+            <span>Zones done <b className="text-white">{roomZones.filter(z => zonesDone.has(z)).length}</b> of {roomZones.length}</span>
             <span className="text-xs text-gray-500">Started {new Date(round.started_at).toLocaleDateString()}</span>
           </div>
 
           <div className="card mb-4 overflow-x-auto">
             <div className="grid gap-1 min-w-[560px]" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}>
-              {ZONE_LETTERS.flatMap(l => [1, 2, 3, 4, 5].map(n => {
-                const z = `${l}${n}`
+              {roomZones.map(z => {
                 const c = zoneCounts.get(z) || 0
-                const over = c > ZONE_MAX
+                const over = isOverLimit(z, c)
                 return (
                   <button
                     key={z}
                     type="button"
                     data-zone={z}
                     onClick={() => openZone(z)}
+                    style={isBigZone(z) ? { gridColumn: '1 / -1' } : undefined}
                     className={`px-3 py-3 rounded border text-lg flex items-center justify-between gap-2 ${over ? 'border-red-500 bg-red-500/20 text-red-200' : zone === z ? 'border-vault-gold bg-vault-gold/20 text-white' : 'border-vault-border bg-vault-darker/40 text-gray-300 hover:border-vault-gold/50'}`}
                   >
-                    <span className="font-semibold">{z}{zonesDone.has(z) && <CheckCircle size={16} className="inline ml-1 text-emerald-400" />}</span>
+                    <span className="font-semibold">{z === UNSORTED ? 'Unsorted / 未分区' : z === STORE_ZONE ? 'Store / 门店' : z}{zonesDone.has(z) && <CheckCircle size={16} className="inline ml-1 text-emerald-400" />}</span>
                     <span className={over ? 'text-base text-red-300 font-bold' : 'text-base text-gray-400'}>{c}</span>
                   </button>
                 )
-              }))}
+              })}
             </div>
           </div>
 
@@ -571,10 +661,10 @@ export default function StockCheck() {
                 )
               })()}
 
-              {zoneCounts.get(zone) > ZONE_MAX && (
+              {isOverLimit(zone, zoneCounts.get(zone) || 0) && (
                 <div data-testid="zone-over" className="mb-3 p-3 rounded border border-red-500/50 bg-red-500/10 text-sm text-red-300 font-semibold">
-                  {zone} has {zoneCounts.get(zone)} cards. A zone holds {ZONE_MAX} at most: check this zone again. Press −1 on anything scanned by mistake.
-                  <br />{zone} 有 {zoneCounts.get(zone)} 张，一个小区最多 {ZONE_MAX} 张，请重新检查。扫错的按 −1 减掉。
+                  {zone} has {zoneCounts.get(zone)} cards. It holds {zoneMax(zone)} at most: check this zone again. Press −1 on anything scanned by mistake.
+                  <br />{zone} 有 {zoneCounts.get(zone)} 张，最多 {zoneMax(zone)} 张，请重新检查。扫错的按 −1 减掉。
                 </div>
               )}
 
@@ -599,7 +689,7 @@ export default function StockCheck() {
 
               <div className="flex justify-end">
                 <button type="button" onClick={finishZone} className="text-sm px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 font-semibold">
-                  {zone} done, next zone / 下一个小区
+                  {isBigZone(zone) ? `${zone} done / 完成` : `${zone} done, next zone / 下一个小区`}
                 </button>
               </div>
             </div>
@@ -609,7 +699,10 @@ export default function StockCheck() {
             <button type="button" onClick={cancelRound} className="text-xs px-3 py-1.5 text-gray-400 hover:text-red-400 border border-vault-border rounded">
               Cancel round
             </button>
-            <button type="button" onClick={checkDifferences} disabled={planning} className="text-sm px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold flex items-center gap-1">
+            <button type="button" onClick={() => checkDifferences(false)} disabled={planning} className="text-sm px-3 py-1.5 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/10 disabled:opacity-50 font-semibold">
+              Submit finished zones / 提交已完成的小区
+            </button>
+            <button type="button" onClick={() => checkDifferences(true)} disabled={planning} className="text-sm px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 disabled:opacity-50 font-semibold flex items-center gap-1">
               {planning && <Loader2 size={12} className="animate-spin" />} Finish round: check differences / 结束本轮，看差异
             </button>
           </div>
@@ -618,18 +711,22 @@ export default function StockCheck() {
 
       {plan && !closed && (
         <div className="card mb-4" data-testid="plan">
-          <h2 className="font-display text-lg text-white mb-2">Differences / 差异</h2>
+          <h2 className="font-display text-lg text-white mb-2">{plan.finishing ? 'Differences / 差异' : 'Submit finished zones / 提交已完成的小区'}</h2>
+          <p className="text-sm text-gray-300 mb-2">
+            Zones in this submit: {plan.submit.join(', ') || 'none'}. All other zones stay as they were.
+            <br />这次提交：{plan.submit.join('、') || '没有'}。其他小区不动。
+            {plan.unfinished.length > 0 && <><br /><span className="text-amber-300">Not finished, not in this submit: {plan.unfinished.join(', ')} / 还没点完成，这次不提交</span></>}
+          </p>
           <p className="text-xs text-gray-400 mb-3">
-            {plan.same} cards match. {plan.movedOk} sold or came in during the round and still fit, so they are left alone.
-            {' '}Cards that moved and still don't fit are listed for a person: scan them again.
+            {plan.same} cards no change. {plan.soldOk} fewer than last time, explained by sales or moves. {plan.filled} found where the app already counted them.
           </p>
           <PlanTable title={`Will change to your number: ${plan.fixes.length}`} tone="text-vault-gold" lines={plan.fixes} nameOf={nameOf} />
           {plan.zeroed.length > 0 && (
             <>
-              <PlanTable title={`Not scanned at all: ${plan.zeroed.length} cards, ${plan.zeroed.reduce((s, l) => s + l.now, 0)} copies`} tone="text-red-300" lines={plan.zeroed} nameOf={nameOf} />
+              <PlanTable title={`Not found: ${plan.zeroed.length} cards, ${plan.zeroed.reduce((s, l) => s + (l.now - l.to), 0)} copies`} tone="text-red-300" lines={plan.zeroed} nameOf={nameOf} />
               <label className="flex items-center gap-2 text-sm text-red-300 mb-3 cursor-pointer">
                 <input type="checkbox" checked={includeZeroed} onChange={(e) => setIncludeZeroed(e.target.checked)} />
-                I looked for these and they are not in this room: set them to 0 / 找过了确实没有，改成 0
+                I looked for these and they are not in this room: change them to the number shown / 找过了确实没有，改成上面的数
               </label>
             </>
           )}
@@ -653,7 +750,7 @@ export default function StockCheck() {
           {blocked && (
             <div className="mb-3 p-3 rounded border border-red-500/50 bg-red-500/10 text-sm text-red-300 flex gap-2">
               <AlertTriangle size={16} className="flex-shrink-0" />
-              <span>This would lower {Math.round(share * 100)}% of the room's stock, so the round looks unfinished. Keep scanning, or ask Gary. / 这样会减掉 {Math.round(share * 100)}% 的库存，看起来还没扫完。继续扫，或者问 Gary。</span>
+              <span>This would lower {Math.round(share * 100)}% of the room's stock, which looks like a mistake. Check the zones, or ask Gary. / 这样会减掉 {Math.round(share * 100)}% 的库存，看起来不对。检查小区，或者问 Gary。</span>
             </div>
           )}
           <div className="flex flex-wrap justify-end gap-2">
@@ -663,7 +760,7 @@ export default function StockCheck() {
                 {applying ? <><Loader2 size={12} className="animate-spin" /> {applying.done} / {applying.total}</> : `Confirm: change stock for ${planLines.length} / 确认改库存`}
               </button>
             ) : (
-              <button type="button" onClick={finishNoChanges} disabled={busy} className="text-sm px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded font-semibold">Close this round / 结束</button>
+              <button type="button" onClick={applyPlan} disabled={busy} className="text-sm px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded font-semibold">{plan.finishing ? 'Close this round / 结束' : 'Save these zones / 保存这些小区'}</button>
             )}
           </div>
         </div>
@@ -679,8 +776,9 @@ export default function StockCheck() {
             {applyResult.logFailed > 0 && ` ${applyResult.logFailed} changed but not written to the activity log.`}
           </p>
           {(applyResult.skipped > 0 || applyResult.failed > 0) && (
-            <p className="text-sm text-amber-300 mb-2">The round stays open. Press Finish round again to check what is left.</p>
+            <p className="text-sm text-amber-300 mb-2">Those cards were not changed and the round stays open. Submit again to check them.</p>
           )}
+          {applyResult.submitted?.length > 0 && <p className="text-sm text-gray-300 mb-2">Zones saved: {applyResult.submitted.join(', ')}. Other zones were not touched. / 已保存这些小区，其他小区没动。</p>}
           <button type="button" onClick={() => downloadCsv(applyResult.lines, locationName)} className="text-xs px-3 py-1.5 text-gray-300 border border-vault-border rounded">Download CSV</button>
           {closed && (
             <button type="button" onClick={() => loadRoom(locationId)} className="ml-2 text-xs px-3 py-1.5 text-gray-300 border border-vault-border rounded">Back to the room</button>
@@ -698,13 +796,13 @@ function PlanTable({ title, tone, lines, nameOf, showReason }) {
       {lines.length > 0 && (
         <div className="bg-vault-darker rounded p-2 max-h-64 overflow-y-auto text-xs">
           <div className="flex gap-2 pb-1 text-[10px] uppercase tracking-wider text-gray-500">
-            <span className="w-16">ID</span><span className="flex-1">Card</span><span className="w-32 text-right">Start · app now · scanned</span><span className="w-14 text-right">{showReason ? '' : 'New'}</span>
+            <span className="w-16">ID</span><span className="flex-1">Card</span><span className="w-40 text-right">Zones before · app now · zones scanned</span><span className="w-14 text-right">{showReason ? '' : 'New'}</span>
           </div>
           {lines.map(l => (
             <div key={l.id} className="flex gap-2 py-0.5">
               <span className="w-16 font-mono text-gray-400">{l.id}</span>
               <span className="flex-1 min-w-0 truncate text-gray-300">{nameOf(l.id) || l.name}{showReason && <span className="text-amber-300"> · {l.reason}</span>}</span>
-              <span className="w-32 text-right text-gray-400">{l.start} · {l.now} · {l.scanned}</span>
+              <span className="w-40 text-right text-gray-400">{l.start} · {l.now} · {l.scanned}</span>
               <span className="w-14 text-right text-white font-semibold">{showReason ? '' : l.to}</span>
             </div>
           ))}
@@ -771,10 +869,12 @@ function StockPendingSales({ addToast, user }) {
 
 // Find a card: by name or scanned id. Answers from live stock plus the zones of
 // the latest round that scanned it in each room.
-function FindCard({ addToast }) {
+function FindCard({ addToast, user }) {
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   const [results, setResults] = useState(null)
+  const [moving, setMoving] = useState(null)   // { k, qty } of the line being moved
+  const [moveBusy, setMoveBusy] = useState(false)
 
   const search = async () => {
     const term = q.trim()
@@ -789,38 +889,46 @@ function FindCard({ addToast }) {
       }
       const data = await readAllPages(rowsQuery)
       const ids = [...new Set(data.map(r => String(r.tcg_id)))]
-      const scans = []
+      const held = []
       for (let i = 0; i < ids.length; i += 100) {
-        scans.push(...await readAllPages(() => supabase.from('stock_check_scans')
-          .select('zone, tcg_id, qty, round_id, round:stock_check_rounds!inner(location_id, status, started_at)')
-          .in('tcg_id', ids.slice(i, i + 100)).gt('qty', 0).neq('round.status', 'cancelled').order('round_id').order('zone').order('tcg_id')))
+        held.push(...await readAllPages(() => supabase.from('stock_zone_qty')
+          .select('location_id, zone, tcg_id, qty, scanned_at')
+          .in('tcg_id', ids.slice(i, i + 100)).order('location_id').order('zone').order('tcg_id')))
       }
-      // Newest round per id + room.
-      const newest = new Map()
-      for (const s of scans) {
-        const k = `${s.tcg_id}|${s.round.location_id}`
-        const cur = newest.get(k)
-        if (!cur || new Date(s.round.started_at) > new Date(cur.at)) newest.set(k, { at: s.round.started_at, round: s.round_id })
-      }
+      // What the zone held when it was last scanned: a sale does not change it until the next scan.
       const zones = new Map()
-      for (const s of scans) {
-        const k = `${s.tcg_id}|${s.round.location_id}`
-        if (newest.get(k)?.round !== s.round_id) continue
+      for (const h of held) {
+        const k = `${h.tcg_id}|${h.location_id}`
         if (!zones.has(k)) zones.set(k, [])
-        zones.get(k).push(`${s.zone}×${s.qty}`)
+        zones.get(k).push(`${h.zone}×${h.qty} (${dayOf(h.scanned_at).slice(5)})`)
       }
       const grouped = new Map()
       for (const r of data) {
         const k = `${r.tcg_id}|${r.location_id}`
-        const g = grouped.get(k) || { k, id: r.tcg_id, name: cardName(r), room: r.location?.name || 'no location', qty: 0, zones: zones.get(k) || [] }
+        const g = grouped.get(k) || { k, id: r.tcg_id, loc: r.location_id, name: cardName(r), room: r.location?.name || 'no location', qty: 0, zones: zones.get(k) || [] }
         g.qty += Number(r.quantity) || 0
         grouped.set(k, g)
       }
       setResults([...grouped.values()].sort((a, b) => a.name.localeCompare(b.name)))
+      setMoving(null)
     } catch (err) {
       addToast(`Search failed: ${err.message}`, 'error')
     } finally {
       setBusy(false)
+    }
+  }
+
+  const move = async (r) => {
+    if (moveBusy) return
+    setMoveBusy(true)
+    try {
+      const res = await moveStockBetweenRooms({ tcgId: r.id, fromLocationId: r.loc, toLocationId: MOVE_TO[r.loc].id, qty: Number(moving.qty), currentUserId: user?.id })
+      addToast(`Moved ${res.moved} to ${res.toName}. ${res.left} left here. / 已移 ${res.moved} 张，这边还剩 ${res.left} 张`, 'success')
+      await search()
+    } catch (err) {
+      addToast(err.message, 'error')
+    } finally {
+      setMoveBusy(false)
     }
   }
 
@@ -849,6 +957,15 @@ function FindCard({ addToast }) {
               <span className="flex-1 min-w-0 text-gray-200">{r.name}</span>
               <span className="text-gray-400">{r.room} ×{r.qty}</span>
               <span className={r.zones.length ? 'text-vault-gold font-semibold' : 'text-gray-500'}>{r.zones.length ? r.zones.join(' ') : 'no zone yet'}</span>
+              {MOVE_TO[r.loc] && (moving?.k === r.k ? (
+                <span className="flex items-center gap-1" data-testid="move-form">
+                  <input type="number" min="1" max={r.qty} step="1" value={moving.qty} onChange={(e) => setMoving({ k: r.k, qty: e.target.value })} className="w-14 px-1 py-0.5 text-xs" />
+                  <button type="button" disabled={moveBusy} onClick={() => move(r)} className="px-2 py-0.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded disabled:opacity-40 font-semibold">Move to {MOVE_TO[r.loc].label}</button>
+                  <button type="button" disabled={moveBusy} onClick={() => setMoving(null)} className="px-2 py-0.5 border border-vault-border text-gray-400 rounded">Cancel</button>
+                </span>
+              ) : (
+                <button type="button" onClick={() => setMoving({ k: r.k, qty: 1 })} className="px-2 py-0.5 border border-vault-border text-gray-300 rounded hover:border-vault-gold/50">Move / 移库</button>
+              ))}
             </div>
           ))}
         </div>

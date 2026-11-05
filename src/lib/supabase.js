@@ -2346,6 +2346,96 @@ export const moveSingleUnit = async ({
   return { source: updatedSource, dest: updatedDest }
 }
 
+// Cost per copy after qty copies from row s join row d, so a merge keeps the total cost. A side without a cost leaves the other's.
+const _mergedCost = (d, s, qty) => {
+  const avg = (a, b) => {
+    if (a == null) return b
+    if (b == null) return a
+    const n = (Number(d.quantity) || 0) + qty
+    return Math.round((((Number(d.quantity) || 0) * Number(a) + qty * Number(b)) / n) * 100) / 100
+  }
+  const out = { acquisition_cost_usd: avg(d.acquisition_cost_usd, s.acquisition_cost_usd) }
+  if (d.acquisition_currency === s.acquisition_currency) out.acquisition_cost_native = avg(d.acquisition_cost_native, s.acquisition_cost_native)
+  else if (out.acquisition_cost_usd != null) {     // two currencies do not average: the row goes by its USD cost
+    out.acquisition_cost_native = out.acquisition_cost_usd
+    out.acquisition_currency = 'USD'
+  }
+  return out
+}
+
+// Stock Check (Gary 11/05): move copies of a raw card between Inventory and the Front Store.
+// Each room keeps one row per id, because the listing jobs skip an id with two rows: an emptied row stays at 0, and a row
+// for this id at the other end is added to. The source goes first and only if it still holds what was read, so a sale in
+// between stops the move and a failure half way cannot put an extra copy on sale. If the other end fails the source is put back.
+export const moveStockBetweenRooms = async ({ tcgId, fromLocationId, toLocationId, qty, currentUserId }) => {
+  if (!Number.isInteger(qty) || qty <= 0) throw new Error('Enter how many copies to move')
+  if (fromLocationId === toLocationId) throw new Error('That is the same room')
+  const rowsAt = async (loc) => {
+    const { data, error } = await supabase.from('singles').select('*')
+      .eq('tcg_id', tcgId).eq('location_id', loc).neq('status', 'sold').or('deleted.is.null,deleted.eq.false').order('id')
+    if (error) throw error
+    return data || []
+  }
+  const [from, to] = [await rowsAt(fromLocationId), await rowsAt(toLocationId)]
+  if (from.length !== 1) throw new Error(`${from.length} stock rows for this card here: ask Gary`)
+  if (to.length > 1) throw new Error(`${to.length} stock rows for this card in the other room: ask Gary`)
+  const s = from[0], d = to[0]
+  if (s.form === 'graded') throw new Error('Graded cards do not move here')
+  if (s.status !== 'in_inventory') throw new Error(`This card's status is ${s.status}: not moved`)
+  if (s.quantity < qty) throw new Error(`Only ${s.quantity} here, cannot move ${qty}`)
+  if (d && d.status !== 'in_inventory') throw new Error(`In the other room its status is ${d.status}: not moved`)
+  if (d && (d.form !== s.form || (d.condition || null) !== (s.condition || null))) throw new Error('The other room holds this id in another condition: ask Gary')
+  const fromName = await _locationName(fromLocationId)
+  const toName = await _locationName(toLocationId)
+
+  const { data: took, error: takeErr } = await supabase.from('singles')
+    .update({ quantity: s.quantity - qty })
+    .eq('id', s.id).eq('location_id', fromLocationId).eq('quantity', s.quantity).eq('status', 'in_inventory')
+    .select('id')
+  if (takeErr) throw takeErr
+  if (!took || took.length !== 1) throw new Error('This card changed just now (a sale?). Find it again and retry')
+
+  let destId = d?.id || null
+  try {
+    if (d) {
+      const { data, error } = await supabase.from('singles')
+        .update({ quantity: d.quantity + qty, ..._mergedCost(d, s, qty) })
+        .eq('id', d.id).eq('location_id', toLocationId).eq('quantity', d.quantity).eq('status', 'in_inventory')
+        .select('id')
+      if (error) throw error
+      if (!data || data.length !== 1) throw new Error('The other room changed just now')
+    } else {
+      const clone = { ...s, location_id: toLocationId, quantity: qty }
+      delete clone.id
+      delete clone.created_at
+      delete clone.updated_at
+      const { data, error } = await supabase.from('singles').insert(clone).select('id')
+      if (error) throw error
+      destId = data?.[0]?.id || null
+    }
+  } catch (err) {
+    // The write may have gone through with only its answer lost: putting the source back then would add copies.
+    let arrived = null
+    try {
+      const after = await rowsAt(toLocationId)
+      arrived = after.reduce((n, r) => n + (Number(r.quantity) || 0), 0) - (d?.quantity || 0)
+    } catch { /* unknown, handled below */ }
+    if (arrived === null || arrived !== 0) throw new Error(`${err.message}. Check this card in both rooms before moving it again: tell Gary (row ${s.id})`)
+    const { data: back, error: backErr } = await supabase.from('singles')
+      .update({ quantity: s.quantity })
+      .eq('id', s.id).eq('quantity', s.quantity - qty)
+      .select('id')
+    if (backErr || !back || back.length !== 1) throw new Error(`${err.message}. ${qty} left ${fromName} and could not be put back: tell Gary (row ${s.id})`)
+    throw new Error(`Not moved: ${err.message}`)
+  }
+
+  const summary = `Moved ${qty}× ${_summarizeSingleForMove(s)} from ${fromName} → ${toName}`
+  const payload = { from_location_id: fromLocationId, to_location_id: toLocationId, qty, source_single_id: s.id, dest_single_id: destId, mode: 'stock_check' }
+  await logSingleEvent({ single_id: s.id, event_type: 'moved', summary, payload, acted_by_id: currentUserId || null })
+  if (destId) await logSingleEvent({ single_id: destId, event_type: 'moved', summary, payload, acted_by_id: currentUserId || null })
+  return { moved: qty, left: s.quantity - qty, toName }
+}
+
 // Batch wrapper around moveSingleUnit — Scan-page batch transfer.
 // entries: [{ fromSingleId, toLocationId, qty }, ...]
 export const moveSingleUnitsBatch = async (entries, currentUserId) => {
