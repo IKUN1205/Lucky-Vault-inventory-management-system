@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle, Loader2, MapPin, Play, ScanLine, Search } f
 import { fetchLocations, supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
-import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, ZONES, ZONE_CAPACITY, ZONE_LETTERS, loweredShare, planStockFix, resultCsv } from '../lib/stockCheck'
+import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, ZONES, ZONE_LETTERS, ZONE_MAX, loweredShare, planStockFix, resultCsv } from '../lib/stockCheck'
 
 // Stock Check: John scans the Pokemon singles zone by zone (A1..J5). Where he
 // scans a card is where the system says it is. When the round is finished, he
@@ -301,9 +301,22 @@ export default function StockCheck() {
     setTimeout(() => inputRef.current?.focus(), 50)
   }
 
+  const overfull = () => ZONES.filter(z => (zoneCounts.get(z) || 0) > ZONE_MAX)
+
+  // Read from the scans themselves: a scan can land while the save below is waiting.
+  const zoneOver = (z) => {
+    let n = 0
+    for (const [k, q] of scansRef.current) if (k.startsWith(`${z}|`)) n += q
+    if (n <= ZONE_MAX) return false
+    addToast(`${z} has more than ${ZONE_MAX} cards. Check this zone again. / 超过 ${ZONE_MAX} 张，请重新检查`, 'error')
+    return true
+  }
+
   const finishZone = async () => {
+    if (zoneOver(zone)) return
     const ok = await flush()
     if (!ok) { addToast('Scans could not be saved yet. Try again in a moment.', 'error'); return }
+    if (zoneOver(zone)) return
     const done = [...new Set([...(round.zones_done || []), zone])]
     const { error } = await supabase.from('stock_check_rounds').update({ zones_done: done }).eq('id', round.id)
     if (error) { addToast(`Could not mark the zone done: ${error.message}`, 'error'); return }
@@ -315,6 +328,10 @@ export default function StockCheck() {
 
   // ─── Finish: compare, confirm, change stock ─────────────────────────
   const checkDifferences = async () => {
+    if (overfull().length) {
+      addToast(`More than ${ZONE_MAX} cards in ${overfull().join(', ')}. Check again before finishing. / 超过 ${ZONE_MAX} 张，请先重新检查`, 'error')
+      return
+    }
     if (!beginOp()) return
     setPlanning(true)
     const version = scanVersion.current
@@ -496,21 +513,21 @@ export default function StockCheck() {
           </div>
 
           <div className="card mb-4 overflow-x-auto">
-            <div className="grid gap-1 min-w-[360px]" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}>
+            <div className="grid gap-1 min-w-[560px]" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}>
               {ZONE_LETTERS.flatMap(l => [1, 2, 3, 4, 5].map(n => {
                 const z = `${l}${n}`
                 const c = zoneCounts.get(z) || 0
-                const over = c > ZONE_CAPACITY
+                const over = c > ZONE_MAX
                 return (
                   <button
                     key={z}
                     type="button"
                     data-zone={z}
                     onClick={() => openZone(z)}
-                    className={`px-2 py-1.5 rounded border text-xs flex items-center justify-between gap-1 ${zone === z ? 'border-vault-gold bg-vault-gold/20 text-white' : 'border-vault-border bg-vault-darker/40 text-gray-300 hover:border-vault-gold/50'}`}
+                    className={`px-3 py-3 rounded border text-lg flex items-center justify-between gap-2 ${over ? 'border-red-500 bg-red-500/20 text-red-200' : zone === z ? 'border-vault-gold bg-vault-gold/20 text-white' : 'border-vault-border bg-vault-darker/40 text-gray-300 hover:border-vault-gold/50'}`}
                   >
-                    <span className="font-semibold">{z}{zonesDone.has(z) && <CheckCircle size={11} className="inline ml-1 text-emerald-400" />}</span>
-                    <span className={over ? 'text-amber-300 font-semibold' : 'text-gray-500'}>{c}/{ZONE_CAPACITY}</span>
+                    <span className="font-semibold">{z}{zonesDone.has(z) && <CheckCircle size={16} className="inline ml-1 text-emerald-400" />}</span>
+                    <span className={over ? 'text-base text-red-300 font-bold' : 'text-base text-gray-400'}>{c}</span>
                   </button>
                 )
               }))}
@@ -552,8 +569,11 @@ export default function StockCheck() {
                 )
               })()}
 
-              {zoneCounts.get(zone) > ZONE_CAPACITY && (
-                <p className="text-xs text-amber-300 mb-2">This zone holds more than about {ZONE_CAPACITY} cards.</p>
+              {zoneCounts.get(zone) > ZONE_MAX && (
+                <div data-testid="zone-over" className="mb-3 p-3 rounded border border-red-500/50 bg-red-500/10 text-sm text-red-300 font-semibold">
+                  {zone} has {zoneCounts.get(zone)} cards. A zone holds {ZONE_MAX} at most: check this zone again. Press −1 on anything scanned by mistake.
+                  <br />{zone} 有 {zoneCounts.get(zone)} 张，一个小区最多 {ZONE_MAX} 张，请重新检查。扫错的按 −1 减掉。
+                </div>
               )}
 
               <div className="bg-vault-darker rounded p-2 max-h-64 overflow-y-auto text-xs mb-3">

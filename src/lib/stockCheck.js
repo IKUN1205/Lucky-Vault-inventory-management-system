@@ -2,7 +2,7 @@
 
 export const ZONE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']
 export const ZONES = ZONE_LETTERS.flatMap(l => [1, 2, 3, 4, 5].map(n => `${l}${n}`))
-export const ZONE_CAPACITY = 100          // Gary: a small zone holds about 100 singles
+export const ZONE_MAX = 120                // Gary: a small zone holds 100-120 singles; more means the zone needs checking again
 export const MAX_LOWERED_SHARE = 0.3      // more than this looks like an unfinished round, not a real loss
 export const RECENT_SALE_DAYS = 3         // a copy sold this recently may still be on the shelf, waiting to be picked
 
