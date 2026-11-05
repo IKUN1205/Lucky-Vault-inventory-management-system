@@ -80,6 +80,7 @@ const KIND_META = {
   // recorded in storefront_sales only; no slabs / singles row is created.
   slab_manual:   { icon: Diamond, color: 'text-emerald-300', label: 'Slab (manual)' },
   single_manual: { icon: Layers,  color: 'text-blue-300',    label: 'Single (manual)' },
+  single_pending: { icon: Layers, color: 'text-amber-300',   label: 'Single (stock to confirm)' },
 }
 
 const fmtUsd = (n) => {
@@ -404,7 +405,30 @@ export default function StorefrontSale() {
     addToast(`Added: ${slab.item_name}`, 'success')
   }
 
-  const addOrIncrementSingle = (single) => {
+  // Gary 2026-11-04: Front Store short means no other room is touched at the register.
+  // The sale still goes through; John or Gary decides on the Stock Check page.
+  const addStockPending = (single) => {
+    const key = `single_pending-${single.tcg_id}`
+    setCart(prev => {
+      const i = prev.findIndex(l => l.key === key)
+      if (i >= 0) {
+        const next = [...prev]
+        next[i] = { ...next[i], quantity: (next[i].quantity || 1) + 1 }
+        return next
+      }
+      return [...prev, {
+        kind: 'single_pending',
+        key,
+        source: single,
+        quantity: 1,
+        our_price: single.current_market_price_usd != null ? Number(single.current_market_price_usd) : null,
+        scanned_code: single.tcg_id,
+      }]
+    })
+    addToast(`${single.card_name}: Front Store has no more. Sale is recorded, stock waits for John or Gary.`, 'info')
+  }
+
+  const addOrIncrementSingle = async (single) => {
     // "Already sold" used to be a dead end here, and a dead end at the
     // register does not mean the card doesn't sell — it means the sale
     // stops being recorded. On 08-05 the storefront reported this five
@@ -428,29 +452,32 @@ export default function StorefrontSale() {
       addToast(`Status "${single.status}" — can't sell from here`, 'error')
       return
     }
+    let frontId = null
+    if (!soldOverride) {
+      try {
+        frontId = await getFrontStoreLocationId()
+        // A pick from manual search can be any room's row: Front Store still goes first.
+        if (single.location_id !== frontId && single.tcg_id) {
+          const r = await lookupScannedCode(single.tcg_id, { preferLocationId: frontId })
+          if (r.kind === 'single' && r.single.status !== 'sold') single = r.single
+        }
+      } catch (err) {
+        addToast(`Lookup failed: ${err.message || err}`, 'error')
+        return
+      }
+    }
     const available = single.quantity || 1
-    // Increment-beyond-available is allowed WITH confirmation: the cashier
-    // is literally holding another physical copy, so app inventory is
-    // under-counted (directive 2026-06-09: 实物为准 — the physical copy
-    // wins). The line gets stock_adjust=true and checkout bumps the DB
-    // row's quantity up before selling, so inventory math stays whole.
-    // The confirm() runs OUTSIDE setCart — confirm inside a state updater
-    // can double-fire under StrictMode.
     const existing = cart.find(l => l.kind === 'single' && l.single.id === single.id)
+    if (!soldOverride) {
+      const frontHas = single.location_id === frontId ? (Number(single.quantity) || 0) : 0
+      if ((existing?.quantity || 0) + 1 > frontHas) {
+        addStockPending(single)
+        return
+      }
+    }
     if (existing) {
       const nextQty = (existing.quantity || 1) + 1
-      let stockAdjust = existing.stock_adjust || false
-      // A recovered line has no app stock to measure against by definition —
-      // the cashier already confirmed the copies are physically here, so
-      // don't re-ask the "more than we have" question for every extra scan.
-      if (!existing.sold_override && nextQty > (existing.available || available)) {
-        const ok = confirm(
-          `App only shows ${existing.available || available} in stock for "${single.card_name}", but you scanned another physical copy.\n\n` +
-          `Add it anyway? Inventory will be auto-corrected to ${nextQty} at checkout.`
-        )
-        if (!ok) return
-        stockAdjust = true
-      }
+      const stockAdjust = existing.stock_adjust || false
       // Increment from `prev`, not from the render-time `nextQty`: two scans
       // fired off the same render otherwise both compute the same number and
       // the second one overwrites instead of adding, losing a card.
@@ -551,7 +578,7 @@ export default function StorefrontSale() {
         if (transactionType === 'buy') {
           addToast('In Buy mode, add singles via + Add Manual Line', 'info')
         } else {
-          addOrIncrementSingle(result.single)
+          await addOrIncrementSingle(result.single)
         }
       } else if (result.kind === 'unknown') {
         setUnknownCode(code)
@@ -738,6 +765,9 @@ export default function StorefrontSale() {
       // A not-in-system line is a SALE record. Switching the transaction to
       // Buy would route it through _buyManualLine — money OUT instead of in,
       // and the reconcile marker silently dropped (Codex 8/21).
+      if (line.kind === 'single_pending' && transactionType === 'buy') {
+        return 'Remove the card waiting for stock confirmation first: it records a sale, not a buy'
+      }
       if (line.notInSystem && transactionType === 'buy') {
         return 'Remove the "not in system" card line first — it records a sale, not a buy'
       }
@@ -849,6 +879,14 @@ export default function StorefrontSale() {
                 // reports coverage instead of quietly treating it as $0.
                 market: line.single.current_market_price_usd != null
                   ? Number(line.single.current_market_price_usd) : null,
+              }
+            }
+            if (line.kind === 'single_pending') {
+              return {
+                kind: 'single',
+                name: `${line.source.card_name}${line.source.card_number ? ` #${line.source.card_number}` : ''} — Front Store short, stock waits for John or Gary`,
+                quantity: Number(line.quantity) || 1,
+                price: Number(line.price) || 0,
               }
             }
             // Manual lines (slab_manual / single_manual) — Lark gets the
@@ -1235,6 +1273,9 @@ export default function StorefrontSale() {
                     <span className="text-white">{b.name}</span> — {b.reason}
                     {b.fixable === 'sold_override' && (
                       <span className="text-gray-400"> · re-scan the card and confirm the prompt to sell it anyway</span>
+                    )}
+                    {b.fixable === 'lower_qty' && (
+                      <span className="text-gray-400"> · lower the quantity on this line, then scan the extra copies again: they will wait for John or Gary</span>
                     )}
                     {b.fixable === 'stock_adjust' && (
                       <span className="text-gray-400"> · scan the extra copies and confirm the prompt to correct stock</span>
@@ -2723,6 +2764,11 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
     // The cashier confirmed this one past an "already sold" — say so on the
     // line, so it is obvious in the cart what was overridden and why.
     if (line.sold_override) sub += ' · ⚠ app had this SOLD — booking a new line, old sale untouched'
+    qtyEditable = true
+  } else if (line.kind === 'single_pending') {
+    title = `${line.source.card_name}${line.source.card_number ? ` #${line.source.card_number}` : ''}`
+    sub = `⚠ Front Store has no more · sale is recorded, stock waits for John or Gary · TCG ${line.source.tcg_id}`
+    available = 999
     qtyEditable = true
   } else if (line.kind === 'slab_manual') {
     // Buy mode manual entry — only description (cashier-typed) to show.

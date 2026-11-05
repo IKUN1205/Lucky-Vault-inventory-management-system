@@ -4899,7 +4899,7 @@ export const COUNTER_RECOVERY_TAG = 'RECOVERED_AT_COUNTER'
 // and stamp where it came from so the pair can be reviewed later: either the
 // earlier sale over-counted, or we genuinely had two copies. Both are worth
 // knowing; neither is worth blocking a paying customer over.
-const _recoverSoldSingle = async (src, sellQty, saleData) => {
+const _recoverSoldSingle = async (src, sellQty, saleData, opts = {}) => {
   const clone = {
     card_name: src.card_name,
     card_number: src.card_number,
@@ -4957,7 +4957,7 @@ const _recoverSoldSingle = async (src, sellQty, saleData) => {
     // which is the exact claim the null cost above refuses to make. What we can
     // actually prove is that the card was in our hands at the register today.
     date_acquired: saleData.sale_date || new Date().toLocaleDateString('en-CA'),
-    sale_notes: [
+    sale_notes: opts.saleNotes || [
       `${COUNTER_RECOVERY_TAG}: app showed this sold on ${src.sale_date || 'an unknown date'}`
       + ` for ${src.sale_price_usd == null ? '?' : '$' + src.sale_price_usd}`
       + ` (row ${src.id}${src.transaction_id ? `, tx ${src.transaction_id}` : ''}).`
@@ -4979,11 +4979,11 @@ const _recoverSoldSingle = async (src, sellQty, saleData) => {
   logSingleEvent({
     single_id: data.id,
     event_type: 'sold',
-    summary: `Sold ${sellQty} ${summarizeCard(data)} — app had it as SOLD, cashier confirmed physical copy (recovered from ${src.id})`,
+    summary: opts.summary || `Sold ${sellQty} ${summarizeCard(data)} — app had it as SOLD, cashier confirmed physical copy (recovered from ${src.id})`,
     payload: { sale: saleData, card: data, recovered_from: src.id },
     acted_by_id: saleData.sold_by_id || null,
   })
-  console.warn(`[sell-single] counter recovery: ${src.tcg_id} was sold ${src.sale_date}, sold again as row ${data.id}`)
+  if (!opts.saleNotes) console.warn(`[sell-single] counter recovery: ${src.tcg_id} was sold ${src.sale_date}, sold again as row ${data.id}`)
   return data
 }
 
@@ -5047,6 +5047,117 @@ const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, c
     trade_in_value_usd: txMeta.tradeInValue ?? null,
     net_cash_usd: txMeta.netCash ?? null,
   })
+}
+
+// Gary 2026-11-04: a register sale comes out of Front Store first. Whatever Front
+// Store can't cover is still a sale, so the money and the card are recorded, but no
+// other room is touched until John or Gary confirms where the copy came from. The
+// row lives at Front Store with no cost: we don't know which purchase it came from
+// until then. Stock Check lists these (listStockPendingSales).
+export const STOCK_PENDING_TAG = '[stock-pending]'
+
+const _bookStockPendingLine = async ({ source, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {}, frontStoreId }) => {
+  const qty = Math.max(1, Number(quantity) || 1)
+  return await _recoverSoldSingle(source, qty, {
+    location_id: frontStoreId,
+    sale_price_usd: Number(salePrice) || 0,
+    sale_channel: 'in_person',
+    sale_date: saleDate,
+    sale_fees_usd: null,
+    buyer_name: null,
+    sale_notes: null,
+    sold_by_id: cashierId || null,
+    payment_method_id: paymentMethodId || null,
+    transaction_id: transactionId,
+    transaction_type: txMeta.transactionType || 'sale',
+    trade_in_value_usd: txMeta.tradeInValue ?? null,
+    net_cash_usd: txMeta.netCash ?? null,
+  }, {
+    saleNotes: `${STOCK_PENDING_TAG} Front Store did not have enough at the register, so no room was deducted. Waiting for John or Gary. Cost is blank until then.`,
+    summary: `Sold ${qty} ${source.card_name} at the register: Front Store short, waiting for John or Gary`,
+  })
+}
+
+export const listStockPendingSales = async (inventoryLocationId) => {
+  const { data, error } = await supabase
+    .from('singles')
+    .select('id, tcg_id, card_name, card_number, language, quantity, sale_date, sale_price_usd, sale_notes')
+    .eq('status', 'sold')
+    .eq('deleted', false)
+    .like('sale_notes', `${STOCK_PENDING_TAG}%`)
+    .order('sale_date')
+    .order('id')
+    .limit(500)
+  if (error) throw error
+  const ids = [...new Set((data || []).map(r => r.tcg_id).filter(Boolean))]
+  const inInventory = new Map()
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data: rows, error: e2 } = await supabase
+      .from('singles').select('id, tcg_id, quantity')
+      .eq('location_id', inventoryLocationId).eq('status', 'in_inventory').eq('deleted', false).gt('quantity', 0)
+      .in('tcg_id', ids.slice(i, i + 100)).order('id').limit(1000)
+    if (e2) throw e2
+    // The deduction takes one row, so what can be deducted is the largest row.
+    for (const r of rows || []) inInventory.set(r.tcg_id, Math.max(inInventory.get(r.tcg_id) || 0, Number(r.quantity) || 0))
+  }
+  return (data || []).map(r => ({ ...r, inventory_qty: inInventory.get(r.tcg_id) || 0 }))
+}
+
+// action: 'deduct' takes the copies out of Inventory, 'none' leaves stock alone.
+export const resolveStockPending = async (row, action, inventoryLocationId, user) => {
+  const who = user?.name || 'someone'
+  const today = new Date().toLocaleDateString('en-CA')
+  const done = action === 'deduct'
+    ? `[stock-confirmed] Deducted from Inventory by ${who} on ${today}.`
+    : `[stock-not-deducted] ${who} chose not to deduct any room on ${today}.`
+  // Claim first: two people pressing at once must not both deduct.
+  const { data: claimed, error: claimErr } = await supabase
+    .from('singles').update({ sale_notes: done })
+    .eq('id', row.id).eq('status', 'sold').eq('sale_notes', row.sale_notes)
+    .select('id')
+  if (claimErr) throw claimErr
+  if (!claimed || claimed.length !== 1) throw new Error('Someone already handled this one')
+  if (action !== 'deduct') return { deducted: 0 }
+
+  const giveBack = async (message) => {
+    await supabase.from('singles').update({ sale_notes: row.sale_notes }).eq('id', row.id).eq('sale_notes', done)
+    throw new Error(message)
+  }
+  const n = Math.max(1, Number(row.quantity) || 1)
+  const { data: rows, error: readErr } = await supabase
+    .from('singles').select('*')
+    .eq('tcg_id', row.tcg_id).eq('location_id', inventoryLocationId).eq('status', 'in_inventory').eq('deleted', false).gt('quantity', 0)
+    .order('quantity', { ascending: false }).order('id').limit(20)
+  if (readErr) await giveBack(readErr.message)
+  const inv = (rows || []).find(r => Number(r.quantity) >= n)
+  if (!inv) await giveBack(`Inventory does not have ${n} on one row`)
+  const after = Number(inv.quantity) - n
+  const { data: changed, error: updErr } = await supabase
+    .from('singles').update({ quantity: after })
+    .eq('id', inv.id).eq('quantity', inv.quantity).eq('status', 'in_inventory').eq('deleted', false)
+    .select('id')
+  if (updErr) await giveBack(updErr.message)
+  if (!changed || changed.length !== 1) await giveBack('Inventory stock moved just now. Try again.')
+  logSingleEvent({
+    single_id: inv.id,
+    event_type: 'updated',
+    summary: `Register sale confirmed: qty ${inv.quantity} → ${after}`,
+    payload: { stock_pending_sale: row.id, before: Number(inv.quantity), after },
+    acted_by_id: user?.id || null,
+  })
+  // Now we know which copy it was, so the sale carries its cost.
+  const { error: costErr } = await supabase.from('singles').update({
+    acquisition_cost_usd: inv.acquisition_cost_usd,
+    acquisition_cost_native: inv.acquisition_cost_native,
+    acquisition_currency: inv.acquisition_currency,
+    source_type: inv.source_type,
+    source_box_break_id: inv.source_box_break_id,
+    source_acquisition_id: inv.source_acquisition_id,
+    vendor_id: inv.vendor_id,
+    date_acquired: inv.date_acquired,
+    parent_single_id: inv.id,
+  }).eq('id', row.id)
+  return { deducted: n, costError: costErr?.message || null }
 }
 
 // ----- BUY: store buys items from a customer (cash flows OUT to customer) -----
@@ -5287,7 +5398,7 @@ export const preflightStorefrontCart = async (
   // "no nested record" as the error caught these too and made bulk-singles
   // sales impossible, so the exemption is by KIND, explicitly: an unknown kind
   // still blocks.
-  const NO_STOCK_KINDS = new Set(['single_manual', 'slab_manual'])
+  const NO_STOCK_KINDS = new Set(['single_manual', 'slab_manual', 'single_pending'])
   const recognised = new Set([...singleLines, ...slabLines, ...sealedLines])
   for (const l of cart) {
     if (recognised.has(l)) continue
@@ -5388,7 +5499,7 @@ export const preflightStorefrontCart = async (
       blockers.push({ key: l.key, kind: 'single', name, reason: `status is "${row.status}" — can't sell from the register` })
     } else if ((Number(row.quantity) || 0) < need && !l.stock_adjust) {
       blockers.push({
-        key: l.key, kind: 'single', name, fixable: 'stock_adjust',
+        key: l.key, kind: 'single', name, fixable: 'lower_qty',
         reason: `app shows ${row.quantity || 0} in stock, cart has ${need}`,
       })
     }
@@ -5652,6 +5763,17 @@ export const submitStorefrontTransaction = async ({
           // Cashier confirmed they are holding a card the app calls sold —
           // book this sale on its own row, leave the old sale alone.
           allowSoldOverride: !!line.sold_override,
+        })
+        ok.push({ line, result })
+      } else if (line.kind === 'single_pending') {
+        const result = await _bookStockPendingLine({
+          source: line.source,
+          quantity: Number(line.quantity) || 1,
+          salePrice: line.price,
+          paymentMethodId: rowPaymentMethodId, cashierId, transactionId,
+          saleDate,
+          txMeta,
+          frontStoreId,
         })
         ok.push({ line, result })
       } else if (line.kind === 'slab_manual' || line.kind === 'single_manual') {

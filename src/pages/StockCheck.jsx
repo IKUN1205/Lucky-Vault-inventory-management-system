@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle, Loader2, MapPin, Play, ScanLine, Search } from 'lucide-react'
-import { fetchLocations, supabase } from '../lib/supabase'
+import { fetchLocations, listStockPendingSales, resolveStockPending, supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
 import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, ZONES, ZONE_LETTERS, ZONE_MAX, loweredShare, planStockFix, resultCsv } from '../lib/stockCheck'
@@ -13,8 +13,9 @@ import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, ZONES, ZONE_LETTERS, ZONE_MAX, low
 const PAGE = 1000
 
 // Gary 2026-11-04: singles stock is only these two.
+const INVENTORY_ROOM = '6d89a23e-c250-4dcd-81cf-2b4dd26c7592'
 const STOCK_ROOMS = [
-  { id: '6d89a23e-c250-4dcd-81cf-2b4dd26c7592', label: 'Inventory (TCGplayer Singles)' },
+  { id: INVENTORY_ROOM, label: 'Inventory (TCGplayer Singles)' },
   { id: 'c4cf3dab-94d7-4c2c-a4b4-214977feec06', label: 'Storefront (Front Store)' },
 ]
 
@@ -468,6 +469,7 @@ export default function StockCheck() {
         </p>
       </div>
 
+      <StockPendingSales addToast={addToast} user={user} />
       <FindCard addToast={addToast} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -708,6 +710,61 @@ function PlanTable({ title, tone, lines, nameOf, showReason }) {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// Register sales Front Store could not cover: no room was deducted. John or Gary decides here.
+function StockPendingSales({ addToast, user }) {
+  const [rows, setRows] = useState([])
+  const [busy, setBusy] = useState(null)
+  const load = useCallback(async () => {
+    try {
+      setRows(await listStockPendingSales(INVENTORY_ROOM))
+    } catch (err) {
+      addToast(`Could not load register sales to confirm: ${err.message}`, 'error')
+    }
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const act = async (row, action) => {
+    if (busy) return
+    setBusy(row.id)
+    try {
+      const res = await resolveStockPending(row, action, INVENTORY_ROOM, user)
+      if (res.costError) addToast(`Stock deducted, but the cost could not be copied: ${res.costError}`, 'error')
+      else addToast(action === 'deduct' ? `Deducted ${res.deducted} from Inventory` : 'Done, no room deducted', 'success')
+    } catch (err) {
+      addToast(err.message, 'error')
+    } finally {
+      setBusy(null)
+      load()
+    }
+  }
+
+  if (rows.length === 0) return null
+  return (
+    <div className="card mb-4 border-amber-500/40" data-testid="stock-pending">
+      <h2 className="font-display text-lg text-amber-300 mb-1">Register sales to confirm: {rows.length} / 门店卖出待确认</h2>
+      <p className="text-sm text-gray-300 mb-2">
+        Front Store did not have enough, so nothing was deducted. Was it a copy from Inventory?
+        <br />门店库存不够，没有扣任何库。这张是从 Inventory 拿的吗？
+      </p>
+      <div className="text-sm">
+        {rows.map(r => (
+          <div key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 border-t border-vault-border/40">
+            <span className="font-mono text-xs text-gray-400">{r.tcg_id}</span>
+            <span className="flex-1 min-w-0 text-gray-200">{cardName(r)} ×{r.quantity}</span>
+            <span className="text-xs text-gray-400">sold {r.sale_date} · Inventory has {r.inventory_qty}</span>
+            <button type="button" disabled={!!busy || r.inventory_qty < (Number(r.quantity) || 1)} onClick={() => act(r, 'deduct')} className="text-xs px-2.5 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded disabled:opacity-40 font-semibold">
+              Yes, deduct / 从 Inventory 扣
+            </button>
+            <button type="button" disabled={!!busy} onClick={() => act(r, 'none')} className="text-xs px-2.5 py-1.5 border border-vault-border text-gray-300 rounded disabled:opacity-40">
+              No, don't deduct / 不扣
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
