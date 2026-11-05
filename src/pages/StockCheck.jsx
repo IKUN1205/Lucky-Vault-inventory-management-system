@@ -116,6 +116,7 @@ export default function StockCheck() {
   const [plan, setPlan] = useState(null)
   const [planning, setPlanning] = useState(false)
   const [includeZeroed, setIncludeZeroed] = useState(false)
+  const [includeRaised, setIncludeRaised] = useState(false)
   const [applying, setApplying] = useState(null)
   const [applyResult, setApplyResult] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -419,6 +420,7 @@ export default function StockCheck() {
       }
       setPlan({ ...p, version, finishing, submit: [...submit], unfinished, ledger })
       setIncludeZeroed(false)
+      setIncludeRaised(false)
       setApplyResult(null)
     } catch (err) {
       addToast(`Could not compare: ${err.message}`, 'error')
@@ -430,7 +432,7 @@ export default function StockCheck() {
 
   const share = plan ? loweredShare(plan, includeZeroed) : 0
   const blocked = share > MAX_LOWERED_SHARE
-  const planLines = plan ? [...plan.fixes, ...(includeZeroed ? plan.zeroed : [])] : []
+  const planLines = plan ? [...plan.fixes, ...(includeZeroed ? plan.zeroed : []), ...(includeRaised ? plan.raised : [])] : []
 
   const resultLines = (outcomes) => {
     if (!plan) return []
@@ -439,6 +441,7 @@ export default function StockCheck() {
     return [
       ...plan.fixes.map(l => line('difference', l, outcomes?.[l.id] || 'not changed')),
       ...plan.zeroed.map(l => line('needs the box ticked', l, outcomes?.[l.id] || 'not changed')),
+      ...plan.raised.map(l => line('counted more, needs the box ticked', l, outcomes?.[l.id] || 'not changed')),
       ...plan.people.map(l => line('needs a person', { ...l, name: l.name }, l.reason)),
       ...plan.extras.map(l => line('not in this room', { ...l, to: '' }, l.where)),
     ]
@@ -482,7 +485,7 @@ export default function StockCheck() {
         addToast('Zones were saved from somewhere else just now. Nothing changed: submit again. / 分区刚被别处保存过，这次没改，请重新提交', 'error')
         return
       }
-      const ticked = new Set(includeZeroed ? plan.zeroed.map(l => l.id) : [])
+      const ticked = new Set([...(includeZeroed ? plan.zeroed : []), ...(includeRaised ? plan.raised : [])].map(l => l.id))
       const writable = [...plan.changes.keys()].filter(id => !plan.hold.has(id) && !(plan.holdUnlessTicked.has(id) && !ticked.has(id)))
       const entriesOf = (id) => (plan.changes.get(id) || []).map(c => ({ ...c, id }))
       const beforeOf = (id) => entriesOf(id).map(e => {
@@ -729,6 +732,15 @@ export default function StockCheck() {
                 I looked for these and they are not in this room: change them to the number shown / 找过了确实没有，改成上面的数
               </label>
             </>
+          )}
+          {plan.raised.length > 0 && (
+            <div data-testid="raised">
+              <PlanTable title={`Counted more than stock: ${plan.raised.length} cards, ${plan.raised.reduce((s, l) => s + (l.to - l.now), 0)} copies. Not added unless you tick / 比库存多，不打勾不加`} tone="text-amber-300" lines={plan.raised} nameOf={nameOf} />
+              <label className="flex items-center gap-2 text-sm text-amber-300 mb-3 cursor-pointer">
+                <input type="checkbox" checked={includeRaised} onChange={(e) => setIncludeRaised(e.target.checked)} />
+                I checked these: the extra copies are really here and not sold. Add them / 核对过了，确实多出来、没卖掉，加上
+              </label>
+            </div>
           )}
           {plan.people.length > 0 && (
             <PlanTable title={`Needs a person, not changed: ${plan.people.length}`} tone="text-amber-300" lines={plan.people} nameOf={nameOf} showReason />
