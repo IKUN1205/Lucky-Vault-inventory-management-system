@@ -12,6 +12,12 @@ import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, ZONES, ZONE_CAPACITY, ZONE_LETTERS
 
 const PAGE = 1000
 
+// Gary 2026-11-04: singles stock is only these two.
+const STOCK_ROOMS = [
+  { id: '6d89a23e-c250-4dcd-81cf-2b4dd26c7592', label: 'Inventory (TCGplayer Singles)' },
+  { id: 'c4cf3dab-94d7-4c2c-a4b4-214977feec06', label: 'Storefront (Front Store)' },
+]
+
 async function readAllPages(build) {
   const all = []
   for (let from = 0; ; from += PAGE) {
@@ -116,7 +122,7 @@ export default function StockCheck() {
   const expected = useMemo(() => new Map((round?.expected || []).map(e => [String(e.id), e])), [round])
 
   useEffect(() => {
-    fetchLocations('Physical').then(setLocations).catch(err => addToast(`Could not load rooms: ${err.message}`, 'error'))
+    fetchLocations('Physical').then(all => setLocations(STOCK_ROOMS.flatMap(r => all.filter(l => l.id === r.id).map(l => ({ ...l, label: r.label }))))).catch(err => addToast(`Could not load rooms: ${err.message}`, 'error'))
   }, [])
 
   // Scans are written to the database a moment after they happen, as absolute
@@ -456,7 +462,7 @@ export default function StockCheck() {
           className="text-sm py-1.5 px-2 bg-vault-darker/40 border border-vault-border rounded-md text-white disabled:opacity-60"
         >
           <option value="">Pick a room…</option>
-          {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+          {locations.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
         </select>
         {loading && <Loader2 size={14} className="animate-spin text-gray-400" />}
       </div>
