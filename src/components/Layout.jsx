@@ -47,6 +47,9 @@ import {
 // localStorage key for the icon-only-vs-expanded sidebar preference.
 const SIDEBAR_COLLAPSED_KEY = 'lv:sidebar-collapsed'
 
+// A person's main job, first in their sidebar. Gary 2026-11-04: Stock Check for John John, his weekly scan.
+const PINNED_TOP = { '260d664e-0810-4a59-a803-bbde9d5516af': '/cards/stock-check' }
+
 // Sidebar grouped by workflow stage. Section headers render as small uppercase
 // labels above each block. Order roughly matches the operational lifecycle:
 // see what you have → receive → operate → sell → report → admin.
@@ -120,6 +123,7 @@ const navSections = [
       { path: '/cards/scan',   label: 'Scan',         icon: ScanLine },
       { path: '/cards/log',    label: 'Activity Log', icon: HistoryIcon },
       { path: '/cards/audit',  label: 'Sheet Audit',  icon: Scale },
+      { path: '/cards/stock-check', label: 'Stock Check', icon: ScanLine },
       { path: '/cards/show-return', label: 'Show Return', icon: Tent },
     ]
   },
@@ -187,12 +191,17 @@ export default function Layout({ children }) {
   // Filter each section's items by user permissions, then drop sections that
   // become empty (e.g. a streamer with no Admin access shouldn't see an empty
   // "Admin" header).
-  const visibleSections = navSections
-    .map(section => ({
-      ...section,
-      items: section.items.filter(item => hasAccess(item.path))
-    }))
-    .filter(section => section.items.length > 0)
+  const pinnedPath = PINNED_TOP[user?.id]
+  const pinnedItem = navSections.flatMap(section => section.items).find(item => item.path === pinnedPath && hasAccess(item.path))
+  const visibleSections = [
+    ...(pinnedItem ? [{ title: 'This week', items: [pinnedItem] }] : []),
+    ...navSections
+      .map(section => ({
+        ...section,
+        items: section.items.filter(item => hasAccess(item.path) && item.path !== pinnedItem?.path)
+      }))
+      .filter(section => section.items.length > 0)
+  ]
 
   const handleLogout = () => {
     if (confirm('Are you sure you want to logout?')) {

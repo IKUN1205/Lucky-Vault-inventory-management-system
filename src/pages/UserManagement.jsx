@@ -62,6 +62,7 @@ const PAGE_SECTIONS = [
     { path: '/cards/scan', label: 'Cards Scan' },
     { path: '/cards/log', label: 'Cards Activity Log' },
     { path: '/cards/audit', label: 'Cards Sheet Audit' },
+    { path: '/cards/stock-check', label: 'Stock Check (Pokemon zones, confirm changes stock)' },
   ]},
   // Japan 🇯🇵 — lightweight branch, shared DB.
   // See scripts/add_japan_inventory_system.sql.

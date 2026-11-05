@@ -45,6 +45,7 @@ import Inventory from './pages/Inventory'
 import CardsScan from './pages/CardsScan'
 import CardsLog from './pages/CardsLog'
 import CardsAudit from './pages/CardsAudit'
+import StockCheck from './pages/StockCheck'
 import ShowReconcile from './pages/ShowReconcile'
 import JapanInventory from './pages/JapanInventory'
 import JapanAcquisitions from './pages/JapanAcquisitions'
@@ -218,6 +219,9 @@ function AppRoutes() {
       } />
       <Route path="/cards/audit" element={
         <ProtectedRoute path="/cards/audit"><Layout><CardsAudit /></Layout></ProtectedRoute>
+      } />
+      <Route path="/cards/stock-check" element={
+        <ProtectedRoute path="/cards/stock-check"><Layout><StockCheck /></Layout></ProtectedRoute>
       } />
       <Route path="/cards/show-return" element={
         <ProtectedRoute path="/cards/show-return"><Layout><ShowReconcile /></Layout></ProtectedRoute>
