@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import { isLedgerRoomName } from './countRooms.js'
 import { isBreakableBox, packSiblingRows, pinnedPackIds } from './countSiblings.js'
 import { postJson } from './apiSession.js'
+import { STORE_ZONE, UNSORTED, ZONES } from './stockCheck.js'
 
 // No fallback project. Until 2026-10-02 a missing env var silently fell back to the OLD project (dqreqevbjszercgackuc,
 // retired by the 9/12 switch), so a build or a local dev server without the variables wrote the company's counts into a
@@ -2367,7 +2368,63 @@ const _mergedCost = (d, s, qty) => {
 // Each room keeps one row per id, because the listing jobs skip an id with two rows: an emptied row stays at 0, and a row
 // for this id at the other end is added to. The source goes first and only if it still holds what was read, so a sale in
 // between stops the move and a failure half way cannot put an extra copy on sale. If the other end fails the source is put back.
-export const moveStockBetweenRooms = async ({ tcgId, fromLocationId, toLocationId, qty, currentUserId }) => {
+// One card in one zone goes up or down by delta. Only if the record still holds what was read: two people, or a submit, may be writing.
+export async function changeZoneQtyAt(locationId, zone, id, delta, userId) {
+  const key = (q) => q.eq('location_id', locationId).eq('zone', zone).eq('tcg_id', id)
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { data: cur, error } = await key(supabase.from('stock_zone_qty').select('qty')).maybeSingle()
+    if (error) throw error
+    const old = cur?.qty || 0
+    const next = old + delta
+    if (next < 0) throw new Error(`${zone} no longer holds this card`)
+    if (!cur) {
+      if (next === 0) return 0
+      const { error: addErr } = await supabase.from('stock_zone_qty').insert({ location_id: locationId, zone, tcg_id: id, qty: next, scanned_by_id: userId || null })
+      if (!addErr) return next
+      if (addErr.code !== '23505') throw addErr
+      continue    // someone added it just now
+    }
+    const write = next === 0
+      ? key(supabase.from('stock_zone_qty').delete())
+      : key(supabase.from('stock_zone_qty').update({ qty: next, scanned_at: new Date().toISOString(), scanned_by_id: userId || null }))
+    const { data: done, error: writeErr } = await write.eq('qty', old).select('tcg_id')
+    if (writeErr) throw writeErr
+    if (done?.length === 1) return next
+  }
+  throw new Error('this card keeps changing in that zone, scan it again')
+}
+
+// Gary 2026-11-05: zones follow a move: the copies leave from the front zone (A1 first), one at a time. Which zone they really came from is not known; the
+// next scan corrects it. The Storefront's one zone gains them. Back into Inventory there is no zone to gain unless undo names the zones it took from.
+// While a count of either room is open nothing changes here: that count decides. The stock has moved by now, so a failure is only reported.
+const _moveZones = async ({ tcgId, fromLocationId, toLocationId, qty, userId, brand, backTo }) => {
+  const taken = []
+  try {
+    const { data: open, error: openErr } = await supabase.from('stock_check_rounds').select('id')
+      .in('location_id', [fromLocationId, toLocationId]).eq('status', 'open').limit(1)
+    if (openErr) throw openErr
+    if (open?.length) return { zones: [], zoneNote: 'a count is open: it decides the zones' }
+    const { data: held, error: heldErr } = await supabase.from('stock_zone_qty').select('zone, qty')
+      .eq('location_id', fromLocationId).eq('tcg_id', tcgId)
+    if (heldErr) throw heldErr
+    const order = [...ZONES, UNSORTED, STORE_ZONE]
+    let left = qty
+    for (const h of [...(held || [])].sort((a, b) => order.indexOf(a.zone) - order.indexOf(b.zone))) {
+      for (let i = 0; i < h.qty && left > 0; i++) {
+        await changeZoneQtyAt(fromLocationId, h.zone, tcgId, -1, userId)
+        taken.push(h.zone)
+        left--
+      }
+    }
+    if (toLocationId === await getFrontStoreLocationId() && brand === 'Pokemon') await changeZoneQtyAt(toLocationId, STORE_ZONE, tcgId, qty, userId)
+    for (const z of backTo || []) await changeZoneQtyAt(toLocationId, z, tcgId, 1, userId)
+    return { zones: taken }
+  } catch (err) {
+    return { zones: taken, zoneNote: `zones not all updated, the next scan corrects them (${err.message || err})` }
+  }
+}
+
+export const moveStockBetweenRooms = async ({ tcgId, fromLocationId, toLocationId, qty, currentUserId, backToZones }) => {
   if (!Number.isInteger(qty) || qty <= 0) throw new Error('Enter how many copies to move')
   if (fromLocationId === toLocationId) throw new Error('That is the same room')
   const rowsAt = async (loc) => {
@@ -2438,7 +2495,8 @@ export const moveStockBetweenRooms = async ({ tcgId, fromLocationId, toLocationI
   const payload = { from_location_id: fromLocationId, to_location_id: toLocationId, qty, source_single_id: s.id, dest_single_id: destId, mode: 'stock_check' }
   await logSingleEvent({ single_id: s.id, event_type: 'moved', summary, payload, acted_by_id: currentUserId || null })
   if (destId) await logSingleEvent({ single_id: destId, event_type: 'moved', summary, payload, acted_by_id: currentUserId || null })
-  return { moved: qty, left: s.quantity - qty, toName, card: s }
+  const zones = await _moveZones({ tcgId, fromLocationId, toLocationId, qty, userId: currentUserId, brand: s.brand, backTo: backToZones })
+  return { moved: qty, left: s.quantity - qty, toName, card: s, ...zones }
 }
 
 // Batch wrapper around moveSingleUnit — Scan-page batch transfer.

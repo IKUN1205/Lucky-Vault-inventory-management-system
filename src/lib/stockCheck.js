@@ -24,6 +24,9 @@ export const dayOf = (at) => new Date(at).toLocaleDateString('en-CA')
 //   recentlySold: Set of ids sold in this room since the round began or in the last RECENT_SALE_DAYS, whichever is longer
 //   movedIds: Set of ids moved between rooms since the round began: their scans may be older than the move
 //   finishing: the round ends: also list cards holding more than all zones add up to
+//   movedAt: Map id -> time of its last move between rooms. A move takes its copies from the front zone, which may not be the zone they left. So a zone whose
+//            record is older than the move and now scans lower may only be showing that copy: it lowers nothing by itself. The zones are still saved, and
+//            when the round finishes a copy that no zone holds is listed and needs the box ticked.
 //
 // Stock does not follow the zones' sum: sales and moves between rooms don't touch the ledger, so the sum of zones not scanned
 // lately runs high by what left since, and a sum would put those copies back on sale.
@@ -35,7 +38,7 @@ export const dayOf = (at) => new Date(at).toLocaleDateString('en-CA')
 // A drop reads the two numbers as they are now, so one sale can excuse one missing copy only: after it is taken up the zones no
 // longer run high. Which zone a sold copy came from is not known, so a real loss here can be excused by a sale from another
 // zone; it shows when that other zone is scanned.
-export function planZoneSubmit({ submit, scans, ledger, rows, names = new Map(), recentlySold = new Set(), movedIds = new Set(), finishing = false }) {
+export function planZoneSubmit({ submit, scans, ledger, rows, names = new Map(), recentlySold = new Set(), movedIds = new Set(), movedAt = new Map(), finishing = false }) {
   const plan = { fixes: [], zeroed: [], raised: [], people: [], extras: [], same: 0, soldOk: 0, filled: 0, totalNow: 0, changes: new Map(), hold: new Set(), holdUnlessTicked: new Set() }
   const split = (k) => { const i = k.indexOf('|'); return [k.slice(0, i), k.slice(i + 1)] }
   const scanOf = new Map()       // id -> { zone: qty } of the submitted zones
@@ -81,6 +84,8 @@ export function planZoneSubmit({ submit, scans, ledger, rows, names = new Map(),
     let to = now
     if (newZ > now && d >= 0) to = newZ
     else if (d < 0) to = Math.max(0, now - Math.max(0, -d - Math.max(0, others + oldZ - now)))
+    const moved = movedAt.get(id)
+    if (to < now && moved && Object.entries(old).some(([z, v]) => (scan[z] || 0) < (Number(v.qty) || 0) && (!v.at || new Date(v.at) < new Date(moved)))) to = now
     // These scans may be older than the sale or the move, so they prove nothing. Unchanged zones have nothing new to say.
     const doubt = recentlySold.has(id) ? `sold in the last ${RECENT_SALE_DAYS} days or this round: the extra copy may be waiting to ship`
       : movedIds.has(id) ? 'moved between rooms during this round: scan it again' : null

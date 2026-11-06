@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle, Loader2, MapPin, Play, ScanLine, Search } from 'lucide-react'
-import { fetchLocations, listStockPendingSales, moveStockBetweenRooms, resolveStockPending, supabase } from '../lib/supabase'
+import { changeZoneQtyAt, fetchLocations, listStockPendingSales, moveStockBetweenRooms, resolveStockPending, supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
 import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, STORE_ZONE, UNSORTED, ZONES, dayOf, isBigZone, isOverLimit, loweredShare, planZoneSubmit, resultCsv, zoneMax } from '../lib/stockCheck'
@@ -22,7 +22,19 @@ const STOCK_ROOMS = [
 // Gary 11/05: copies can move between these two, from Find a card.
 const MOVE_TO = {
   [INVENTORY_ROOM]: { id: STORE_ROOM, label: 'Storefront / 门店' },
-  [STORE_ROOM]: { id: INVENTORY_ROOM, label: 'Inventory / 库房' },
+  [STORE_ROOM]: { id: INVENTORY_ROOM, label: 'Inventory / 后面' },
+}
+
+// Gary 11/05: a search says where a card is in the words people use.
+const ROOM_LABEL = { [INVENTORY_ROOM]: 'Inventory / 后面', [STORE_ROOM]: 'Storefront / 门店' }
+
+// A count of this room started or finished since a time. A minute's margin for the two clocks.
+async function countSince(at, locationId) {
+  const since = new Date(at - 60000).toISOString()
+  const { data, error } = await supabase.from('stock_check_rounds').select('id').eq('location_id', locationId)
+    .or(`started_at.gte.${since},finished_at.gte.${since}`).limit(1)
+  if (error) throw error
+  return data?.length > 0
 }
 
 async function readAllPages(build) {
@@ -69,6 +81,22 @@ async function readMovedIds(rows, since) {
   for (const [id, rs] of rows) for (const r of rs) idOfRow.set(r.id, id)
   // Some moves log only the source row and name the other end in the payload.
   return new Set(data.flatMap(d => [idOfRow.get(d.single_id), idOfRow.get(d.payload?.dest_single_id)]).filter(Boolean))
+}
+
+// Id -> its last move between rooms, as far back as the oldest zone record of this room.
+async function readLastMoves(rows, ledger) {
+  const times = [...ledger.values()].map(v => v.at).filter(Boolean).sort()
+  if (!times.length) return new Map()
+  const data = await readAllPages(() => supabase.from('singles_audit_log').select('id, single_id, payload, acted_at').eq('event_type', 'moved').gte('acted_at', times[0]).order('id'))
+  const idOfRow = new Map()
+  for (const [id, rs] of rows) for (const r of rs) idOfRow.set(r.id, id)
+  const last = new Map()
+  for (const d of data) {
+    for (const id of [idOfRow.get(d.single_id), idOfRow.get(d.payload?.dest_single_id)]) {
+      if (id && (!last.has(id) || new Date(d.acted_at) > new Date(last.get(id)))) last.set(id, d.acted_at)
+    }
+  }
+  return last
 }
 
 // Ids sold from this room in the last few days, or since the round began: their copy may still be here, or a scan may be older than the sale.
@@ -397,9 +425,10 @@ export default function StockCheck() {
       }
       const [rows, recentlySold] = await Promise.all([readRoomRows(locationId), readRecentlySold(locationId, round.started_at)])
       const movedIds = await readMovedIds(rows, round.started_at)
+      const movedAt = await readLastMoves(rows, ledger)
       const names = new Map([...rows].map(([id, rs]) => [id, cardName(rs[0])]))
       for (const [id, e] of expected) if (!names.has(id)) names.set(id, e.name)
-      const p = planZoneSubmit({ submit, scans, ledger, rows, names, recentlySold, movedIds, finishing })
+      const p = planZoneSubmit({ submit, scans, ledger, rows, names, recentlySold, movedIds, movedAt, finishing })
       if (p.extras.length) {
         const ids = p.extras.map(e => e.id)
         const found = {}
@@ -881,32 +910,7 @@ function StockPendingSales({ addToast, user }) {
   )
 }
 
-// One card in one zone of Inventory goes up or down by delta. Only if the record still holds what was read: two people, or a
-// submit, may be writing. Returns the new number.
-async function changeZoneQty(zone, id, delta, userId) {
-  const key = (q) => q.eq('location_id', INVENTORY_ROOM).eq('zone', zone).eq('tcg_id', id)
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const { data: cur, error } = await key(supabase.from('stock_zone_qty').select('qty')).maybeSingle()
-    if (error) throw error
-    const old = cur?.qty || 0
-    const next = old + delta
-    if (next < 0) throw new Error(`${zone} no longer holds this card`)
-    if (!cur) {
-      if (next === 0) return 0
-      const { error: addErr } = await supabase.from('stock_zone_qty').insert({ location_id: INVENTORY_ROOM, zone, tcg_id: id, qty: next, scanned_by_id: userId || null })
-      if (!addErr) return next
-      if (addErr.code !== '23505') throw addErr
-      continue    // someone added it just now
-    }
-    const write = next === 0
-      ? key(supabase.from('stock_zone_qty').delete())
-      : key(supabase.from('stock_zone_qty').update({ qty: next, scanned_at: new Date().toISOString(), scanned_by_id: userId || null }))
-    const { data: done, error: writeErr } = await write.eq('qty', old).select('tcg_id')
-    if (writeErr) throw writeErr
-    if (done?.length === 1) return next
-  }
-  throw new Error('this card keeps changing in that zone, scan it again')
-}
+const changeZoneQty = (zone, id, delta, userId) => changeZoneQtyAt(INVENTORY_ROOM, zone, id, delta, userId)
 
 // Put away: Gary 11/05. A card goes into one zone A1..J5 without rescanning the zone. Only the zone record changes, stock does not.
 // A copy recorded in Unsorted comes out of Unsorted. A copy with no room in the books waits for a person on the page: a pop-up would
@@ -966,7 +970,7 @@ function PutAway({ addToast, user }) {
     if (error) throw error
     return data?.length > 0
   }
-  const COUNT_OPEN = 'A count of Inventory is open: scan it there instead, a submit would replace this. / 库房正在核对，请在核对里扫'
+  const COUNT_OPEN = 'A count of Inventory is open: scan it there instead, a submit would replace this. / 后面正在核对，请在核对里扫'
 
   // yes: the person has said there is one more copy. Every check still runs again, on the numbers as they are now.
   const checkAndAdd = async (key, z, id, yes = false) => {
@@ -982,7 +986,7 @@ function PutAway({ addToast, user }) {
       const here = live.filter(r => r.location_id === INVENTORY_ROOM)
       if (!here.length) {
         const where = live.map(r => `${r.location?.name || 'no location'} ×${r.quantity}`).join(', ')
-        set({ state: 'refused', name: live[0] ? cardName(live[0]) : '', note: live.length ? `Not in Inventory. The app has it at ${where}. / 库房没有这张` : 'No Pokemon stock with this id. / 系统里没有这张' })
+        set({ state: 'refused', name: live[0] ? cardName(live[0]) : '', note: live.length ? `Not in Inventory. The app has it at ${where}. / 后面没有这张` : 'No Pokemon stock with this id. / 系统里没有这张' })
         return
       }
       const stock = here.reduce((s, r) => s + (Number(r.quantity) || 0), 0)
@@ -1029,14 +1033,6 @@ function PutAway({ addToast, user }) {
   }
 
   // A count since the add may already have corrected it, so its undo no longer applies. A minute's margin for the two clocks.
-  const countSince = async (at) => {
-    const since = new Date(at - 60000).toISOString()
-    const { data, error } = await supabase.from('stock_check_rounds').select('id').eq('location_id', INVENTORY_ROOM)
-      .or(`started_at.gte.${since},finished_at.gte.${since}`).limit(1)
-    if (error) throw error
-    return data?.length > 0
-  }
-
   // Two writes. If the second fails the line remembers the first is done, so pressing Undo again does not take a second copy.
   const undo = (l) => {
     setLine(l.key, { state: 'working', note: '' })
@@ -1044,7 +1040,7 @@ function PutAway({ addToast, user }) {
       let zoneDone = !!l.zoneDone
       try {
         if (await countOpen()) { setLine(l.key, { state: 'added', note: COUNT_OPEN }); return }
-        if (await countSince(l.at)) { setLine(l.key, { state: 'added', noUndo: true, note: 'A count ran since: its numbers stand, undo no longer applies. / 之后核对过，以核对为准，不能撤销' }); return }
+        if (await countSince(l.at, INVENTORY_ROOM)) { setLine(l.key, { state: 'added', noUndo: true, note: 'A count ran since: its numbers stand, undo no longer applies. / 之后核对过，以核对为准，不能撤销' }); return }
         if (!zoneDone) { await changeZoneQty(l.zone, l.id, -1, user?.id); zoneDone = true }
         if (l.fromUnsorted) await changeZoneQty(UNSORTED, l.id, 1, user?.id)
         await audit(l.rowId, `Put away undone: -1 in ${l.zone}${l.fromUnsorted ? ' back to Unsorted' : ''}. Stock unchanged.`, { zone: l.zone, undo: true })
@@ -1103,7 +1099,7 @@ function PutAway({ addToast, user }) {
 }
 
 // Move to the Storefront: Gary 11/05. Each scan moves one copy from Inventory to the Storefront, through the same move as Find a card.
-// Zones are not touched: they change at John's next scan (Gary 11/05). A second scan moves a second copy.
+// The zone record follows, from the front zone: see _moveZones in supabase.js. A second scan moves a second copy.
 function MoveToStore({ user }) {
   const [code, setCode] = useState('')
   const [lines, setLines] = useState([])
@@ -1127,7 +1123,8 @@ function MoveToStore({ user }) {
     run(async () => {
       try {
         const res = await moveStockBetweenRooms({ tcgId: id, fromLocationId: INVENTORY_ROOM, toLocationId: STORE_ROOM, qty: 1, currentUserId: user?.id })
-        setLine(key, { state: 'moved', name: cardName(res.card), note: `${res.left} left in Inventory / 库房还剩 ${res.left} 张` })
+        const zone = res.zones?.length ? `, out of ${res.zones.join(' ')}` : ''
+        setLine(key, { state: 'moved', at: Date.now(), zones: res.zones || [], name: cardName(res.card), note: `${res.left} left in Inventory${zone}${res.zoneNote ? `. ${res.zoneNote}` : ''} / 后面还剩 ${res.left} 张` })
       } catch (err) {
         setLine(key, { state: 'failed', note: err.message || String(err) })
       }
@@ -1139,8 +1136,10 @@ function MoveToStore({ user }) {
     setLine(l.key, { state: 'working', note: '' })
     run(async () => {
       try {
-        const res = await moveStockBetweenRooms({ tcgId: l.id, fromLocationId: STORE_ROOM, toLocationId: INVENTORY_ROOM, qty: 1, currentUserId: user?.id })
-        setLine(l.key, { state: 'undone', note: `back in Inventory / 已回库房，门店还剩 ${res.left} 张` })
+        // A count since the move has set the zones: the copy goes back with no zone, and Put cards in a zone can place it.
+        const backToZones = await countSince(l.at, INVENTORY_ROOM) ? [] : l.zones
+        const res = await moveStockBetweenRooms({ tcgId: l.id, fromLocationId: STORE_ROOM, toLocationId: INVENTORY_ROOM, qty: 1, currentUserId: user?.id, backToZones })
+        setLine(l.key, { state: 'undone', note: `back in Inventory${res.zoneNote ? `. ${res.zoneNote}` : ''} / 已回后面，门店还剩 ${res.left} 张` })
       } catch (err) {
         setLine(l.key, { state: 'moved', noUndo: true, note: `Undo failed, it may have gone through: find this card and check both rooms. ${err.message || err} / 撤销失败，可能已经移了，请搜这张卡核对两边` })
       }
@@ -1153,7 +1152,7 @@ function MoveToStore({ user }) {
   return (
     <div className="card mb-4" data-testid="move-store">
       <div className="text-sm font-semibold text-white">Move to Storefront / 移到门店</div>
-      <div className="text-xs text-gray-400 mt-0.5">Each scan moves one copy from Inventory to the Storefront. Online stock goes down with it. / 扫一张就从库房移一张到门店，线上数量跟着减。</div>
+      <div className="text-xs text-gray-400 mt-0.5">Each scan moves one copy from Inventory to the Storefront. Online stock and the zone record go down with it. / 扫一张就从后面移一张到门店，线上数量和分区记录跟着减。</div>
       <div className="mt-2 flex flex-wrap items-stretch gap-2">
         <input
           ref={inputRef}
@@ -1182,13 +1181,16 @@ function MoveToStore({ user }) {
   )
 }
 
+// A zone in the words people use: the store has one zone, the rest are in the back.
+const zonePlace = (z) => (z === STORE_ZONE ? 'Storefront / 门店' : `Inventory / 后面 ${z}`)
+
 // Where a sold row went: the online marker names the shop and order, otherwise the room and what the register wrote.
 function soldWhere(r) {
   const notes = String(r.sale_notes || '').trim()
   const online = notes.match(/^\[online-single[^\]]*\]\s*(.+)$/)
   if (online) return online[1]
   const channel = { in_person: 'in store', ebay: 'eBay', tcgplayer: 'TCGplayer', shopify: 'Shopify' }[r.sale_channel] || r.sale_channel || 'sale'
-  return [r.location?.name, channel, notes && notes.length <= 30 ? notes : ''].filter(Boolean).join(' · ')
+  return [ROOM_LABEL[r.location_id] || r.location?.name, channel, notes && notes.length <= 30 ? notes : ''].filter(Boolean).join(' · ')
 }
 
 // Gary 11/05: a card with no stock anywhere: was it sold in the last 3 days and where, and which zone was it in.
@@ -1202,7 +1204,7 @@ async function readGoneCards(candidates) {
     const part = ids.slice(i, i + 100)
     const [rows, sales, held, scans] = await Promise.all([
       readAllPages(() => supabase.from('singles').select('tcg_id').in('tcg_id', part).neq('status', 'sold').eq('deleted', false).gt('quantity', 0).order('id')),
-      readAllPages(() => supabase.from('singles').select('tcg_id, sale_date, sale_channel, sale_notes, location:locations(name)')
+      readAllPages(() => supabase.from('singles').select('tcg_id, sale_date, sale_channel, sale_notes, location_id, location:locations(name)')
         .in('tcg_id', part).eq('status', 'sold').eq('deleted', false).gte('sale_date', since).order('sale_date', { ascending: false }).order('id')),
       readAllPages(() => supabase.from('stock_zone_qty').select('zone, tcg_id, qty, scanned_at').in('tcg_id', part).order('location_id').order('zone').order('tcg_id')),
       readAllPages(() => supabase.from('stock_check_scans').select('zone, tcg_id, qty, round_id, round:stock_check_rounds(status, started_at)')
@@ -1210,7 +1212,7 @@ async function readGoneCards(candidates) {
     ])
     for (const r of rows) live.add(String(r.tcg_id))
     for (const r of sales) add(sold, String(r.tcg_id), r)
-    for (const h of held) add(zones, String(h.tcg_id), `${h.zone}×${h.qty} (${dayOf(h.scanned_at).slice(5)})`)
+    for (const h of held) add(zones, String(h.tcg_id), `${zonePlace(h.zone)}×${h.qty} (${dayOf(h.scanned_at).slice(5)})`)
     for (const r of scans.filter(x => x.round && x.round.status !== 'cancelled')) add(past, String(r.tcg_id), r)
   }
   return ids.filter(id => !live.has(id)).map(id => {
@@ -1222,7 +1224,7 @@ async function readGoneCards(candidates) {
     // No zone record left (a later count took it out): the newest count that saw it.
     const seen = past.get(id) || []
     const newest = seen.reduce((a, r) => (r.round.started_at > a ? r.round.started_at : a), '')
-    const fromCount = seen.filter(r => r.round.started_at === newest).map(r => `${r.zone}×${r.qty} (${dayOf(newest).slice(5)})`)
+    const fromCount = seen.filter(r => r.round.started_at === newest).map(r => `${zonePlace(r.zone)}×${r.qty} (${dayOf(newest).slice(5)})`)
     return { k: `gone|${id}`, id, name: candidates.get(id), gone: true, qty: 0, sold: [...lines].map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)), zones: zones.get(id) || fromCount }
   })
 }
@@ -1268,7 +1270,7 @@ function FindCard({ addToast, user }) {
       const grouped = new Map()
       for (const r of data) {
         const k = `${r.tcg_id}|${r.location_id}`
-        const g = grouped.get(k) || { k, id: r.tcg_id, loc: r.location_id, name: cardName(r), room: r.location?.name || 'no location', qty: 0, zones: zones.get(k) || [] }
+        const g = grouped.get(k) || { k, id: r.tcg_id, loc: r.location_id, name: cardName(r), room: ROOM_LABEL[r.location_id] || r.location?.name || 'no location', qty: 0, zones: zones.get(k) || [] }
         g.qty += Number(r.quantity) || 0
         grouped.set(k, g)
       }
@@ -1303,7 +1305,7 @@ function FindCard({ addToast, user }) {
     setMoveBusy(true)
     try {
       const res = await moveStockBetweenRooms({ tcgId: r.id, fromLocationId: r.loc, toLocationId: MOVE_TO[r.loc].id, qty: Number(moving.qty), currentUserId: user?.id })
-      addToast(`Moved ${res.moved} to ${res.toName}. ${res.left} left here. / 已移 ${res.moved} 张，这边还剩 ${res.left} 张`, 'success')
+      addToast(`Moved ${res.moved} to ${res.toName}. ${res.left} left here.${res.zoneNote ? ` ${res.zoneNote}.` : ''} / 已移 ${res.moved} 张，这边还剩 ${res.left} 张`, 'success')
       setMoving(null)                   // done: the form cannot send the same move twice, whatever the refresh does
       await search(lastTerm.current)
     } catch (err) {
@@ -1344,7 +1346,7 @@ function FindCard({ addToast, user }) {
             <div key={r.k} className="flex flex-wrap gap-x-3 py-1 border-t border-vault-border/40">
               <span className="font-mono text-gray-400">{r.id}</span>
               <span className="flex-1 min-w-0 text-gray-200">{r.name}</span>
-              <span className="text-gray-400">{r.room} ×{r.qty}</span>
+              <span className={r.loc === STORE_ROOM ? 'text-green-400 font-semibold' : r.loc === INVENTORY_ROOM ? 'text-sky-300 font-semibold' : 'text-gray-400'} data-testid="find-room">{r.room} ×{r.qty}</span>
               <span className={r.zones.length ? 'text-vault-gold font-semibold' : 'text-gray-500'}>{r.zones.length ? r.zones.join(' ') : 'no zone yet'}</span>
               {MOVE_TO[r.loc] && (moving?.k === r.k ? (
                 <span className="flex items-center gap-1" data-testid="move-form">
