@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   fetchPaymentMethods,
-  lookupScannedCode,
+  lookupScannedCode, onlineOrderBlock,
   getFrontStoreLocationId,
   submitStorefrontTransaction,
   fetchStorefrontDailySummary,
@@ -80,7 +80,7 @@ const KIND_META = {
   // recorded in storefront_sales only; no slabs / singles row is created.
   slab_manual:   { icon: Diamond, color: 'text-emerald-300', label: 'Slab (manual)' },
   single_manual: { icon: Layers,  color: 'text-blue-300',    label: 'Single (manual)' },
-  single_pending: { icon: Layers, color: 'text-amber-300',   label: 'Single (stock to confirm)' },
+  single_pending: { icon: Layers, color: 'text-amber-300',   label: 'Single (from Inventory)' },
 }
 
 const fmtUsd = (n) => {
@@ -405,8 +405,8 @@ export default function StorefrontSale() {
     addToast(`Added: ${slab.item_name}`, 'success')
   }
 
-  // Gary 2026-11-04: Front Store short means no other room is touched at the register.
-  // The sale still goes through; John or Gary decides on the Stock Check page.
+  // Gary 2026-11-05: Front Store short means the copy comes out of Inventory at checkout.
+  // If Inventory can't cover it either, the sale still goes through and waits on Stock Check.
   const addStockPending = (single) => {
     const key = `single_pending-${single.tcg_id}`
     setCart(prev => {
@@ -425,10 +425,23 @@ export default function StorefrontSale() {
         scanned_code: single.tcg_id,
       }]
     })
-    addToast(`${single.card_name}: Front Store has no more. Sale is recorded, stock waits for John or Gary.`, 'info')
+    addToast(`${single.card_name}: Front Store has no more. This one comes out of Inventory if it has it.`, 'info')
   }
 
   const addOrIncrementSingle = async (single) => {
+    // Gary 2026-11-05: an online order holds the last copy: the register cannot sell it.
+    if (single.tcg_id) {
+      const inCart = cart.reduce((s, l) => s + (
+        (l.kind === 'single_pending' ? l.source?.tcg_id : l.kind === 'single' ? l.single?.tcg_id : null) === single.tcg_id
+          ? (Number(l.quantity) || 1) : 0), 0)
+      try {
+        const block = await onlineOrderBlock(single.tcg_id, inCart + 1, single.card_name)
+        if (block) { addToast(block, 'error'); return }
+      } catch (err) {
+        addToast(`Lookup failed: ${err.message || err}`, 'error')
+        return
+      }
+    }
     // "Already sold" used to be a dead end here, and a dead end at the
     // register does not mean the card doesn't sell — it means the sale
     // stops being recorded. On 08-05 the storefront reported this five
@@ -766,7 +779,7 @@ export default function StorefrontSale() {
       // Buy would route it through _buyManualLine — money OUT instead of in,
       // and the reconcile marker silently dropped (Codex 8/21).
       if (line.kind === 'single_pending' && transactionType === 'buy') {
-        return 'Remove the card waiting for stock confirmation first: it records a sale, not a buy'
+        return 'Remove the card coming out of Inventory first: it records a sale, not a buy'
       }
       if (line.notInSystem && transactionType === 'buy') {
         return 'Remove the "not in system" card line first — it records a sale, not a buy'
@@ -884,7 +897,7 @@ export default function StorefrontSale() {
             if (line.kind === 'single_pending') {
               return {
                 kind: 'single',
-                name: `${line.source.card_name}${line.source.card_number ? ` #${line.source.card_number}` : ''} — Front Store short, stock waits for John or Gary`,
+                name: `${line.source.card_name}${line.source.card_number ? ` #${line.source.card_number}` : ''} — Front Store short, comes out of Inventory if it has it`,
                 quantity: Number(line.quantity) || 1,
                 price: Number(line.price) || 0,
               }
@@ -2767,7 +2780,7 @@ function CartRow({ line, onUpdate, onRemove, disabled, priceMode }) {
     qtyEditable = true
   } else if (line.kind === 'single_pending') {
     title = `${line.source.card_name}${line.source.card_number ? ` #${line.source.card_number}` : ''}`
-    sub = `⚠ Front Store has no more · sale is recorded, stock waits for John or Gary · TCG ${line.source.tcg_id}`
+    sub = `⚠ Front Store has no more · comes out of Inventory if it has it · TCG ${line.source.tcg_id}`
     available = 999
     qtyEditable = true
   } else if (line.kind === 'slab_manual') {

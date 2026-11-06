@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement,
-  fetchUsers, lookupScannedCode,
+  fetchUsers, lookupScannedCode, fetchLiveSinglesByTcgId, getFrontStoreLocationId, onlineOrderBlock,
+  SINGLES_INVENTORY_ROOM_ID,
   moveSingleToLocation, moveSlabToLocation, markSlabAsSold, sellSingleQtySplit,
   createStorefrontSale,
   fetchSinglesAtLocation, fetchSlabsAtLocation,
@@ -56,6 +57,23 @@ const extractLaunchName = (fullName, category) => {
   return fullName.replace(re, '').trim() || fullName
 }
 
+// Gary 2026-11-05: where a Mystery Game single comes from. Mixed follows the store
+// rule: Front Store, then Inventory. Any other room is last, so a card that only
+// sits there can still be recorded.
+const MYSTERY_SOURCES = [
+  { id: 'store', label: 'Front Store / 门店' },
+  { id: 'inventory', label: 'Inventory' },
+  { id: 'mixed', label: 'Mixed / 混合 (Store first)' },
+]
+
+const mysterySourceRows = (rows, source, frontId, inventoryId) => {
+  const live = rows.filter(r => (r.status === 'in_inventory' || r.status === 'listed') && Number(r.quantity) > 0)
+  const inRoom = (id) => live.filter(r => r.location_id === id)
+  if (source === 'store') return inRoom(frontId)
+  if (source === 'inventory') return inRoom(inventoryId)
+  return [...inRoom(frontId), ...inRoom(inventoryId), ...live.filter(r => r.location_id !== frontId && r.location_id !== inventoryId)]
+}
+
 export default function MovedInventory() {
   const { toasts, addToast, removeToast } = useToast()
   const { user } = useAuth()
@@ -80,12 +98,15 @@ export default function MovedInventory() {
   // we equal-split it across the priceless slabs at submit time so each
   // gets a sensible sale_price_usd recorded.
   const [mysteryPricelessTotal, setMysteryPricelessTotal] = useState('')
+  const [mysterySource, setMysterySource] = useState('mixed')
 
   // Mixed-kind cart.
   //   sealed: { kind:'sealed', key, product_id, product, inventory_row, quantity }
   //   single: { kind:'single', key, single_id, single, available_qty, quantity }
   //   slab:   { kind:'slab',   key, slab_id, slab }
   const [cart, setCart] = useState([])
+  const cartRef = useRef(cart)
+  cartRef.current = cart
 
   // What's at the FROM location across all 3 kinds — used both for scan
   // validation ("is this item even in this room?") and to feed the
@@ -213,47 +234,73 @@ export default function MovedInventory() {
     addToast(`Added: ${invRow.product?.name} × ${qty}`, 'success')
   }
 
-  const addSingleToCart = (single, quantity = 1) => {
-    if (!single) return
-    // Mystery Game: a single is sold IN PLACE (location-agnostic) — skip the
-    // FROM-location stock check and pre-fill a reference price (market × qty)
-    // so it's a "priced" line; blank ones hit the bucket.
-    // Gary 2026-10-08: ONE card per scan by default. This used to take the
-    // whole row's quantity, so selling 1 card of a 18-card stack marked all 18
-    // sold (Sully's 10/08 game: 30 cards sold, 174 recorded). Scanning the same
-    // card again adds one more; the Qty box raises it by hand. Submit splits the
-    // row (sellSingleQtySplit), the same way a normal single sale does.
-    if (mysteryGame) {
-      const rowQty = single.quantity || 1
-      const unitRef = single.current_market_price_usd != null
-        ? Number(single.current_market_price_usd) : null
-      const refFor = (q) => (unitRef == null ? '' : String(Math.round(unitRef * q * 100) / 100))
-      // Find-or-add inside ONE functional update (Codex 10/08): a check against
-      // the outer `cart` can be stale after an awaited lookup and would append a
-      // second line with the same key.
-      setCart(prev => {
-        const existing = prev.find(c => c.kind === 'single' && c.single_id === single.id)
-        if (!existing) {
-          return [...prev, {
-            kind: 'single', key: `single-${single.id}`, single_id: single.id,
-            single, available_qty: rowQty, quantity: 1,
-            unit_ref_price: unitRef, price_is_ref: unitRef != null,
-            sale_price: refFor(1),
-          }]
-        }
-        if (existing.quantity >= existing.available_qty) return prev
-        return prev.map(c => {
-          if (c.key !== existing.key) return c
-          const q = Math.min(c.quantity + 1, c.available_qty)
-          return { ...c, quantity: q, ...(c.price_is_ref ? { sale_price: refFor(q) } : {}) }
-        })
-      })
-      addToast(`Added: ${single.card_name} (scan again for another copy)`, 'success')
+  // Mystery Game: skip the FROM-location stock check and pre-fill a reference
+  // price (market × qty) so it's a "priced" line; blank ones hit the bucket.
+  // Gary 2026-10-08: ONE card per scan by default. This used to take the
+  // whole row's quantity, so selling 1 card of a 18-card stack marked all 18
+  // sold (Sully's 10/08 game: 30 cards sold, 174 recorded). Scanning the same
+  // card again adds one more; the Qty box raises it by hand. Submit splits the
+  // row (sellSingleQtySplit), the same way a normal single sale does.
+  // Gary 2026-11-05: the row is the first one in the chosen source with a copy
+  // left; each room's copies are their own cart line.
+  const addMysterySingle = async (picked) => {
+    let order
+    try {
+      if (picked.tcg_id) {
+        const inCart = cartRef.current.reduce((s, c) => s + (c.kind === 'single' && c.single?.tcg_id === picked.tcg_id ? c.quantity : 0), 0)
+        const block = await onlineOrderBlock(picked.tcg_id, inCart + 1, picked.card_name)
+        if (block) { addToast(block, 'error'); return }
+      }
+      const frontId = await getFrontStoreLocationId()
+      // A row with no TCG ID can only be that row: it was picked by hand.
+      order = picked.tcg_id
+        ? mysterySourceRows(await fetchLiveSinglesByTcgId(picked.tcg_id), mysterySource, frontId, SINGLES_INVENTORY_ROOM_ID)
+        : [picked]
+    } catch (err) {
+      addToast(`Lookup failed: ${err.message || err}`, 'error')
       return
     }
+    const inCart = (lines, row) => lines.find(c => c.kind === 'single' && c.single_id === row.id)?.quantity || 0
+    const nextRow = (lines) => order.find(r => inCart(lines, r) < Number(r.quantity))
+    const row = nextRow(cartRef.current)
+    if (!row) {
+      const where = MYSTERY_SOURCES.find(s => s.id === mysterySource)?.label
+      addToast(`${picked.card_name}: no copy left in ${where}`, 'error')
+      return
+    }
+    // Find-or-add inside ONE functional update (Codex 10/08): a check against
+    // the outer `cart` can be stale after an awaited lookup and would append a
+    // second line with the same key.
+    setCart(prev => {
+      const r = nextRow(prev)
+      if (!r) return prev
+      const unitRef = r.current_market_price_usd != null ? Number(r.current_market_price_usd) : null
+      const refFor = (q) => (unitRef == null ? '' : String(Math.round(unitRef * q * 100) / 100))
+      const existing = prev.find(c => c.kind === 'single' && c.single_id === r.id)
+      if (!existing) {
+        return [...prev, {
+          kind: 'single', key: `single-${r.id}`, single_id: r.id,
+          single: r, available_qty: Number(r.quantity), quantity: 1,
+          unit_ref_price: unitRef, price_is_ref: unitRef != null,
+          sale_price: refFor(1),
+        }]
+      }
+      return prev.map(c => {
+        if (c.key !== existing.key) return c
+        const q = c.quantity + 1
+        return { ...c, quantity: q, available_qty: Number(r.quantity), ...(c.price_is_ref ? { sale_price: refFor(q) } : {}) }
+      })
+    })
+    addToast(`Added: ${row.card_name} from ${row.location?.name || 'its room'} (scan again for another copy)`, 'success')
+  }
+
+  const addSingleToCart = async (single, quantity = 1) => {
+    if (!single) return
+    if (mysteryGame) return addMysterySingle(single)
     const stockRow = singlesAtFrom.find(s => s.id === single.id)
     if (!stockRow) {
-      addToast(`${single.card_name} is not at the source location`, 'error')
+      const block = await onlineOrderBlock(single.tcg_id, 1, single.card_name).catch(() => null)
+      addToast(block || `${single.card_name} is not at the source location`, 'error')
       return
     }
     const inCart = cartSingleQtyFor(single.id)
@@ -355,7 +402,7 @@ export default function MovedInventory() {
           }
           addSlabToCart(result.slab)
         } else if (result.kind === 'single') {
-          addSingleToCart(result.single, 1)
+          await addSingleToCart(result.single, 1)
         } else if (result.kind === 'sealed') {
           if (!fromLocationId) {
             addToast('Pick a FROM location first — sealed packs deduct from a specific location', 'error')
@@ -851,7 +898,28 @@ export default function MovedInventory() {
           ) : (
             <div className="space-y-3">
               <div className="text-xs text-purple-200 bg-purple-500/10 border border-purple-500/30 rounded p-3">
-                🎲 Mystery Game: scan a slab cert#, single TCG ID, or sealed UPC — each is marked sold at the price you enter (blank ones split the bucket total below). Slabs &amp; singles sell in place; sealed deducts from the FROM location.
+                🎲 Mystery Game: scan a slab cert#, single TCG ID, or sealed UPC — each is marked sold at the price you enter (blank ones split the bucket total below). Slabs sell in place; sealed deducts from the FROM location.
+              </div>
+              <div data-testid="mystery-source">
+                <label className="block text-sm font-medium text-gray-300 mb-2">Singles come from / 单卡从哪出</label>
+                <div className="inline-flex flex-wrap rounded-lg border border-vault-border p-0.5 bg-vault-darker/40">
+                  {MYSTERY_SOURCES.map(s => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => setMysterySource(s.id)}
+                      disabled={submitting}
+                      aria-pressed={mysterySource === s.id}
+                      className={`px-3 py-1.5 text-sm rounded-md transition ${
+                        mysterySource === s.id
+                          ? 'bg-purple-500/80 text-white font-semibold'
+                          : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div className="md:w-1/2">
                 <label className="block text-sm font-medium text-gray-300 mb-2">
@@ -1061,7 +1129,8 @@ function CartRow({ item, onQtyChange, onRemove, onSalePriceChange, mysteryGame, 
     const num = item.single?.card_number ? ` #${item.single.card_number}` : ''
     const setName = item.single?.set?.name ? ` · ${item.single.set.name}` : ''
     title = `${item.single?.card_name || 'Single'}${num}`
-    sub = `${item.single?.condition || 'raw'}${setName} · TCG ${item.single?.tcg_id || '?'} · ${item.available_qty} at source`
+    const room = mysteryGame && item.single?.location?.name ? ` · from ${item.single.location.name}` : ''
+    sub = `${item.single?.condition || 'raw'}${setName} · TCG ${item.single?.tcg_id || '?'} · ${item.available_qty} at source${room}`
     max = item.available_qty
     qtyEditable = true
   } else {

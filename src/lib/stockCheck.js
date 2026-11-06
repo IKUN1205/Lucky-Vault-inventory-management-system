@@ -5,11 +5,12 @@ export const ZONES = ZONE_LETTERS.flatMap(l => [1, 2, 3, 4, 5].map(n => `${l}${n
 export const UNSORTED = 'Unsorted'        // Gary 11/05: Inventory has one big zone for cards not in a small zone yet
 export const STORE_ZONE = 'Store'         // Gary 11/05: the store has no small zones, one big zone
 export const ZONE_MAX = 120               // Gary: a small zone holds 100-120 singles; more means the zone needs checking again
-export const BIG_ZONE_MAX = 500           // Gary 11/05: Unsorted and the store, for now
+export const BIG_ZONE_MAX = 500           // Gary 11/05: Unsorted, for now
+export const STORE_ZONE_MAX = 1500        // Gary 11/05: the store
 export const MAX_LOWERED_SHARE = 0.3      // more than this looks like a mistake, not a real loss
 export const RECENT_SALE_DAYS = 3         // a copy sold this recently may still be on the shelf, waiting to be picked
 export const isBigZone = (z) => z === UNSORTED || z === STORE_ZONE
-export const zoneMax = (z) => (isBigZone(z) ? BIG_ZONE_MAX : ZONE_MAX)
+export const zoneMax = (z) => (z === STORE_ZONE ? STORE_ZONE_MAX : isBigZone(z) ? BIG_ZONE_MAX : ZONE_MAX)
 export const isOverLimit = (z, count) => count > zoneMax(z)
 export const dayOf = (at) => new Date(at).toLocaleDateString('en-CA')
 

@@ -564,6 +564,8 @@ export default function StockCheck() {
 
       <StockPendingSales addToast={addToast} user={user} />
       <FindCard addToast={addToast} user={user} />
+      <PutAway addToast={addToast} user={user} />
+      <MoveToStore user={user} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <MapPin size={14} className="text-gray-500" />
@@ -824,7 +826,7 @@ function PlanTable({ title, tone, lines, nameOf, showReason }) {
   )
 }
 
-// Register sales Front Store could not cover: no room was deducted. John or Gary decides here.
+// Register sales neither Front Store nor Inventory could cover: no room was deducted. John or Gary decides here.
 function StockPendingSales({ addToast, user }) {
   const [rows, setRows] = useState([])
   const [busy, setBusy] = useState(null)
@@ -857,8 +859,8 @@ function StockPendingSales({ addToast, user }) {
     <div className="card mb-4 border-amber-500/40" data-testid="stock-pending">
       <h2 className="font-display text-lg text-amber-300 mb-1">Register sales to confirm: {rows.length} / 门店卖出待确认</h2>
       <p className="text-sm text-gray-300 mb-2">
-        Front Store did not have enough, so nothing was deducted. Was it a copy from Inventory?
-        <br />门店库存不够，没有扣任何库。这张是从 Inventory 拿的吗？
+        Front Store and Inventory could not cover these, so nothing was deducted.
+        <br />门店和 Inventory 都不够，没有扣任何库。
       </p>
       <div className="text-sm">
         {rows.map(r => (
@@ -879,26 +881,375 @@ function StockPendingSales({ addToast, user }) {
   )
 }
 
+// One card in one zone of Inventory goes up or down by delta. Only if the record still holds what was read: two people, or a
+// submit, may be writing. Returns the new number.
+async function changeZoneQty(zone, id, delta, userId) {
+  const key = (q) => q.eq('location_id', INVENTORY_ROOM).eq('zone', zone).eq('tcg_id', id)
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { data: cur, error } = await key(supabase.from('stock_zone_qty').select('qty')).maybeSingle()
+    if (error) throw error
+    const old = cur?.qty || 0
+    const next = old + delta
+    if (next < 0) throw new Error(`${zone} no longer holds this card`)
+    if (!cur) {
+      if (next === 0) return 0
+      const { error: addErr } = await supabase.from('stock_zone_qty').insert({ location_id: INVENTORY_ROOM, zone, tcg_id: id, qty: next, scanned_by_id: userId || null })
+      if (!addErr) return next
+      if (addErr.code !== '23505') throw addErr
+      continue    // someone added it just now
+    }
+    const write = next === 0
+      ? key(supabase.from('stock_zone_qty').delete())
+      : key(supabase.from('stock_zone_qty').update({ qty: next, scanned_at: new Date().toISOString(), scanned_by_id: userId || null }))
+    const { data: done, error: writeErr } = await write.eq('qty', old).select('tcg_id')
+    if (writeErr) throw writeErr
+    if (done?.length === 1) return next
+  }
+  throw new Error('this card keeps changing in that zone, scan it again')
+}
+
+// Put away: Gary 11/05. A card goes into one zone A1..J5 without rescanning the zone. Only the zone record changes, stock does not.
+// A copy recorded in Unsorted comes out of Unsorted. A copy with no room in the books waits for a person on the page: a pop-up would
+// take the Enter of the next scan as its answer.
+
+function PutAway({ addToast, user }) {
+  const [zone, setZone] = useState('')
+  const [code, setCode] = useState('')
+  const [held, setHeld] = useState(null)      // copies recorded in the chosen zone
+  const [lines, setLines] = useState([])      // this session, newest first
+  const [working, setWorking] = useState(0)
+  const queue = useRef(Promise.resolve())     // a scanner is faster than the checks: one card at a time
+  const seq = useRef(0)
+  const inputRef = useRef(null)
+  const zoneRef = useRef('')
+
+  const refreshHeld = useCallback(async (z) => {
+    const data = await readAllPages(() => supabase.from('stock_zone_qty').select('qty').eq('location_id', INVENTORY_ROOM).eq('zone', z).order('tcg_id'))
+    const n = data.reduce((s, r) => s + (Number(r.qty) || 0), 0)
+    if (zoneRef.current === z) setHeld({ zone: z, n })
+    return n
+  }, [])
+
+  const chooseZone = (z) => {
+    zoneRef.current = z
+    setZone(z)
+    setHeld(null)
+    if (z) refreshHeld(z).catch(err => addToast(`Could not read ${z}: ${err.message}`, 'error'))
+    setTimeout(() => inputRef.current?.focus(), 20)
+  }
+
+  const audit = (rowId, summary, payload) => supabase.from('singles_audit_log')
+    .insert({ single_id: rowId, event_type: 'updated', summary, payload: { put_away: true, ...payload }, acted_by_id: user?.id || null })
+    .then(({ error }) => { if (error) console.warn('[put away] audit failed', error) })
+
+  // The copy goes in, and comes out of Unsorted if it was recorded there.
+  const addToZone = async (z, id, rowId, fromUnsorted) => {
+    await changeZoneQty(z, id, 1, user?.id)
+    if (fromUnsorted) {
+      try {
+        await changeZoneQty(UNSORTED, id, -1, user?.id)
+      } catch (err) {
+        try {
+          await changeZoneQty(z, id, -1, user?.id)
+        } catch {
+          err.inBoth = true
+        }
+        throw err
+      }
+    }
+    await audit(rowId, `Put away: +1 in ${z}${fromUnsorted ? ' from Unsorted' : ''}. Stock unchanged.`, { zone: z, from: fromUnsorted ? UNSORTED : null })
+  }
+
+  // A submit replaces its zones, so nothing is written here while a count of the room is open.
+  const countOpen = async () => {
+    const { data, error } = await supabase.from('stock_check_rounds').select('id').eq('location_id', INVENTORY_ROOM).eq('status', 'open').limit(1)
+    if (error) throw error
+    return data?.length > 0
+  }
+  const COUNT_OPEN = 'A count of Inventory is open: scan it there instead, a submit would replace this. / 库房正在核对，请在核对里扫'
+
+  // yes: the person has said there is one more copy. Every check still runs again, on the numbers as they are now.
+  const checkAndAdd = async (key, z, id, yes = false) => {
+    const set = (patch) => setLines(ls => ls.map(l => (l.key === key ? { ...l, ...patch } : l)))
+    let info = {}
+    try {
+      if (await countOpen()) { set({ state: 'refused', note: COUNT_OPEN }); return }
+      const n = await refreshHeld(z)
+      if (isOverLimit(z, n + 1)) { set({ state: 'refused', note: `${z} is full (${n}/${zoneMax(z)}). / ${z} 满了` }); return }
+      const live = await readAllPages(() => supabase.from('singles')
+        .select('id, card_name, card_number, language, quantity, location_id, location:locations(name)')
+        .eq('tcg_id', id).eq('brand', 'Pokemon').eq('deleted', false).in('status', ['in_inventory', 'listed']).gt('quantity', 0).order('id'))
+      const here = live.filter(r => r.location_id === INVENTORY_ROOM)
+      if (!here.length) {
+        const where = live.map(r => `${r.location?.name || 'no location'} ×${r.quantity}`).join(', ')
+        set({ state: 'refused', name: live[0] ? cardName(live[0]) : '', note: live.length ? `Not in Inventory. The app has it at ${where}. / 库房没有这张` : 'No Pokemon stock with this id. / 系统里没有这张' })
+        return
+      }
+      const stock = here.reduce((s, r) => s + (Number(r.quantity) || 0), 0)
+      const records = await readAllPages(() => supabase.from('stock_zone_qty').select('zone, qty').eq('location_id', INVENTORY_ROOM).eq('tcg_id', id).order('zone'))
+      const inZones = records.reduce((s, r) => s + (Number(r.qty) || 0), 0)
+      const unsorted = records.some(r => r.zone === UNSORTED && r.qty > 0)
+      info = { name: cardName(here[0]), rowId: here[0].id, fromUnsorted: unsorted }
+      const noRoom = !unsorted && inZones >= stock
+      if (noRoom && !yes) {
+        const list = records.map(r => `${r.zone}×${r.qty}`).join(' ')
+        set({ ...info, state: 'ask', note: `Stock ${stock}, and the zones already hold ${inZones}: ${list}. Another copy? / 账上 ${stock} 张，分区里已经有 ${inZones} 张，还有一张吗？` })
+        return
+      }
+      if (await countOpen()) { set({ state: 'refused', note: COUNT_OPEN }); return }
+      await addToZone(z, id, here[0].id, unsorted)
+      set({ ...info, state: 'added', at: Date.now(), note: noRoom ? 'zones now hold more than stock / 分区张数比账上多' : '' })
+      refreshHeld(z).catch(() => {})    // the writes are done: only the count on the page is late
+    } catch (err) {
+      if (err.inBoth) set({ ...info, fromUnsorted: false, state: 'added', at: Date.now(), note: `This copy is now in both ${z} and Unsorted (${err.message}). Undo takes it out of ${z}. / 这张同时记在 ${z} 和 Unsorted，撤销会从 ${z} 去掉` })
+      else set({ state: 'refused', note: `${err.message || err}. / 没加上` })
+    }
+  }
+
+  const run = (job) => {
+    setWorking(w => w + 1)
+    queue.current = queue.current.then(job).catch(() => {}).finally(() => setWorking(w => w - 1))
+  }
+
+  const onScan = () => {
+    const id = code.trim()
+    setCode('')
+    if (!id || !zone) return
+    const key = ++seq.current
+    setLines(ls => [{ key, zone, id, name: '', state: 'working', note: '' }, ...ls].slice(0, 100))
+    run(() => checkAndAdd(key, zone, id))
+    inputRef.current?.focus()
+  }
+
+  const setLine = (key, patch) => setLines(ls => ls.map(l => (l.key === key ? { ...l, ...patch } : l)))
+
+  const addAnyway = (l) => {
+    setLine(l.key, { state: 'working', note: '' })
+    run(() => checkAndAdd(l.key, l.zone, l.id, true))
+  }
+
+  // A count since the add may already have corrected it, so its undo no longer applies. A minute's margin for the two clocks.
+  const countSince = async (at) => {
+    const since = new Date(at - 60000).toISOString()
+    const { data, error } = await supabase.from('stock_check_rounds').select('id').eq('location_id', INVENTORY_ROOM)
+      .or(`started_at.gte.${since},finished_at.gte.${since}`).limit(1)
+    if (error) throw error
+    return data?.length > 0
+  }
+
+  // Two writes. If the second fails the line remembers the first is done, so pressing Undo again does not take a second copy.
+  const undo = (l) => {
+    setLine(l.key, { state: 'working', note: '' })
+    run(async () => {
+      let zoneDone = !!l.zoneDone
+      try {
+        if (await countOpen()) { setLine(l.key, { state: 'added', note: COUNT_OPEN }); return }
+        if (await countSince(l.at)) { setLine(l.key, { state: 'added', noUndo: true, note: 'A count ran since: its numbers stand, undo no longer applies. / 之后核对过，以核对为准，不能撤销' }); return }
+        if (!zoneDone) { await changeZoneQty(l.zone, l.id, -1, user?.id); zoneDone = true }
+        if (l.fromUnsorted) await changeZoneQty(UNSORTED, l.id, 1, user?.id)
+        await audit(l.rowId, `Put away undone: -1 in ${l.zone}${l.fromUnsorted ? ' back to Unsorted' : ''}. Stock unchanged.`, { zone: l.zone, undo: true })
+        setLine(l.key, { state: 'undone', note: '' })
+        refreshHeld(l.zone).catch(() => {})
+      } catch (err) {
+        setLine(l.key, { state: 'added', zoneDone, note: zoneDone ? `Out of ${l.zone}, not yet back in Unsorted (${err.message || err}). Press Undo again. / 已从 ${l.zone} 去掉，还没回到 Unsorted，再按一次撤销` : `Undo failed: ${err.message || err}. / 撤销失败` })
+      }
+    })
+  }
+
+  const label = { working: 'checking', added: 'added', refused: 'not added', ask: 'needs you', undone: 'undone' }
+  const color = { working: 'text-gray-400', added: 'text-green-400', refused: 'text-red-400', ask: 'text-vault-gold', undone: 'text-gray-500' }
+  return (
+    <div className="card mb-4" data-testid="put-away">
+      <div className="text-sm font-semibold text-white">Put cards in a zone / 往分区放卡</div>
+      <div className="text-xs text-gray-400 mt-0.5">Adds to one zone, no need to scan the whole zone. Stock does not change. / 只加这一个分区，不用整区重扫，库存数不变。</div>
+      <div className="mt-2 flex flex-wrap items-stretch gap-2">
+        <select value={zone} onChange={(e) => chooseZone(e.target.value)} aria-label="Zone" className="text-sm py-1.5 px-2 bg-vault-darker/40 border border-vault-border rounded-md text-white">
+          <option value="">Zone / 选分区</option>
+          {ZONES.map(z => <option key={z} value={z}>{z}</option>)}
+        </select>
+        <input
+          ref={inputRef}
+          type="text"
+          value={code}
+          disabled={!zone}
+          onChange={(e) => setCode(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onScan() } }}
+          placeholder={zone ? `Scan into ${zone} / 扫进 ${zone}` : 'Choose a zone first / 先选分区'}
+          className="flex-1 min-w-[180px] px-3 py-2 text-sm disabled:opacity-60"
+        />
+        {zone && <span className="self-center text-xs text-gray-400" data-testid="put-away-held">{held?.zone === zone ? `${held.n}/${zoneMax(zone)}` : ''} {working > 0 && <Loader2 size={12} className="inline animate-spin" />}</span>}
+      </div>
+      {lines.length > 0 && (
+        <div className="mt-2 max-h-64 overflow-y-auto text-xs" data-testid="put-away-lines">
+          {lines.map(l => (
+            <div key={l.key} className="flex flex-wrap items-center gap-x-3 py-1 border-t border-vault-border/40">
+              <span className="font-semibold text-vault-gold">{l.zone}</span>
+              <span className="font-mono text-gray-400">{l.id}</span>
+              <span className="flex-1 min-w-0 text-gray-200">{l.name}</span>
+              <span className={color[l.state]}>{label[l.state]}{l.note ? `: ${l.note}` : ''}</span>
+              {l.state === 'ask' && (
+                <span className="flex items-center gap-1">
+                  <button type="button" onClick={() => addAnyway(l)} className="px-2 py-0.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded font-semibold">Yes, add / 还有一张，加</button>
+                  <button type="button" onClick={() => setLine(l.key, { state: 'refused', note: 'skipped / 没加' })} className="px-2 py-0.5 border border-vault-border text-gray-400 rounded">Skip</button>
+                </span>
+              )}
+              {l.state === 'added' && !l.noUndo && <button type="button" onClick={() => undo(l)} className="px-2 py-0.5 border border-vault-border text-gray-300 rounded">Undo / 撤销</button>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Move to the Storefront: Gary 11/05. Each scan moves one copy from Inventory to the Storefront, through the same move as Find a card.
+// Zones are not touched: they change at John's next scan (Gary 11/05). A second scan moves a second copy.
+function MoveToStore({ user }) {
+  const [code, setCode] = useState('')
+  const [lines, setLines] = useState([])
+  const [working, setWorking] = useState(0)
+  const queue = useRef(Promise.resolve())     // a scanner is faster than the writes: one card at a time, so each reads what the last one left
+  const seq = useRef(0)
+  const inputRef = useRef(null)
+  const setLine = (key, patch) => setLines(ls => ls.map(l => (l.key === key ? { ...l, ...patch } : l)))
+
+  const run = (job) => {
+    setWorking(w => w + 1)
+    queue.current = queue.current.then(job).catch(() => {}).finally(() => setWorking(w => w - 1))
+  }
+
+  const onScan = () => {
+    const id = code.trim()
+    setCode('')
+    if (!id) return
+    const key = ++seq.current
+    setLines(ls => [{ key, id, name: '', state: 'working', note: '' }, ...ls].slice(0, 100))
+    run(async () => {
+      try {
+        const res = await moveStockBetweenRooms({ tcgId: id, fromLocationId: INVENTORY_ROOM, toLocationId: STORE_ROOM, qty: 1, currentUserId: user?.id })
+        setLine(key, { state: 'moved', name: cardName(res.card), note: `${res.left} left in Inventory / 库房还剩 ${res.left} 张` })
+      } catch (err) {
+        setLine(key, { state: 'failed', note: err.message || String(err) })
+      }
+    })
+    inputRef.current?.focus()
+  }
+
+  const undo = (l) => {
+    setLine(l.key, { state: 'working', note: '' })
+    run(async () => {
+      try {
+        const res = await moveStockBetweenRooms({ tcgId: l.id, fromLocationId: STORE_ROOM, toLocationId: INVENTORY_ROOM, qty: 1, currentUserId: user?.id })
+        setLine(l.key, { state: 'undone', note: `back in Inventory / 已回库房，门店还剩 ${res.left} 张` })
+      } catch (err) {
+        setLine(l.key, { state: 'moved', noUndo: true, note: `Undo failed, it may have gone through: find this card and check both rooms. ${err.message || err} / 撤销失败，可能已经移了，请搜这张卡核对两边` })
+      }
+    })
+  }
+
+  const label = { working: 'moving', moved: 'moved', failed: 'not moved', undone: 'undone' }
+  const color = { working: 'text-gray-400', moved: 'text-green-400', failed: 'text-red-400', undone: 'text-gray-500' }
+  const moved = lines.filter(l => l.state === 'moved').length
+  return (
+    <div className="card mb-4" data-testid="move-store">
+      <div className="text-sm font-semibold text-white">Move to Storefront / 移到门店</div>
+      <div className="text-xs text-gray-400 mt-0.5">Each scan moves one copy from Inventory to the Storefront. Online stock goes down with it. / 扫一张就从库房移一张到门店，线上数量跟着减。</div>
+      <div className="mt-2 flex flex-wrap items-stretch gap-2">
+        <input
+          ref={inputRef}
+          type="text"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onScan() } }}
+          placeholder="Scan a card to move it / 扫卡移到门店"
+          className="flex-1 min-w-[180px] px-3 py-2 text-sm"
+        />
+        <span className="self-center text-xs text-gray-400" data-testid="move-store-count">{moved} moved / 已移 {moved} 张 {working > 0 && <Loader2 size={12} className="inline animate-spin" />}</span>
+      </div>
+      {lines.length > 0 && (
+        <div className="mt-2 max-h-64 overflow-y-auto text-xs" data-testid="move-store-lines">
+          {lines.map(l => (
+            <div key={l.key} className="flex flex-wrap items-center gap-x-3 py-1 border-t border-vault-border/40">
+              <span className="font-mono text-gray-400">{l.id}</span>
+              <span className="flex-1 min-w-0 text-gray-200">{l.name}</span>
+              <span className={color[l.state]}>{label[l.state]}{l.note ? `: ${l.note}` : ''}</span>
+              {l.state === 'moved' && !l.noUndo && <button type="button" onClick={() => undo(l)} className="px-2 py-0.5 border border-vault-border text-gray-300 rounded">Undo / 撤销</button>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Where a sold row went: the online marker names the shop and order, otherwise the room and what the register wrote.
+function soldWhere(r) {
+  const notes = String(r.sale_notes || '').trim()
+  const online = notes.match(/^\[online-single[^\]]*\]\s*(.+)$/)
+  if (online) return online[1]
+  const channel = { in_person: 'in store', ebay: 'eBay', tcgplayer: 'TCGplayer', shopify: 'Shopify' }[r.sale_channel] || r.sale_channel || 'sale'
+  return [r.location?.name, channel, notes && notes.length <= 30 ? notes : ''].filter(Boolean).join(' · ')
+}
+
+// Gary 11/05: a card with no stock anywhere: was it sold in the last 3 days and where, and which zone was it in.
+// ids: cards a name or id search found with no live row of that name. A second look by id, because the same card can carry another name on another row.
+async function readGoneCards(candidates) {
+  const ids = [...candidates.keys()]
+  const since = new Date(Date.now() - RECENT_SALE_DAYS * 86400000).toLocaleDateString('en-CA')
+  const live = new Set(), sold = new Map(), zones = new Map(), past = new Map()
+  const add = (m, k, v) => { if (!m.has(k)) m.set(k, []); m.get(k).push(v) }
+  for (let i = 0; i < ids.length; i += 100) {
+    const part = ids.slice(i, i + 100)
+    const [rows, sales, held, scans] = await Promise.all([
+      readAllPages(() => supabase.from('singles').select('tcg_id').in('tcg_id', part).neq('status', 'sold').eq('deleted', false).gt('quantity', 0).order('id')),
+      readAllPages(() => supabase.from('singles').select('tcg_id, sale_date, sale_channel, sale_notes, location:locations(name)')
+        .in('tcg_id', part).eq('status', 'sold').eq('deleted', false).gte('sale_date', since).order('sale_date', { ascending: false }).order('id')),
+      readAllPages(() => supabase.from('stock_zone_qty').select('zone, tcg_id, qty, scanned_at').in('tcg_id', part).order('location_id').order('zone').order('tcg_id')),
+      readAllPages(() => supabase.from('stock_check_scans').select('zone, tcg_id, qty, round_id, round:stock_check_rounds(status, started_at)')
+        .in('tcg_id', part).gt('qty', 0).order('round_id').order('zone').order('tcg_id')),
+    ])
+    for (const r of rows) live.add(String(r.tcg_id))
+    for (const r of sales) add(sold, String(r.tcg_id), r)
+    for (const h of held) add(zones, String(h.tcg_id), `${h.zone}×${h.qty} (${dayOf(h.scanned_at).slice(5)})`)
+    for (const r of scans.filter(x => x.round && x.round.status !== 'cancelled')) add(past, String(r.tcg_id), r)
+  }
+  return ids.filter(id => !live.has(id)).map(id => {
+    const lines = new Map()
+    for (const r of sold.get(id) || []) {
+      const k = `${String(r.sale_date).slice(5)} ${soldWhere(r)}`
+      lines.set(k, (lines.get(k) || 0) + 1)
+    }
+    // No zone record left (a later count took it out): the newest count that saw it.
+    const seen = past.get(id) || []
+    const newest = seen.reduce((a, r) => (r.round.started_at > a ? r.round.started_at : a), '')
+    const fromCount = seen.filter(r => r.round.started_at === newest).map(r => `${r.zone}×${r.qty} (${dayOf(newest).slice(5)})`)
+    return { k: `gone|${id}`, id, name: candidates.get(id), gone: true, qty: 0, sold: [...lines].map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)), zones: zones.get(id) || fromCount }
+  })
+}
+
 // Find a card: by name or scanned id. Answers from live stock plus the zones of
 // the latest round that scanned it in each room.
 function FindCard({ addToast, user }) {
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   const [results, setResults] = useState(null)
+  const [more, setMore] = useState(false)      // the search found more than the 200 lines shown
+  const searchSeq = useRef(0)
+  const lastTerm = useRef('')
   const [moving, setMoving] = useState(null)   // { k, qty } of the line being moved
   const [moveBusy, setMoveBusy] = useState(false)
 
-  const search = async () => {
-    const term = q.trim()
+  const search = async (again) => {
+    const term = (typeof again === 'string' ? again : q).trim()     // the Find button passes its click event
     if (!term) return
+    lastTerm.current = term
+    const seq = ++searchSeq.current     // a newer search wins, whichever answer arrives first
     setBusy(true)
     try {
-      const rowsQuery = () => {
-        const base = supabase.from('singles')
-          .select('tcg_id, card_name, card_number, language, quantity, location_id, location:locations(name)')
-          .eq('brand', 'Pokemon').neq('status', 'sold').eq('deleted', false).gt('quantity', 0).not('tcg_id', 'is', null)
-        return (/^\d+$/.test(term) ? base.eq('tcg_id', term) : base.ilike('card_name', `%${term}%`)).order('id')
-      }
+      const match = (base) => (/^\d+$/.test(term) ? base.eq('tcg_id', term) : base.ilike('card_name', `%${term}%`)).order('id')
+      const rowsQuery = () => match(supabase.from('singles')
+        .select('tcg_id, card_name, card_number, language, quantity, location_id, location:locations(name)')
+        .eq('brand', 'Pokemon').neq('status', 'sold').eq('deleted', false).gt('quantity', 0).not('tcg_id', 'is', null))
       const data = await readAllPages(rowsQuery)
       const ids = [...new Set(data.map(r => String(r.tcg_id)))]
       const held = []
@@ -921,12 +1272,29 @@ function FindCard({ addToast, user }) {
         g.qty += Number(r.quantity) || 0
         grouped.set(k, g)
       }
-      setResults([...grouped.values()].sort((a, b) => a.name.localeCompare(b.name)))
+      // Sold rows and rows at 0 of cards with no stock left. Cards with stock come first, a broad search stops at 200 lines anyway.
+      const old = await readAllPages(() => match(supabase.from('singles')
+        .select('tcg_id, card_name, card_number, language')
+        .eq('brand', 'Pokemon').eq('deleted', false).not('tcg_id', 'is', null).or('status.eq.sold,quantity.eq.0')))
+      const liveIds = new Set(ids)
+      const candidates = new Map()
+      for (const r of old) if (!liveIds.has(String(r.tcg_id)) && !candidates.has(String(r.tcg_id))) candidates.set(String(r.tcg_id), cardName(r))
+      const room = Math.max(0, 200 - grouped.size)
+      const sorted = [...candidates].sort((a, b) => a[1].localeCompare(b[1]))
+      const gone = []
+      let looked = 0
+      while (looked < sorted.length && gone.length < room) {     // some turn out to have stock under another name, so look until the page is full
+        gone.push(...await readGoneCards(new Map(sorted.slice(looked, looked + 100))))
+        looked += 100
+      }
+      if (seq !== searchSeq.current) return
+      setMore(grouped.size + gone.length > 200 || looked < sorted.length)
+      setResults([...[...grouped.values()].sort((a, b) => a.name.localeCompare(b.name)), ...gone])
       setMoving(null)
     } catch (err) {
-      addToast(`Search failed: ${err.message}`, 'error')
+      if (seq === searchSeq.current) addToast(`Search failed: ${err.message}`, 'error')
     } finally {
-      setBusy(false)
+      if (seq === searchSeq.current) setBusy(false)
     }
   }
 
@@ -936,7 +1304,8 @@ function FindCard({ addToast, user }) {
     try {
       const res = await moveStockBetweenRooms({ tcgId: r.id, fromLocationId: r.loc, toLocationId: MOVE_TO[r.loc].id, qty: Number(moving.qty), currentUserId: user?.id })
       addToast(`Moved ${res.moved} to ${res.toName}. ${res.left} left here. / 已移 ${res.moved} 张，这边还剩 ${res.left} 张`, 'success')
-      await search()
+      setMoving(null)                   // done: the form cannot send the same move twice, whatever the refresh does
+      await search(lastTerm.current)
     } catch (err) {
       addToast(err.message, 'error')
     } finally {
@@ -951,19 +1320,27 @@ function FindCard({ addToast, user }) {
           type="text"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); search() } }}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (!moveBusy) search() } }}
           placeholder="Find a card: name or id / 找卡：卡名或编号"
           className="flex-1 px-3 py-2 text-sm"
         />
-        <button type="button" onClick={search} disabled={busy} className="btn btn-secondary px-4 flex items-center gap-1">
+        <button type="button" onClick={search} disabled={busy || moveBusy} className="btn btn-secondary px-4 flex items-center gap-1">
           {busy ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />} Find
         </button>
       </div>
       {results && (
         <div className="mt-2 max-h-64 overflow-y-auto text-xs" data-testid="find-results">
-          {results.length === 0 && <span className="text-gray-500">No Pokemon stock found.</span>}
-          {results.length > 200 && <div className="text-gray-500 py-1">{results.length} found, showing the first 200. Type more of the name.</div>}
-          {results.slice(0, 200).map(r => (
+          {results.length === 0 && <span className="text-gray-500">No Pokemon card found. / 没有这张</span>}
+          {more && <div className="text-gray-500 py-1">Showing the first 200. Type more of the name.</div>}
+          {results.slice(0, 200).map(r => (r.gone ? (
+            <div key={r.k} className="flex flex-wrap gap-x-3 py-1 border-t border-vault-border/40" data-testid="find-gone">
+              <span className="font-mono text-gray-400">{r.id}</span>
+              <span className="flex-1 min-w-0 text-gray-200">{r.name}</span>
+              <span className="text-red-400 font-semibold">Stock 0 / 库存 0</span>
+              <span className={r.sold.length ? 'text-gray-200' : 'text-gray-500'}>{r.sold.length ? `Sold last ${RECENT_SALE_DAYS} days / 近 ${RECENT_SALE_DAYS} 天卖了: ${r.sold.join(', ')}` : `No sale in the last ${RECENT_SALE_DAYS} days / 近 ${RECENT_SALE_DAYS} 天没卖`}</span>
+              <span className={r.zones.length ? 'text-vault-gold font-semibold' : 'text-gray-500'}>{r.zones.length ? `Was in / 之前在 ${r.zones.join(' ')}` : 'no zone on record / 没有分区记录'}</span>
+            </div>
+          ) : (
             <div key={r.k} className="flex flex-wrap gap-x-3 py-1 border-t border-vault-border/40">
               <span className="font-mono text-gray-400">{r.id}</span>
               <span className="flex-1 min-w-0 text-gray-200">{r.name}</span>
@@ -979,7 +1356,7 @@ function FindCard({ addToast, user }) {
                 <button type="button" onClick={() => setMoving({ k: r.k, qty: 1 })} className="px-2 py-0.5 border border-vault-border text-gray-300 rounded hover:border-vault-gold/50">Move / 移库</button>
               ))}
             </div>
-          ))}
+          )))}
         </div>
       )}
     </div>

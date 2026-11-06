@@ -2377,6 +2377,11 @@ export const moveStockBetweenRooms = async ({ tcgId, fromLocationId, toLocationI
     return data || []
   }
   const [from, to] = [await rowsAt(fromLocationId), await rowsAt(toLocationId)]
+  if (from.reduce((n, r) => n + (Number(r.quantity) || 0), 0) < qty) {
+    const block = await onlineOrderBlock(tcgId, qty, from[0]?.card_name)
+    if (block) throw new Error(block)
+  }
+  if (!from.length) throw new Error('None of this card in this room / 这边没有这张')
   if (from.length !== 1) throw new Error(`${from.length} stock rows for this card here: ask Gary`)
   if (to.length > 1) throw new Error(`${to.length} stock rows for this card in the other room: ask Gary`)
   const s = from[0], d = to[0]
@@ -2433,7 +2438,7 @@ export const moveStockBetweenRooms = async ({ tcgId, fromLocationId, toLocationI
   const payload = { from_location_id: fromLocationId, to_location_id: toLocationId, qty, source_single_id: s.id, dest_single_id: destId, mode: 'stock_check' }
   await logSingleEvent({ single_id: s.id, event_type: 'moved', summary, payload, acted_by_id: currentUserId || null })
   if (destId) await logSingleEvent({ single_id: destId, event_type: 'moved', summary, payload, acted_by_id: currentUserId || null })
-  return { moved: qty, left: s.quantity - qty, toName }
+  return { moved: qty, left: s.quantity - qty, toName, card: s }
 }
 
 // Batch wrapper around moveSingleUnit — Scan-page batch transfer.
@@ -5139,12 +5144,60 @@ const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, c
   })
 }
 
-// Gary 2026-11-04: a register sale comes out of Front Store first. Whatever Front
-// Store can't cover is still a sale, so the money and the card are recorded, but no
-// other room is touched until John or Gary confirms where the copy came from. The
-// row lives at Front Store with no cost: we don't know which purchase it came from
-// until then. Stock Check lists these (listStockPendingSales).
+// Gary 2026-11-05: a card with an online order and no more copies in Front Store or
+// Inventory cannot be sold or moved at the store: the copy in hand belongs to that order.
+// Returns the message to show, or null when it may go ahead. wanted counts this copy
+// plus any already in the cart. Other copies mean nothing is wrong.
+export const onlineOrderBlock = async (tcgId, wanted = 1, cardName = 'This card') => {
+  if (!tcgId) return null
+  const frontId = await getFrontStoreLocationId()
+  const { data: live, error } = await supabase
+    .from('singles').select('quantity')
+    .eq('tcg_id', tcgId).eq('deleted', false)
+    .in('status', ['in_inventory', 'listed'])
+    .in('location_id', [frontId, SINGLES_INVENTORY_ROOM_ID])
+    .gt('quantity', 0)
+    .limit(50)
+  if (error) throw error
+  const have = (live || []).reduce((s, r) => s + (Number(r.quantity) || 0), 0)
+  if (have >= wanted) return null
+  const { data: orders, error: orderErr } = await supabase
+    .from('singles').select('sale_date, sale_notes')
+    .eq('tcg_id', tcgId).eq('status', 'sold').eq('deleted', false)
+    .like('sale_notes', '[online-single%')
+    .order('sale_date', { ascending: false })
+    .limit(1)
+  if (orderErr) throw orderErr
+  if (!orders?.length) return null
+  const order = String(orders[0].sale_notes || '').split('] ')[1] || 'online'
+  return `${cardName}: we have an online order for this card (${order}, ${orders[0].sale_date}) and no more copies, so the store cannot sell or move it. / 这张线上有订单，没有更多 copy 了，门店不能卖也不能 Move。`
+}
+
+// Every live row of one card, in any room.
+export const fetchLiveSinglesByTcgId = async (tcgId) => {
+  const { data, error } = await supabase
+    .from('singles')
+    .select('*, set:card_sets(id, brand, name, code, language), location:locations(id, name)')
+    .eq('tcg_id', tcgId)
+    .eq('deleted', false)
+    .in('status', ['in_inventory', 'listed'])
+    .gt('quantity', 0)
+    .order('status')
+    .order('quantity', { ascending: false })
+    .order('id')
+    .limit(50)
+  if (error) throw error
+  return data || []
+}
+
+// Gary 2026-11-05: a single sold in the store comes out of Front Store first, and
+// whatever Front Store can't cover comes out of Inventory automatically. Zones are
+// not touched; John's next scan checks them. The sale is booked first, then the
+// deduction runs (resolveStockPending). Only when Inventory can't cover it either
+// does the row stay tagged, with no cost, for John or Gary on Stock Check
+// (listStockPendingSales).
 export const STOCK_PENDING_TAG = '[stock-pending]'
+export const SINGLES_INVENTORY_ROOM_ID = '6d89a23e-c250-4dcd-81cf-2b4dd26c7592'
 
 const _bookStockPendingLine = async ({ source, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {}, frontStoreId }) => {
   const qty = Math.max(1, Number(quantity) || 1)
@@ -5163,8 +5216,8 @@ const _bookStockPendingLine = async ({ source, quantity, salePrice, paymentMetho
     trade_in_value_usd: txMeta.tradeInValue ?? null,
     net_cash_usd: txMeta.netCash ?? null,
   }, {
-    saleNotes: `${STOCK_PENDING_TAG} Front Store did not have enough at the register, so no room was deducted. Waiting for John or Gary. Cost is blank until then.`,
-    summary: `Sold ${qty} ${source.card_name} at the register: Front Store short, waiting for John or Gary`,
+    saleNotes: `${STOCK_PENDING_TAG} Neither Front Store nor Inventory could cover this at the register, so no room was deducted. Waiting for John or Gary. Cost is blank until then.`,
+    summary: `Sold ${qty} ${source.card_name} at the register: Front Store short`,
   })
 }
 
@@ -5489,6 +5542,15 @@ export const preflightStorefrontCart = async (
   // sales impossible, so the exemption is by KIND, explicitly: an unknown kind
   // still blocks.
   const NO_STOCK_KINDS = new Set(['single_manual', 'slab_manual', 'single_pending'])
+  // These two kinds pass the row checks below. The Qty box can raise a line past what was
+  // checked at the scan, and an online order can arrive while the cart is open.
+  const cardOf = (c) => (c?.kind === 'single_pending' ? c.source : c?.kind === 'single' ? c.single : null)
+  for (const l of cart.filter(c => (c?.kind === 'single_pending' || (c?.kind === 'single' && c.sold_override)) && cardOf(c)?.tcg_id)) {
+    const card = cardOf(l)
+    const wanted = cart.reduce((s, c) => s + (cardOf(c)?.tcg_id === card.tcg_id ? Math.max(1, Number(c.quantity) || 1) : 0), 0)
+    const block = await onlineOrderBlock(card.tcg_id, wanted, card.card_name)
+    if (block) blockers.push({ key: l.key, kind: 'single', name: card.card_name, reason: block, fixable: null })
+  }
   const recognised = new Set([...singleLines, ...slabLines, ...sealedLines])
   for (const l of cart) {
     if (recognised.has(l)) continue
@@ -5865,6 +5927,12 @@ export const submitStorefrontTransaction = async ({
           txMeta,
           frontStoreId,
         })
+        // The sale is recorded. A failed deduction leaves it on Stock Check, it must not fail the checkout.
+        try {
+          await resolveStockPending(result, 'deduct', SINGLES_INVENTORY_ROOM_ID, { name: 'the register automatically', id: cashierId || null })
+        } catch (err) {
+          console.warn(`[register] ${result.tcg_id} stays on Stock Check: ${err.message}`)
+        }
         ok.push({ line, result })
       } else if (line.kind === 'slab_manual' || line.kind === 'single_manual') {
         // Manual lines: cashier-typed description, NO inventory writes.
