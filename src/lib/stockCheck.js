@@ -11,6 +11,21 @@ export const ZONE_GROUPS = [
   { name: 'One Piece / 海贼王', rows: ONE_PIECE_ROWS.map(([code, label]) => ({ label, zones: five(code) })) },
 ]
 export const ZONES = ZONE_GROUPS.flatMap(g => g.rows.flatMap(r => r.zones))
+// Will 11/12: on the page a zone is written out (Blue 1, Dragon Ball 1). Only what is shown: the code stays the key in the
+// database and what the packing slip prints.
+const ZONE_WORDS = { DB: 'Dragon Ball', BLU: 'Blue', PUR: 'Purple', RED: 'Red', GRN: 'Green', YEL: 'Yellow', BLK: 'Black', LD: 'Leader + DON!!' }
+export function zoneLabel(z) {
+  if (z === UNSORTED) return 'Unsorted / 未分区'
+  if (z === STORE_ZONE) return 'Store / 门店'
+  const m = /^([A-Z]+)([1-5])$/.exec(z || '')
+  return m && ZONE_WORDS[m[1]] ? `${ZONE_WORDS[m[1]]} ${m[2]}` : (z || '')
+}
+// Will 11/12: the colour of a zone in this round. done = finished in this round (green); empty = nothing scanned and no copies
+// recorded there (grey); todo = scanned or recorded, not finished yet (red).
+export function zoneState({ done, scanned, held }) {
+  if (done) return 'done'
+  return (scanned || 0) > 0 || (held || 0) > 0 ? 'todo' : 'empty'
+}
 // The same names the database lets in: stock_check_scans.zone and stock_zone_qty.zone (scripts/stock_zones_games_migration.sql).
 export const ZONE_PATTERN = '^([A-J][1-5]|DB[1-5]|(BLU|PUR|RED|GRN|YEL|BLK|LD)[1-5]|Unsorted|Store)$'
 // The games John checks. Gary 11/04 set Pokemon only; Will 11/11 added the two games that got zones.

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { Layers, Loader2, RefreshCw } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
-import { STOCK_BRANDS, UNSORTED, ZONES, ZONE_GROUPS, dayOf } from '../lib/stockCheck'
+import { STOCK_BRANDS, UNSORTED, ZONES, ZONE_GROUPS, dayOf, zoneLabel } from '../lib/stockCheck'
 
 // Singles Inventory (Gary 2026-11-05「每个分区的库和门店的库list ... 给他一个singles view inventory 做在stockcheck 下面」). Read only.
 // A zone lists what its last scan recorded: a sale does not change that until the next scan, so each line also shows the stock now.
@@ -137,7 +137,7 @@ export default function SinglesView() {
           <div key={g.name} className="mb-2">
             <div className="text-xs font-semibold text-vault-gold mb-1">{g.name}</div>
             <div className="grid grid-cols-5 gap-1.5" data-testid="zone-grid">
-              {g.rows.flatMap(r => r.zones).map(z => tile(z, z))}
+              {g.rows.flatMap(r => r.zones).map(z => tile(z, zoneLabel(z)))}
             </div>
           </div>
         ))}
@@ -145,7 +145,7 @@ export default function SinglesView() {
 
       <div className="card">
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          <div className="text-sm font-semibold text-white" data-testid="picked-title">{picked}: {shown.length} cards, {shown.reduce((s, l) => s + l.here, 0)} copies</div>
+          <div className="text-sm font-semibold text-white" data-testid="picked-title">{ZONES.includes(picked) ? zoneLabel(picked) : picked}: {shown.length} cards, {shown.reduce((s, l) => s + l.here, 0)} copies</div>
           <input type="text" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter: name, id or set / 筛选" className="flex-1 min-w-[180px] px-3 py-1.5 text-sm" />
         </div>
         <div className="overflow-x-auto">

@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle, Loader2, MapPin, Play, ScanLine, Search } f
 import { changeZoneQtyAt, fetchLocations, listStockPendingSales, moveStockBetweenRooms, resolveStockPending, supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
-import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, STOCK_BRANDS, STORE_ZONE, UNSORTED, ZONES, ZONE_GROUPS, dayOf, isBigZone, isOverLimit, loweredShare, planZoneSubmit, resultCsv, zoneMax } from '../lib/stockCheck'
+import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, STOCK_BRANDS, STORE_ZONE, UNSORTED, ZONES, ZONE_GROUPS, dayOf, isBigZone, isOverLimit, loweredShare, planZoneSubmit, resultCsv, zoneLabel, zoneMax, zoneState } from '../lib/stockCheck'
 
 // Stock Check: John scans the singles zone by zone (Pokemon, One Piece, Dragon Ball). Inventory: A1..J5, the game zones and Unsorted. Store: one big zone.
 // Where he scans a card is where the system says it is. He can submit the zones he has finished at any time:
@@ -74,6 +74,14 @@ async function readLedger(locationId) {
   return new Map(data.map(r => [`${r.zone}|${r.tcg_id}`, { qty: r.qty, at: r.scanned_at }]))
 }
 
+// Copies each zone of this room holds by its records: zone -> qty. For the colours of the zone grid.
+async function readHeld(locationId) {
+  const data = await readAllPages(() => supabase.from('stock_zone_qty').select('zone, tcg_id, qty').eq('location_id', locationId).order('zone').order('tcg_id'))
+  const held = new Map()
+  for (const r of data) held.set(r.zone, (held.get(r.zone) || 0) + (Number(r.qty) || 0))
+  return held
+}
+
 // Ids of this room with a move between rooms since a time. The audit log is keyed by row, so rows says which id it was.
 async function readMovedIds(rows, since) {
   const data = await readAllPages(() => supabase.from('singles_audit_log').select('id, single_id, payload').eq('event_type', 'moved').gte('acted_at', since).order('id'))
@@ -136,6 +144,7 @@ export default function StockCheck() {
   const [round, setRound] = useState(null)
   const [lastRound, setLastRound] = useState(null)
   const [scans, setScans] = useState(new Map())       // "zone|id" -> qty
+  const [zoneHeld, setZoneHeld] = useState(new Map())  // zone -> copies its records hold (stock_zone_qty), for the colour of the grid
   const [zone, setZone] = useState(null)
   const [scanInput, setScanInput] = useState('')
   const [lastScanId, setLastScanId] = useState(null)
@@ -155,6 +164,7 @@ export default function StockCheck() {
   const flushing = useRef(null)
   const roundRef = useRef(null)
   const loadSeq = useRef(0)
+  const heldSeq = useRef(0)       // reads of zoneHeld: the newest begun is the one shown
   const scanVersion = useRef(0)    // goes up with every scan, so a comparison made before it is thrown away
   const busyRef = useRef(false)    // one of compare, change stock, close, cancel at a time; no scanning during them
   scansRef.current = scans
@@ -236,13 +246,18 @@ export default function StockCheck() {
     roundRef.current = null
     scanVersion.current++
     setSaveFailed(false)
-    setRound(null); setScans(new Map()); setZone(null); setPlan(null); setApplyResult(null); setLastRound(null); setLastScanId(null)
+    setRound(null); setScans(new Map()); setZoneHeld(new Map()); setZone(null); setPlan(null); setApplyResult(null); setLastRound(null); setLastScanId(null)
     if (!id) { setLoading(false); return }
     setLoading(true)
     try {
       const { data: open, error } = await supabase.from('stock_check_rounds').select('*').eq('location_id', id).eq('status', 'open').maybeSingle()
       if (error) throw error
       if (seq !== loadSeq.current) return
+      // What each zone's records hold, for the colours; read before a round is started too, so a new round has them.
+      const ht = ++heldSeq.current
+      const held = await readHeld(id)
+      if (seq !== loadSeq.current) return
+      if (ht === heldSeq.current) setZoneHeld(held)
       if (open) {
         const saved = await readAllPages(() => supabase.from('stock_check_scans').select('zone, tcg_id, qty').eq('round_id', open.id).order('zone').order('tcg_id'))
         if (seq !== loadSeq.current) return
@@ -333,7 +348,7 @@ export default function StockCheck() {
       const done = roundRef.current.zones_done.filter(x => x !== z)
       setRound(r => ({ ...r, zones_done: done }))
       supabase.from('stock_check_rounds').update({ zones_done: done }).eq('id', roundRef.current.id)
-        .then(({ error }) => { if (error) addToast(`Could not reopen ${z}: ${error.message}`, 'error') })
+        .then(({ error }) => { if (error) addToast(`Could not reopen ${zoneLabel(z)}: ${error.message}`, 'error') })
     }
     clearTimeout(flushTimer.current)
     flushTimer.current = setTimeout(() => flush(), 1500)
@@ -373,7 +388,7 @@ export default function StockCheck() {
     let n = 0
     for (const [k, q] of scansRef.current) if (k.startsWith(`${z}|`)) n += q
     if (!isOverLimit(z, n)) return false
-    addToast(`${z} has more than ${zoneMax(z)} cards. Check this zone again. / 超过 ${zoneMax(z)} 张，请重新检查`, 'error')
+    addToast(`${zoneLabel(z)} has more than ${zoneMax(z)} cards. Check this zone again. / 超过 ${zoneMax(z)} 张，请重新检查`, 'error')
     return true
   }
 
@@ -388,7 +403,7 @@ export default function StockCheck() {
       const { data: held, error: heldErr } = await supabase.from('stock_zone_qty').select('qty').eq('location_id', round.location_id).eq('zone', zone)
       if (heldErr) { addToast(`Could not read this zone's records: ${heldErr.message}`, 'error'); return }
       const n = (held || []).reduce((s, h) => s + (Number(h.qty) || 0), 0)
-      if (n > 0 && !confirm(`Nothing scanned in ${zone}, but the records show ${n} cards here. Is it really empty? OK = mark it empty. Cancel = keep its records.\n${zone} 没扫到东西，但记录有 ${n} 张。确实空了吗？确定 = 记为空；取消 = 保留记录。`)) return
+      if (n > 0 && !confirm(`Nothing scanned in ${zoneLabel(zone)}, but the records show ${n} cards here. Is it really empty? OK = mark it empty. Cancel = keep its records.\n${zoneLabel(zone)} 没扫到东西，但记录有 ${n} 张。确实空了吗？确定 = 记为空；取消 = 保留记录。`)) return
     }
     const done = [...new Set([...(round.zones_done || []), zone])]
     const { error } = await supabase.from('stock_check_rounds').update({ zones_done: done }).eq('id', round.id)
@@ -420,7 +435,7 @@ export default function StockCheck() {
       const submit = new Set(roomZones.filter(z => zonesDone.has(z) && (withScans.has(z) || withRecords.has(z))))
       const unfinished = [...withScans].filter(z => !zonesDone.has(z))
       if (finishing && unfinished.length) {
-        addToast(`Finish ${unfinished.join(', ')} first. / 先点这些小区的完成：${unfinished.join(', ')}`, 'error')
+        addToast(`Finish ${unfinished.map(zoneLabel).join(', ')} first. / 先点这些小区的完成：${unfinished.map(zoneLabel).join(', ')}`, 'error')
         return
       }
       if (!finishing && submit.size === 0) {
@@ -572,6 +587,10 @@ export default function StockCheck() {
         else setRound(r => ({ ...r, status: 'applied' }))
       }
       setPlan(null)
+      // The submitted zones' records changed: read them again for the colours.
+      const seq = loadSeq.current
+      const ht = ++heldSeq.current     // only the newest read is shown: two submits' reads can come back in either order
+      readHeld(round.location_id).then(h => { if (seq === loadSeq.current && ht === heldSeq.current) setZoneHeld(h) }).catch(() => {})
     } finally {
       setApplying(null)
       endOp()
@@ -649,27 +668,38 @@ export default function StockCheck() {
                 if (z.label) return <div key={z.label} style={{ gridColumn: '1 / -1' }} className="text-xs text-gray-400">{z.label}</div>
                 const c = zoneCounts.get(z) || 0
                 const over = isOverLimit(z, c)
+                const state = zoneState({ done: zonesDone.has(z), scanned: c, held: zoneHeld.get(z) || 0 })
+                const tone = state === 'done' ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-100'
+                  : state === 'todo' ? 'border-red-500/60 bg-red-500/20 text-red-100'
+                  : 'border-vault-border bg-gray-700/20 text-gray-500'
                 return (
                   <button
                     key={z}
                     type="button"
                     data-zone={z}
+                    data-state={state}
+                    title={`${zoneLabel(z)}: scanned ${c} · recorded ${zoneHeld.get(z) || 0}`}
                     onClick={() => openZone(z)}
                     style={isBigZone(z) ? { gridColumn: '1 / -1' } : undefined}
-                    className={`px-3 py-3 rounded border text-lg flex items-center justify-between gap-2 ${over ? 'border-red-500 bg-red-500/20 text-red-200' : zone === z ? 'border-vault-gold bg-vault-gold/20 text-white' : 'border-vault-border bg-vault-darker/40 text-gray-300 hover:border-vault-gold/50'}`}
+                    className={`px-2 py-2.5 rounded border text-left flex items-center justify-between gap-1 ${tone} ${zone === z ? 'ring-2 ring-vault-gold' : 'hover:brightness-125'}`}
                   >
-                    <span className="font-semibold">{z === UNSORTED ? 'Unsorted / 未分区' : z === STORE_ZONE ? 'Store / 门店' : z}{zonesDone.has(z) && <CheckCircle size={16} className="inline ml-1 text-emerald-400" />}</span>
-                    <span className={over ? 'text-base text-red-300 font-bold' : 'text-base text-gray-400'}>{c}</span>
+                    <span className="font-semibold text-base leading-tight">{zoneLabel(z)}{state === 'done' && <CheckCircle size={14} className="inline ml-1 text-emerald-300" />}</span>
+                    <span className={over ? 'text-base text-red-200 font-bold flex items-center gap-0.5' : 'text-sm opacity-80'}>{over && <AlertTriangle size={14} />}{c}</span>
                   </button>
                 )
               })}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400" data-testid="zone-legend">
+              <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1 bg-emerald-500/40 border border-emerald-500/60" />Checked / 已核对</span>
+              <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1 bg-red-500/40 border border-red-500/60" />To check / 要核对</span>
+              <span><span className="inline-block w-3 h-3 rounded-sm align-middle mr-1 bg-gray-700/40 border border-vault-border" />No cards / 没卡</span>
             </div>
           </div>
 
           {zone && (
             <div className="card mb-4">
               <div className="flex items-stretch gap-2 mb-3">
-                <span className="px-3 flex items-center font-display text-xl text-vault-gold">{zone}</span>
+                <span className="px-3 flex items-center font-display text-xl text-vault-gold">{zoneLabel(zone)}</span>
                 <input
                   ref={inputRef}
                   type="text"
@@ -703,13 +733,13 @@ export default function StockCheck() {
 
               {isOverLimit(zone, zoneCounts.get(zone) || 0) && (
                 <div data-testid="zone-over" className="mb-3 p-3 rounded border border-red-500/50 bg-red-500/10 text-sm text-red-300 font-semibold">
-                  {zone} has {zoneCounts.get(zone)} cards. It holds {zoneMax(zone)} at most: check this zone again. Press −1 on anything scanned by mistake.
-                  <br />{zone} 有 {zoneCounts.get(zone)} 张，最多 {zoneMax(zone)} 张，请重新检查。扫错的按 −1 减掉。
+                  {zoneLabel(zone)} has {zoneCounts.get(zone)} cards. It holds {zoneMax(zone)} at most: check this zone again. Press −1 on anything scanned by mistake.
+                  <br />{zoneLabel(zone)} 有 {zoneCounts.get(zone)} 张，最多 {zoneMax(zone)} 张，请重新检查。扫错的按 −1 减掉。
                 </div>
               )}
 
               <div className="bg-vault-darker rounded p-2 max-h-64 overflow-y-auto text-xs mb-3">
-                {zoneLines.length === 0 && <span className="text-gray-600 italic">Nothing scanned in {zone} yet.</span>}
+                {zoneLines.length === 0 && <span className="text-gray-600 italic">Nothing scanned in {zoneLabel(zone)} yet.</span>}
                 {[...zoneLines].reverse().map(({ id, qty }) => (
                   <div key={id} className="flex items-center justify-between gap-2 py-0.5">
                     <span className="font-mono text-gray-400">{id}</span>
@@ -729,7 +759,7 @@ export default function StockCheck() {
 
               <div className="flex justify-end">
                 <button type="button" onClick={finishZone} className="text-sm px-3 py-1.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded hover:bg-vault-gold/35 font-semibold">
-                  {isBigZone(zone) ? `${zone} done / 完成` : `${zone} done, next zone / 下一个小区`}
+                  {isBigZone(zone) ? `${zoneLabel(zone)} done / 完成` : `${zoneLabel(zone)} done, next zone / 下一个小区`}
                 </button>
               </div>
             </div>
@@ -753,9 +783,9 @@ export default function StockCheck() {
         <div className="card mb-4" data-testid="plan">
           <h2 className="font-display text-lg text-white mb-2">{plan.finishing ? 'Differences / 差异' : 'Submit finished zones / 提交已完成的小区'}</h2>
           <p className="text-sm text-gray-300 mb-2">
-            Zones in this submit: {plan.submit.join(', ') || 'none'}. All other zones stay as they were.
+            Zones in this submit: {plan.submit.map(zoneLabel).join(', ') || 'none'}. All other zones stay as they were.
             <br />这次提交：{plan.submit.join('、') || '没有'}。其他小区不动。
-            {plan.unfinished.length > 0 && <><br /><span className="text-amber-300">Not finished, not in this submit: {plan.unfinished.join(', ')} / 还没点完成，这次不提交</span></>}
+            {plan.unfinished.length > 0 && <><br /><span className="text-amber-300">Not finished, not in this submit: {plan.unfinished.map(zoneLabel).join(', ')} / 还没点完成，这次不提交</span></>}
           </p>
           <p className="text-xs text-gray-400 mb-3">
             {plan.same} cards no change. {plan.soldOk} fewer than last time, explained by sales or moves. {plan.filled} found where the app already counted them.
@@ -827,7 +857,7 @@ export default function StockCheck() {
           {(applyResult.skipped > 0 || applyResult.failed > 0) && (
             <p className="text-sm text-amber-300 mb-2">Those cards were not changed and the round stays open. Submit again to check them.</p>
           )}
-          {applyResult.submitted?.length > 0 && <p className="text-sm text-gray-300 mb-2">Zones saved: {applyResult.submitted.join(', ')}. Other zones were not touched. / 已保存这些小区，其他小区没动。</p>}
+          {applyResult.submitted?.length > 0 && <p className="text-sm text-gray-300 mb-2">Zones saved: {applyResult.submitted.map(zoneLabel).join(', ')}. Other zones were not touched. / 已保存这些小区，其他小区没动。</p>}
           <button type="button" onClick={() => downloadCsv(applyResult.lines, locationName)} className="text-xs px-3 py-1.5 text-gray-300 border border-vault-border rounded">Download CSV</button>
           {closed && (
             <button type="button" onClick={() => loadRoom(locationId)} className="ml-2 text-xs px-3 py-1.5 text-gray-300 border border-vault-border rounded">Back to the room</button>
@@ -932,11 +962,38 @@ function PutAway({ addToast, user }) {
   const seq = useRef(0)
   const inputRef = useRef(null)
   const zoneRef = useRef('')
+  const [heldAll, setHeldAll] = useState(null)   // zone -> copies recorded, for the grey of an empty zone in the picker
+  const [picking, setPicking] = useState(true)
+  // Reads of the counts can come back in any order. Each read takes a ticket when it begins; a count is shown only if no read
+  // begun later has already given that zone's count (the full read gives every zone's).
+  const ticket = useRef(0)
+  const allApplied = useRef(0)            // ticket of the full read shown
+  const latest = useRef(new Map())        // zone -> { n, t } from a one-zone read
+  const heldT = useRef(0)                 // ticket of the count shown beside the chosen zone
+
+  // All zones at once, on opening the page and the picker: other parts of this page (a submit, Move to Storefront) change the records too.
+  const loadAll = useCallback(() => {
+    const t = ++ticket.current
+    readHeld(INVENTORY_ROOM)
+      .then(m => {
+        if (t < allApplied.current) return
+        allApplied.current = t
+        for (const [z, c] of latest.current) if (c.t > t) m.set(z, c.n)
+        setHeldAll(m)
+      })
+      .catch(() => {})
+  }, [])
+  useEffect(() => { loadAll() }, [loadAll])
 
   const refreshHeld = useCallback(async (z) => {
+    const t = ++ticket.current
     const data = await readAllPages(() => supabase.from('stock_zone_qty').select('qty').eq('location_id', INVENTORY_ROOM).eq('zone', z).order('tcg_id'))
     const n = data.reduce((s, r) => s + (Number(r.qty) || 0), 0)
-    if (zoneRef.current === z) setHeld({ zone: z, n })
+    if (zoneRef.current === z && t > heldT.current) { heldT.current = t; setHeld({ zone: z, n }) }
+    if (t > allApplied.current && t > (latest.current.get(z)?.t || 0)) {
+      latest.current.set(z, { n, t })
+      setHeldAll(m => (m ? new Map(m).set(z, n) : m))
+    }
     return n
   }, [])
 
@@ -944,7 +1001,8 @@ function PutAway({ addToast, user }) {
     zoneRef.current = z
     setZone(z)
     setHeld(null)
-    if (z) refreshHeld(z).catch(err => addToast(`Could not read ${z}: ${err.message}`, 'error'))
+    setPicking(!z)
+    if (z) refreshHeld(z).catch(err => addToast(`Could not read ${zoneLabel(z)}: ${err.message}`, 'error'))
     setTimeout(() => inputRef.current?.focus(), 20)
   }
 
@@ -985,7 +1043,7 @@ function PutAway({ addToast, user }) {
     try {
       if (await countOpen()) { set({ state: 'refused', note: COUNT_OPEN }); return }
       const n = await refreshHeld(z)
-      if (isOverLimit(z, n + 1)) { set({ state: 'refused', note: `${z} is full (${n}/${zoneMax(z)}). / ${z} 满了` }); return }
+      if (isOverLimit(z, n + 1)) { set({ state: 'refused', note: `${zoneLabel(z)} is full (${n}/${zoneMax(z)}). / ${zoneLabel(z)} 满了` }); return }
       const live = await readAllPages(() => supabase.from('singles')
         .select('id, card_name, card_number, language, quantity, location_id, location:locations(name)')
         .eq('tcg_id', id).in('brand', STOCK_BRANDS).eq('deleted', false).in('status', ['in_inventory', 'listed']).gt('quantity', 0).order('id'))
@@ -1002,7 +1060,7 @@ function PutAway({ addToast, user }) {
       info = { name: cardName(here[0]), rowId: here[0].id, fromUnsorted: unsorted }
       const noRoom = !unsorted && inZones >= stock
       if (noRoom && !yes) {
-        const list = records.map(r => `${r.zone}×${r.qty}`).join(' ')
+        const list = records.map(r => `${zoneLabel(r.zone)}×${r.qty}`).join(' ')
         set({ ...info, state: 'ask', note: `Stock ${stock}, and the zones already hold ${inZones}: ${list}. Another copy? / 账上 ${stock} 张，分区里已经有 ${inZones} 张，还有一张吗？` })
         return
       }
@@ -1011,7 +1069,7 @@ function PutAway({ addToast, user }) {
       set({ ...info, state: 'added', at: Date.now(), note: noRoom ? 'zones now hold more than stock / 分区张数比账上多' : '' })
       refreshHeld(z).catch(() => {})    // the writes are done: only the count on the page is late
     } catch (err) {
-      if (err.inBoth) set({ ...info, fromUnsorted: false, state: 'added', at: Date.now(), note: `This copy is now in both ${z} and Unsorted (${err.message}). Undo takes it out of ${z}. / 这张同时记在 ${z} 和 Unsorted，撤销会从 ${z} 去掉` })
+      if (err.inBoth) set({ ...info, fromUnsorted: false, state: 'added', at: Date.now(), note: `This copy is now in both ${zoneLabel(z)} and Unsorted (${err.message}). Undo takes it out of ${zoneLabel(z)}. / 这张同时记在 ${zoneLabel(z)} 和 Unsorted，撤销会从 ${zoneLabel(z)} 去掉` })
       else set({ state: 'refused', note: `${err.message || err}. / 没加上` })
     }
   }
@@ -1053,7 +1111,7 @@ function PutAway({ addToast, user }) {
         setLine(l.key, { state: 'undone', note: '' })
         refreshHeld(l.zone).catch(() => {})
       } catch (err) {
-        setLine(l.key, { state: 'added', zoneDone, note: zoneDone ? `Out of ${l.zone}, not yet back in Unsorted (${err.message || err}). Press Undo again. / 已从 ${l.zone} 去掉，还没回到 Unsorted，再按一次撤销` : `Undo failed: ${err.message || err}. / 撤销失败` })
+        setLine(l.key, { state: 'added', zoneDone, note: zoneDone ? `Out of ${zoneLabel(l.zone)}, not yet back in Unsorted (${err.message || err}). Press Undo again. / 已从 ${zoneLabel(l.zone)} 去掉，还没回到 Unsorted，再按一次撤销` : `Undo failed: ${err.message || err}. / 撤销失败` })
       }
     })
   }
@@ -1065,10 +1123,11 @@ function PutAway({ addToast, user }) {
       <div className="text-sm font-semibold text-white">Put cards in a zone / 往分区放卡</div>
       <div className="text-xs text-gray-400 mt-0.5">Adds to one zone, no need to scan the whole zone. Stock does not change. / 只加这一个分区，不用整区重扫，库存数不变。</div>
       <div className="mt-2 flex flex-wrap items-stretch gap-2">
-        <select value={zone} onChange={(e) => chooseZone(e.target.value)} aria-label="Zone" className="text-sm py-1.5 px-2 bg-vault-darker/40 border border-vault-border rounded-md text-white">
-          <option value="">Zone / 选分区</option>
-          {ZONE_GROUPS.map(g => <optgroup key={g.name} label={g.name}>{g.rows.flatMap(r => r.zones).map(z => <option key={z} value={z}>{z}</option>)}</optgroup>)}
-        </select>
+        {zone && !picking && (
+          <button type="button" onClick={() => { setPicking(true); loadAll() }} data-testid="put-away-zone" className="text-sm py-1.5 px-3 rounded-md border border-vault-gold bg-vault-gold/20 text-white font-semibold">
+            {zoneLabel(zone)} <span className="text-xs text-gray-400 font-normal">· change / 换分区</span>
+          </button>
+        )}
         <input
           ref={inputRef}
           type="text"
@@ -1076,16 +1135,43 @@ function PutAway({ addToast, user }) {
           disabled={!zone}
           onChange={(e) => setCode(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onScan() } }}
-          placeholder={zone ? `Scan into ${zone} / 扫进 ${zone}` : 'Choose a zone first / 先选分区'}
+          placeholder={zone ? `Scan into ${zoneLabel(zone)} / 扫进 ${zoneLabel(zone)}` : 'Choose a zone first / 先选分区'}
           className="flex-1 min-w-[180px] px-3 py-2 text-sm disabled:opacity-60"
         />
         {zone && <span className="self-center text-xs text-gray-400" data-testid="put-away-held">{held?.zone === zone ? `${held.n}/${zoneMax(zone)}` : ''} {working > 0 && <Loader2 size={12} className="inline animate-spin" />}</span>}
       </div>
+      {(picking || !zone) && (
+        <div className="mt-2" data-testid="put-away-picker">
+          <div className="text-xs text-gray-400">Choose a zone / 选分区{heldAll ? ' · grey = no cards / 灰色 = 没卡' : ''}</div>
+          {ZONE_GROUPS.map(g => (
+            <div key={g.name}>
+              <div className="pt-1.5 text-xs font-semibold text-vault-gold">{g.name}</div>
+              <div className="grid gap-1" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}>
+                {g.rows.flatMap(r => r.zones).map(z => {
+                  const empty = heldAll && !(heldAll.get(z) > 0)
+                  return (
+                    <button
+                      key={z}
+                      type="button"
+                      data-zone={z}
+                      onClick={() => chooseZone(z)}
+                      className={`px-1.5 py-1 rounded border text-xs text-left leading-tight flex items-center justify-between gap-1 ${zone === z ? 'border-vault-gold bg-vault-gold/20 text-white' : empty ? 'border-vault-border bg-gray-700/20 text-gray-500 hover:border-vault-gold/50' : 'border-vault-border bg-vault-darker/40 text-gray-200 hover:border-vault-gold/50'}`}
+                    >
+                      <span>{zoneLabel(z)}</span>
+                      {heldAll && <span className="opacity-70">{heldAll.get(z) || 0}</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       {lines.length > 0 && (
         <div className="mt-2 max-h-64 overflow-y-auto text-xs" data-testid="put-away-lines">
           {lines.map(l => (
             <div key={l.key} className="flex flex-wrap items-center gap-x-3 py-1 border-t border-vault-border/40">
-              <span className="font-semibold text-vault-gold">{l.zone}</span>
+              <span className="font-semibold text-vault-gold">{zoneLabel(l.zone)}</span>
               <span className="font-mono text-gray-400">{l.id}</span>
               <span className="flex-1 min-w-0 text-gray-200">{l.name}</span>
               <span className={color[l.state]}>{label[l.state]}{l.note ? `: ${l.note}` : ''}</span>
@@ -1188,7 +1274,7 @@ function MoveToStore({ user }) {
 }
 
 // A zone in the words people use: the store has one zone, the rest are in the back.
-const zonePlace = (z) => (z === STORE_ZONE ? 'Storefront / 门店' : `Inventory / 后面 ${z}`)
+const zonePlace = (z) => (z === STORE_ZONE ? 'Storefront / 门店' : `Inventory / 后面 ${zoneLabel(z)}`)
 
 // Where a sold row went: the online marker names the shop and order, otherwise the room and what the register wrote.
 function soldWhere(r) {
@@ -1271,7 +1357,7 @@ function FindCard({ addToast, user }) {
       for (const h of held) {
         const k = `${h.tcg_id}|${h.location_id}`
         if (!zones.has(k)) zones.set(k, [])
-        zones.get(k).push(`${h.zone}×${h.qty} (${dayOf(h.scanned_at).slice(5)})`)
+        zones.get(k).push(`${zoneLabel(h.zone)}×${h.qty} (${dayOf(h.scanned_at).slice(5)})`)
       }
       const grouped = new Map()
       for (const r of data) {
