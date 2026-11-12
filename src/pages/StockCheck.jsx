@@ -3,9 +3,9 @@ import { AlertTriangle, CheckCircle, Loader2, MapPin, Play, ScanLine, Search } f
 import { changeZoneQtyAt, fetchLocations, listStockPendingSales, moveStockBetweenRooms, resolveStockPending, supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
-import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, STORE_ZONE, UNSORTED, ZONES, dayOf, isBigZone, isOverLimit, loweredShare, planZoneSubmit, resultCsv, zoneMax } from '../lib/stockCheck'
+import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, STOCK_BRANDS, STORE_ZONE, UNSORTED, ZONES, ZONE_GROUPS, dayOf, isBigZone, isOverLimit, loweredShare, planZoneSubmit, resultCsv, zoneMax } from '../lib/stockCheck'
 
-// Stock Check: John scans the Pokemon singles zone by zone. Inventory: A1..J5 and Unsorted. Store: one big zone.
+// Stock Check: John scans the singles zone by zone (Pokemon, One Piece, Dragon Ball). Inventory: A1..J5, the game zones and Unsorted. Store: one big zone.
 // Where he scans a card is where the system says it is. He can submit the zones he has finished at any time:
 // only those zones are replaced, the others keep what they had (stock_zone_qty). Sales and intake go on as usual.
 // Tables: scripts/create_stock_check_tables.sql. Rules: src/lib/stockCheck.js.
@@ -47,13 +47,13 @@ async function readAllPages(build) {
   }
 }
 
-// This room's Pokemon rows, including rows at 0 from an earlier round.
+// This room's rows of the games checked, including rows at 0 from an earlier round.
 async function readRoomRows(locationId) {
   const data = await readAllPages(() => supabase
     .from('singles')
     .select('id, tcg_id, quantity, status, card_name, card_number, language')
     .eq('location_id', locationId)
-    .eq('brand', 'Pokemon')
+    .in('brand', STOCK_BRANDS)
     .neq('status', 'sold')
     .eq('deleted', false)
     .not('tcg_id', 'is', null)
@@ -108,7 +108,7 @@ async function readRecentlySold(locationId, roundStart) {
     .from('singles')
     .select('id, tcg_id')
     .eq('location_id', locationId)
-    .eq('brand', 'Pokemon')
+    .in('brand', STOCK_BRANDS)
     .eq('status', 'sold')
     .gte('sale_date', since)
     .not('tcg_id', 'is', null)
@@ -173,6 +173,10 @@ export default function StockCheck() {
 
   const locationName = locations.find(l => l.id === locationId)?.name || ''
   const roomZones = locationId === INVENTORY_ROOM ? [...ZONES, UNSORTED] : [STORE_ZONE]
+  // What the zone grid draws: the zones, with a heading per game and a label over a One Piece colour row.
+  const gridItems = locationId === INVENTORY_ROOM
+    ? [...ZONE_GROUPS.flatMap(g => [{ heading: g.name }, ...g.rows.flatMap(r => [...(r.label ? [{ label: r.label }] : []), ...r.zones])]), UNSORTED]
+    : roomZones
   const expected = useMemo(() => new Map((round?.expected || []).map(e => [String(e.id), e])), [round])
 
   useEffect(() => {
@@ -272,7 +276,7 @@ export default function StockCheck() {
         .select('*').single()
       if (error) throw error
       setRound(data); setScans(new Map()); setLastRound(null)
-      addToast(`Round started: ${snapshot.length} Pokemon cards in the app here`, 'success')
+      addToast(`Round started: ${snapshot.length} cards in the app here`, 'success')
     } catch (err) {
       addToast(`Could not start the round: ${err.message}`, 'error')
     } finally {
@@ -586,8 +590,8 @@ export default function StockCheck() {
           <ScanLine className="text-vault-gold" /> Stock Check / 库存核对
         </h1>
         <p className="text-gray-400 mt-1 text-sm">
-          Pokemon singles only. Scan zone by zone: where you scan a card is where the system says it is. You can submit finished zones at any time: only those zones change, the others stay as they were.
-          <br />只核对宝可梦单卡。按小区依次扫，在哪个小区扫到，系统就记在哪。随时可以提交已完成的小区：只更新这几个小区，其他小区不动。
+          Pokemon, One Piece and Dragon Ball singles. Scan zone by zone: where you scan a card is where the system says it is. You can submit finished zones at any time: only those zones change, the others stay as they were.
+          <br />核对宝可梦、海贼王、龙珠单卡。按小区依次扫，在哪个小区扫到，系统就记在哪。随时可以提交已完成的小区：只更新这几个小区，其他小区不动。
         </p>
       </div>
 
@@ -640,7 +644,9 @@ export default function StockCheck() {
 
           <div className="card mb-4 overflow-x-auto">
             <div className="grid gap-1 min-w-[560px]" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}>
-              {roomZones.map(z => {
+              {gridItems.map(z => {
+                if (z.heading) return <div key={z.heading} data-testid="zone-heading" style={{ gridColumn: '1 / -1' }} className="pt-2 text-sm font-semibold text-vault-gold">{z.heading}</div>
+                if (z.label) return <div key={z.label} style={{ gridColumn: '1 / -1' }} className="text-xs text-gray-400">{z.label}</div>
                 const c = zoneCounts.get(z) || 0
                 const over = isOverLimit(z, c)
                 return (
@@ -689,7 +695,7 @@ export default function StockCheck() {
                     <span className="font-mono text-xs">{lastScanId}</span>
                     <span className="flex-1 min-w-0 truncate font-semibold">{nameOf(lastScanId) || 'Unknown card'}</span>
                     <span className="whitespace-nowrap">
-                      {e ? `${total} of ${e.qty}${total > e.qty ? ' · more than app has' : ''}` : `not in this room's Pokemon stock · ×${total}`}
+                      {e ? `${total} of ${e.qty}${total > e.qty ? ' · more than app has' : ''}` : `not in this room's stock when the round started · ×${total}`}
                     </span>
                   </div>
                 )
@@ -778,7 +784,7 @@ export default function StockCheck() {
           )}
           {plan.extras.length > 0 && (
             <div className="mb-3">
-              <div className="text-xs font-semibold text-amber-300 mb-1">Scanned, but not this room's Pokemon stock, not changed: {plan.extras.length}</div>
+              <div className="text-xs font-semibold text-amber-300 mb-1">Scanned, but not this room's stock, not changed: {plan.extras.length}</div>
               <div className="bg-vault-darker rounded p-2 max-h-48 overflow-y-auto text-xs">
                 {plan.extras.map(e => (
                   <div key={e.id} className="flex gap-2 py-0.5">
@@ -982,11 +988,11 @@ function PutAway({ addToast, user }) {
       if (isOverLimit(z, n + 1)) { set({ state: 'refused', note: `${z} is full (${n}/${zoneMax(z)}). / ${z} 满了` }); return }
       const live = await readAllPages(() => supabase.from('singles')
         .select('id, card_name, card_number, language, quantity, location_id, location:locations(name)')
-        .eq('tcg_id', id).eq('brand', 'Pokemon').eq('deleted', false).in('status', ['in_inventory', 'listed']).gt('quantity', 0).order('id'))
+        .eq('tcg_id', id).in('brand', STOCK_BRANDS).eq('deleted', false).in('status', ['in_inventory', 'listed']).gt('quantity', 0).order('id'))
       const here = live.filter(r => r.location_id === INVENTORY_ROOM)
       if (!here.length) {
         const where = live.map(r => `${r.location?.name || 'no location'} ×${r.quantity}`).join(', ')
-        set({ state: 'refused', name: live[0] ? cardName(live[0]) : '', note: live.length ? `Not in Inventory. The app has it at ${where}. / 后面没有这张` : 'No Pokemon stock with this id. / 系统里没有这张' })
+        set({ state: 'refused', name: live[0] ? cardName(live[0]) : '', note: live.length ? `Not in Inventory. The app has it at ${where}. / 后面没有这张` : 'No stock with this id. / 系统里没有这张' })
         return
       }
       const stock = here.reduce((s, r) => s + (Number(r.quantity) || 0), 0)
@@ -1061,7 +1067,7 @@ function PutAway({ addToast, user }) {
       <div className="mt-2 flex flex-wrap items-stretch gap-2">
         <select value={zone} onChange={(e) => chooseZone(e.target.value)} aria-label="Zone" className="text-sm py-1.5 px-2 bg-vault-darker/40 border border-vault-border rounded-md text-white">
           <option value="">Zone / 选分区</option>
-          {ZONES.map(z => <option key={z} value={z}>{z}</option>)}
+          {ZONE_GROUPS.map(g => <optgroup key={g.name} label={g.name}>{g.rows.flatMap(r => r.zones).map(z => <option key={z} value={z}>{z}</option>)}</optgroup>)}
         </select>
         <input
           ref={inputRef}
@@ -1251,7 +1257,7 @@ function FindCard({ addToast, user }) {
       const match = (base) => (/^\d+$/.test(term) ? base.eq('tcg_id', term) : base.ilike('card_name', `%${term}%`)).order('id')
       const rowsQuery = () => match(supabase.from('singles')
         .select('tcg_id, card_name, card_number, language, quantity, location_id, location:locations(name)')
-        .eq('brand', 'Pokemon').neq('status', 'sold').eq('deleted', false).gt('quantity', 0).not('tcg_id', 'is', null))
+        .in('brand', STOCK_BRANDS).neq('status', 'sold').eq('deleted', false).gt('quantity', 0).not('tcg_id', 'is', null))
       const data = await readAllPages(rowsQuery)
       const ids = [...new Set(data.map(r => String(r.tcg_id)))]
       const held = []
@@ -1277,7 +1283,7 @@ function FindCard({ addToast, user }) {
       // Sold rows and rows at 0 of cards with no stock left. Cards with stock come first, a broad search stops at 200 lines anyway.
       const old = await readAllPages(() => match(supabase.from('singles')
         .select('tcg_id, card_name, card_number, language')
-        .eq('brand', 'Pokemon').eq('deleted', false).not('tcg_id', 'is', null).or('status.eq.sold,quantity.eq.0')))
+        .in('brand', STOCK_BRANDS).eq('deleted', false).not('tcg_id', 'is', null).or('status.eq.sold,quantity.eq.0')))
       const liveIds = new Set(ids)
       const candidates = new Map()
       for (const r of old) if (!liveIds.has(String(r.tcg_id)) && !candidates.has(String(r.tcg_id))) candidates.set(String(r.tcg_id), cardName(r))
@@ -1332,7 +1338,7 @@ function FindCard({ addToast, user }) {
       </div>
       {results && (
         <div className="mt-2 max-h-64 overflow-y-auto text-xs" data-testid="find-results">
-          {results.length === 0 && <span className="text-gray-500">No Pokemon card found. / 没有这张</span>}
+          {results.length === 0 && <span className="text-gray-500">No card found. / 没有这张</span>}
           {more && <div className="text-gray-500 py-1">Showing the first 200. Type more of the name.</div>}
           {results.slice(0, 200).map(r => (r.gone ? (
             <div key={r.k} className="flex flex-wrap gap-x-3 py-1 border-t border-vault-border/40" data-testid="find-gone">

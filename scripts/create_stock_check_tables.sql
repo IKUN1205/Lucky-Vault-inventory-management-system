@@ -21,7 +21,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS stock_check_rounds_one_open
 
 CREATE TABLE IF NOT EXISTS stock_check_scans (
   round_id        uuid        NOT NULL REFERENCES stock_check_rounds(id) ON DELETE CASCADE,
-  zone            text        NOT NULL CHECK (zone ~ '^([A-J][1-5]|Unsorted|Store)$'),
+  zone            text        NOT NULL CHECK (zone ~ '^([A-J][1-5]|DB[1-5]|(BLU|PUR|RED|GRN|YEL|BLK|LD)[1-5]|Unsorted|Store)$'),
   tcg_id          text        NOT NULL,
   qty             integer     NOT NULL CHECK (qty >= 0),
   updated_by_id   uuid        REFERENCES users(id) ON DELETE SET NULL,
@@ -35,7 +35,7 @@ CREATE INDEX IF NOT EXISTS stock_check_scans_tcg_id ON stock_check_scans (tcg_id
 -- Gary 11/05: stock by zone. What each zone held when it was last submitted; a sale does not change it until the next scan.
 CREATE TABLE IF NOT EXISTS stock_zone_qty (
   location_id     uuid        NOT NULL REFERENCES locations(id),
-  zone            text        NOT NULL CHECK (zone ~ '^([A-J][1-5]|Unsorted|Store)$'),
+  zone            text        NOT NULL CHECK (zone ~ '^([A-J][1-5]|DB[1-5]|(BLU|PUR|RED|GRN|YEL|BLK|LD)[1-5]|Unsorted|Store)$'),
   tcg_id          text        NOT NULL,
   qty             integer     NOT NULL CHECK (qty > 0),
   scanned_at      timestamptz NOT NULL DEFAULT now(),

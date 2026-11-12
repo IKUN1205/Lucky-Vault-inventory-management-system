@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import { isLedgerRoomName } from './countRooms.js'
 import { isBreakableBox, packSiblingRows, pinnedPackIds } from './countSiblings.js'
 import { postJson } from './apiSession.js'
-import { STORE_ZONE, UNSORTED, ZONES } from './stockCheck.js'
+import { STOCK_BRANDS, STORE_ZONE, UNSORTED, ZONES } from './stockCheck.js'
 
 // No fallback project. Until 2026-10-02 a missing env var silently fell back to the OLD project (dqreqevbjszercgackuc,
 // retired by the 9/12 switch), so a build or a local dev server without the variables wrote the company's counts into a
@@ -2416,7 +2416,7 @@ const _moveZones = async ({ tcgId, fromLocationId, toLocationId, qty, userId, br
         left--
       }
     }
-    if (toLocationId === await getFrontStoreLocationId() && brand === 'Pokemon') await changeZoneQtyAt(toLocationId, STORE_ZONE, tcgId, qty, userId)
+    if (toLocationId === await getFrontStoreLocationId() && STOCK_BRANDS.includes(brand)) await changeZoneQtyAt(toLocationId, STORE_ZONE, tcgId, qty, userId)
     for (const z of backTo || []) await changeZoneQtyAt(toLocationId, z, tcgId, 1, userId)
     return { zones: taken }
   } catch (err) {

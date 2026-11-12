@@ -1,7 +1,20 @@
 // Stock Check rules, kept apart from the page so they can be tested alone.
 
 export const ZONE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']
-export const ZONES = ZONE_LETTERS.flatMap(l => [1, 2, 3, 4, 5].map(n => `${l}${n}`))
+const five = (code) => [1, 2, 3, 4, 5].map(n => `${code}${n}`)
+// Will 11/11 (Gary's permissions): Dragon Ball 1-5; One Piece by its six colours, 1-5 each; one more for One Piece leaders and DON!!, 1-5.
+// The codes are short because the packing slip prints them (lv-finance/single_slip.py). A row is one line of five on the page.
+export const ONE_PIECE_ROWS = [['BLU', 'Blue / 蓝'], ['PUR', 'Purple / 紫'], ['RED', 'Red / 红'], ['GRN', 'Green / 绿'], ['YEL', 'Yellow / 黄'], ['BLK', 'Black / 黑'], ['LD', 'Leader + DON!!']]
+export const ZONE_GROUPS = [
+  { name: 'Pokemon / 宝可梦', rows: ZONE_LETTERS.map(l => ({ zones: five(l) })) },
+  { name: 'Dragon Ball / 龙珠', rows: [{ zones: five('DB') }] },
+  { name: 'One Piece / 海贼王', rows: ONE_PIECE_ROWS.map(([code, label]) => ({ label, zones: five(code) })) },
+]
+export const ZONES = ZONE_GROUPS.flatMap(g => g.rows.flatMap(r => r.zones))
+// The same names the database lets in: stock_check_scans.zone and stock_zone_qty.zone (scripts/stock_zones_games_migration.sql).
+export const ZONE_PATTERN = '^([A-J][1-5]|DB[1-5]|(BLU|PUR|RED|GRN|YEL|BLK|LD)[1-5]|Unsorted|Store)$'
+// The games John checks. Gary 11/04 set Pokemon only; Will 11/11 added the two games that got zones.
+export const STOCK_BRANDS = ['Pokemon', 'One Piece', 'Dragon Ball Fusion World']
 export const UNSORTED = 'Unsorted'        // Gary 11/05: Inventory has one big zone for cards not in a small zone yet
 export const STORE_ZONE = 'Store'         // Gary 11/05: the store has no small zones, one big zone
 export const ZONE_MAX = 120               // Gary: a small zone holds 100-120 singles; more means the zone needs checking again
@@ -19,7 +32,7 @@ export const dayOf = (at) => new Date(at).toLocaleDateString('en-CA')
 //   submit:  Set of zones in this submit
 //   scans:   Map "zone|id" -> qty      this round's scans
 //   ledger:  Map "zone|id" -> { qty, at }   what each zone held when it was last submitted
-//   rows:    Map id -> [{ id, quantity, status }]   read just now: this room's Pokemon rows
+//   rows:    Map id -> [{ id, quantity, status }]   read just now: this room's rows of the games checked (STOCK_BRANDS)
 //   names:   Map id -> name
 //   recentlySold: Set of ids sold in this room since the round began or in the last RECENT_SALE_DAYS, whichever is longer
 //   movedIds: Set of ids moved between rooms since the round began: their scans may be older than the move

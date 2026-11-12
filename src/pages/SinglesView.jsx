@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { Layers, Loader2, RefreshCw } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { ToastContainer, useToast } from '../components/Toast'
-import { UNSORTED, ZONES, dayOf } from '../lib/stockCheck'
+import { STOCK_BRANDS, UNSORTED, ZONES, ZONE_GROUPS, dayOf } from '../lib/stockCheck'
 
 // Singles Inventory (Gary 2026-11-05「每个分区的库和门店的库list ... 给他一个singles view inventory 做在stockcheck 下面」). Read only.
 // A zone lists what its last scan recorded: a sale does not change that until the next scan, so each line also shows the stock now.
@@ -39,7 +39,7 @@ export default function SinglesView() {
       const [rows, ledger] = await Promise.all([
         readAllPages(() => supabase.from('singles')
           .select('tcg_id, card_name, card_number, language, quantity, location_id, set:card_sets(name)')
-          .in('location_id', [INVENTORY_ROOM, STORE_ROOM]).eq('brand', 'Pokemon').neq('status', 'sold').eq('deleted', false)
+          .in('location_id', [INVENTORY_ROOM, STORE_ROOM]).in('brand', STOCK_BRANDS).neq('status', 'sold').eq('deleted', false)
           .gt('quantity', 0).not('tcg_id', 'is', null).order('id')),
         readAllPages(() => supabase.from('stock_zone_qty').select('zone, tcg_id, qty, scanned_at').eq('location_id', INVENTORY_ROOM).order('zone').order('tcg_id')),
       ])
@@ -120,7 +120,7 @@ export default function SinglesView() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="font-display text-2xl font-bold text-white flex items-center gap-3"><Layers className="text-vault-gold" /> Singles Inventory / 单卡库存</h1>
-          <p className="text-gray-400 mt-1 text-sm" data-testid="singles-totals">Pokemon singles. Inventory / 后面 {totals.inv} · Storefront / 门店 {totals.store}. A zone shows its last scan; a sale changes it at the next scan.<br />分区显示最后一次扫的记录，卖掉的卡等下次扫才变，所以每行也写现在的库存。</p>
+          <p className="text-gray-400 mt-1 text-sm" data-testid="singles-totals">Pokemon, One Piece and Dragon Ball singles. Inventory / 后面 {totals.inv} · Storefront / 门店 {totals.store}. A zone shows its last scan; a sale changes it at the next scan.<br />分区显示最后一次扫的记录，卖掉的卡等下次扫才变，所以每行也写现在的库存。</p>
         </div>
         <button type="button" onClick={load} disabled={loading} className="btn btn-secondary px-3 flex items-center gap-1 text-sm">
           {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Refresh
@@ -133,9 +133,14 @@ export default function SinglesView() {
           {tile(UNSORTED, 'Unsorted', 'min-w-[90px]')}
           {tile(NO_ZONE, 'No zone / 没分区', 'min-w-[110px]')}
         </div>
-        <div className="grid grid-cols-5 gap-1.5" data-testid="zone-grid">
-          {ZONES.map(z => tile(z, z))}
-        </div>
+        {ZONE_GROUPS.map(g => (
+          <div key={g.name} className="mb-2">
+            <div className="text-xs font-semibold text-vault-gold mb-1">{g.name}</div>
+            <div className="grid grid-cols-5 gap-1.5" data-testid="zone-grid">
+              {g.rows.flatMap(r => r.zones).map(z => tile(z, z))}
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="card">
