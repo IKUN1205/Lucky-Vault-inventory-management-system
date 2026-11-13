@@ -3,7 +3,7 @@ import {
   fetchLocations, fetchInventory, createMovement, updateInventory, deleteMovement,
   fetchUsers, lookupScannedCode, fetchLiveSinglesByTcgId, getFrontStoreLocationId, onlineOrderBlock,
   SINGLES_INVENTORY_ROOM_ID,
-  moveSingleToLocation, moveSlabToLocation, markSlabAsSold, sellSingleQtySplit,
+  moveSingleToLocation, moveSlabToLocation, markSlabAsSold, sellSingleQtySplit, bookMysteryPendingSingle,
   createStorefrontSale,
   fetchSinglesAtLocation, fetchSlabsAtLocation,
   searchProductsForStorefront, searchSinglesForStorefront, searchSlabsForStorefront,
@@ -93,6 +93,8 @@ export default function MovedInventory() {
   // each scanned slab as sold (markSlabAsSold) instead of moving it. Only
   // slabs are accepted in this mode — sealed / single scans get rejected.
   const [mysteryGame, setMysteryGame] = useState(false)
+  const mysteryRef = useRef(false)     // the mode now, for a lookup or confirm that finishes after a switch
+  mysteryRef.current = mysteryGame
   // Bucket total for any slabs that don't have a reference price in
   // inventory. The cashier types ONE total at the bottom of the cart;
   // we equal-split it across the priceless slabs at submit time so each
@@ -265,7 +267,23 @@ export default function MovedInventory() {
     const row = nextRow(cartRef.current)
     if (!row) {
       const where = MYSTERY_SOURCES.find(s => s.id === mysterySource)?.label
-      addToast(`${picked.card_name}: no copy left in ${where}`, 'error')
+      // Will 11/12: the card is in hand, the books are short. Sell it anyway and record it for checking (Stock Check, top).
+      if (!picked.tcg_id) { addToast(`${picked.card_name}: no copy left in ${where}`, 'error'); return }
+      if (!confirm(`${picked.card_name}: no copy left in ${where} on the books. You have the card in hand? OK = sell it and record it for checking (no room is deducted).
+${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下来等核对（不扣任何库）。`)) return
+      if (!mysteryRef.current) return     // switched to Move while asking: the cart was cleared
+      const key = `single-pending-${picked.tcg_id}`
+      setCart(prev => {
+        const existing = prev.find(c => c.key === key)
+        if (existing) return prev.map(c => (c.key !== key ? c : { ...c, quantity: c.quantity + 1, ...(c.price_is_ref && c.unit_ref_price != null ? { sale_price: String(Math.round(c.unit_ref_price * (c.quantity + 1) * 100) / 100) } : {}) }))
+        const unitRef = picked.current_market_price_usd != null ? Number(picked.current_market_price_usd) : null
+        return [...prev, {
+          kind: 'single', pending: true, pending_where: where, key, single_id: null,
+          single: picked, available_qty: 99, quantity: 1,
+          unit_ref_price: unitRef, price_is_ref: unitRef != null,
+          sale_price: unitRef == null ? '' : String(Math.round(unitRef * 100) / 100),
+        }]
+      })
       return
     }
     // Find-or-add inside ONE functional update (Codex 10/08): a check against
@@ -519,6 +537,12 @@ export default function MovedInventory() {
               sale_fees_usd: null, buyer_name: null, sale_notes: 'Mystery Game',
               sold_by_id: movedById || null, transaction_id: transactionId, transaction_type: 'sale',
             })
+          } else if (item.kind === 'single' && item.pending) {
+            const qty = Math.max(1, Math.floor(Number(item.quantity)) || 1)
+            await bookMysteryPendingSingle({
+              source: item.single, quantity: qty, unitPrice: price / qty, cashierId: movedById || null,
+              transactionId, saleDate: date, roomLabel: item.pending_where,
+            })
           } else if (item.kind === 'single') {
             // singles.sale_price_usd is PER UNIT (SellSingleModal / POS split
             // convention, which the daily summary multiplies by quantity); the
@@ -602,6 +626,7 @@ export default function MovedInventory() {
     e?.preventDefault?.()
     if (cart.length === 0) { addToast('Cart is empty', 'error'); return }
     if (mysteryGame) return handleMysteryGameSubmit()
+    if (cart.some(c => c.pending)) { addToast('A Mystery Game line is in the cart: clear the cart first', 'error'); return }
     if (!fromLocationId || !toLocationId) { addToast('Pick FROM and TO locations', 'error'); return }
     if (fromLocationId === toLocationId) { addToast('FROM and TO must differ', 'error'); return }
     if (!movedById) { addToast('Pick who is moving the items', 'error'); return }
@@ -1130,7 +1155,9 @@ function CartRow({ item, onQtyChange, onRemove, onSalePriceChange, mysteryGame, 
     const setName = item.single?.set?.name ? ` · ${item.single.set.name}` : ''
     title = `${item.single?.card_name || 'Single'}${num}`
     const room = mysteryGame && item.single?.location?.name ? ` · from ${item.single.location.name}` : ''
-    sub = `${item.single?.condition || 'raw'}${setName} · TCG ${item.single?.tcg_id || '?'} · ${item.available_qty} at source${room}`
+    sub = item.pending
+      ? `${item.single?.condition || 'raw'}${setName} · TCG ${item.single?.tcg_id || '?'} · not on the books: recorded for checking / 账上没有，记下待核对`
+      : `${item.single?.condition || 'raw'}${setName} · TCG ${item.single?.tcg_id || '?'} · ${item.available_qty} at source${room}`
     max = item.available_qty
     qtyEditable = true
   } else {

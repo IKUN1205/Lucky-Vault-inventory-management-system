@@ -5257,7 +5257,7 @@ export const fetchLiveSinglesByTcgId = async (tcgId) => {
 export const STOCK_PENDING_TAG = '[stock-pending]'
 export const SINGLES_INVENTORY_ROOM_ID = '6d89a23e-c250-4dcd-81cf-2b4dd26c7592'
 
-const _bookStockPendingLine = async ({ source, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {}, frontStoreId }) => {
+const _bookStockPendingLine = async ({ source, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {}, frontStoreId, saleNotes, summary }) => {
   const qty = Math.max(1, Number(quantity) || 1)
   return await _recoverSoldSingle(source, qty, {
     location_id: frontStoreId,
@@ -5274,8 +5274,20 @@ const _bookStockPendingLine = async ({ source, quantity, salePrice, paymentMetho
     trade_in_value_usd: txMeta.tradeInValue ?? null,
     net_cash_usd: txMeta.netCash ?? null,
   }, {
-    saleNotes: `${STOCK_PENDING_TAG} Neither Front Store nor Inventory could cover this at the register, so no room was deducted. Waiting for John or Gary. Cost is blank until then.`,
-    summary: `Sold ${qty} ${source.card_name} at the register: Front Store short`,
+    saleNotes: saleNotes || `${STOCK_PENDING_TAG} Neither Front Store nor Inventory could cover this at the register, so no room was deducted. Waiting for John or Gary. Cost is blank until then.`,
+    summary: summary || `Sold ${qty} ${source.card_name} at the register: Front Store short`,
+  })
+}
+
+// Will 11/12 (Gary's permissions): Mystery Game may hand out a single the chosen room has no copy of. The sale is recorded the
+// same way as the register's: no room deducted, tagged, listed at the top of Stock Check for John or Will to deduct or not.
+export const bookMysteryPendingSingle = async ({ source, quantity, unitPrice, cashierId, transactionId, saleDate, roomLabel }) => {
+  const qty = Math.max(1, Number(quantity) || 1)
+  return await _bookStockPendingLine({
+    source, quantity: qty, salePrice: unitPrice, paymentMethodId: null, cashierId, transactionId, saleDate,
+    frontStoreId: await getFrontStoreLocationId(),
+    saleNotes: `${STOCK_PENDING_TAG} Mystery Game: no copy in ${roomLabel || 'the room chosen'}, so no room was deducted. Waiting for John or Will. Cost is blank until then.`,
+    summary: `Sold ${qty} ${source.card_name} in a Mystery Game: no copy in ${roomLabel || 'the room chosen'}`,
   })
 }
 
