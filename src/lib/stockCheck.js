@@ -1,5 +1,17 @@
 // Stock Check rules, kept apart from the page so they can be tested alone.
 
+// Will 11/13: some labels carry the plain card's TCGplayer id, but the card is the 30th Celebration Classic Collection
+// reprint (the inventory row was corrected, the printed label was not). A scan of such a label counts as the 30th card.
+// Only add an id here when we hold none of the plain card.
+export const LABEL_ALIASES = {
+  '85665': '716158',   // Genesect EX (Team Plasma) 11/101: Plasma Blast -> 30th Celebration Classic Collection
+  '149080': '716193',  // Buzzwole GX 57/111: Crimson Invasion -> 30th Celebration Classic Collection
+}
+export const labelId = (raw) => {
+  const id = String(raw ?? '').trim()
+  return Object.hasOwn(LABEL_ALIASES, id) ? LABEL_ALIASES[id] : id
+}
+
 export const ZONE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']
 const five = (code) => [1, 2, 3, 4, 5].map(n => `${code}${n}`)
 // Will 11/11 (Gary's permissions): Dragon Ball 1-5; One Piece by its six colours, 1-5 each; one more for One Piece leaders and DON!!, 1-5.

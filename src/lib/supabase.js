@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import { isLedgerRoomName } from './countRooms.js'
 import { isBreakableBox, packSiblingRows, pinnedPackIds } from './countSiblings.js'
 import { postJson } from './apiSession.js'
-import { STOCK_BRANDS, STORE_ZONE, UNSORTED, ZONES } from './stockCheck.js'
+import { STOCK_BRANDS, STORE_ZONE, UNSORTED, ZONES, labelId } from './stockCheck.js'
 
 // No fallback project. Until 2026-10-02 a missing env var silently fell back to the OLD project (dqreqevbjszercgackuc,
 // retired by the 9/12 switch), so a build or a local dev server without the variables wrote the company's counts into a
@@ -4115,6 +4115,7 @@ export const lookupScannedCode = async (code, { preferLocationId = null } = {}) 
   //    scan should resolve to the copy at the counter, not a bigger
   //    stack in a stream room.
   {
+    const tcgId = labelId(trimmed)   // a label printed with an old id (Will 11/13) counts as the right card
     const singleCols = `
         *,
         set:card_sets(id, brand, name, code, language),
@@ -4123,7 +4124,7 @@ export const lookupScannedCode = async (code, { preferLocationId = null } = {}) 
     const { data: liveRows, error } = await supabase
       .from('singles')
       .select(singleCols)
-      .eq('tcg_id', trimmed)
+      .eq('tcg_id', tcgId)
       .eq('deleted', false)
       .in('status', ['in_inventory', 'listed'])
       .gt('quantity', 0)
@@ -4141,7 +4142,7 @@ export const lookupScannedCode = async (code, { preferLocationId = null } = {}) 
     const { data: rows, error: restErr } = await supabase
       .from('singles')
       .select(singleCols)
-      .eq('tcg_id', trimmed)
+      .eq('tcg_id', tcgId)
       .eq('deleted', false)
       .limit(5)
     if (restErr) throw restErr

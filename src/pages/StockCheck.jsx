@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle, Loader2, MapPin, Play, ScanLine, Search } f
 import { changeZoneQtyAt, fetchLocations, listStockPendingSales, moveStockBetweenRooms, resolveStockPending, supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
-import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, STOCK_BRANDS, STORE_ZONE, UNSORTED, ZONES, ZONE_GROUPS, dayOf, isBigZone, isOverLimit, loweredShare, planZoneSubmit, resultCsv, zoneLabel, zoneMax, zoneState } from '../lib/stockCheck'
+import { MAX_LOWERED_SHARE, RECENT_SALE_DAYS, STOCK_BRANDS, STORE_ZONE, UNSORTED, ZONES, ZONE_GROUPS, dayOf, isBigZone, isOverLimit, labelId, loweredShare, planZoneSubmit, resultCsv, zoneLabel, zoneMax, zoneState } from '../lib/stockCheck'
 
 // Stock Check: John scans the singles zone by zone (Pokemon, One Piece, Dragon Ball). Inventory: A1..J5, the game zones and Unsorted. Store: one big zone.
 // Where he scans a card is where the system says it is. He can submit the zones he has finished at any time:
@@ -356,7 +356,7 @@ export default function StockCheck() {
   }
 
   const onScan = () => {
-    const id = scanInput.trim()
+    const id = labelId(scanInput)
     setScanInput('')
     if (!id || !zone) return
     changeScan(zone, id, 1)
@@ -1080,7 +1080,7 @@ function PutAway({ addToast, user }) {
   }
 
   const onScan = () => {
-    const id = code.trim()
+    const id = labelId(code)
     setCode('')
     if (!id || !zone) return
     const key = ++seq.current
@@ -1207,7 +1207,7 @@ function MoveToStore({ user }) {
   }
 
   const onScan = () => {
-    const id = code.trim()
+    const id = labelId(code)
     setCode('')
     if (!id) return
     const key = ++seq.current
