@@ -5230,6 +5230,15 @@ const _sellSingleLine = async ({ single, quantity, salePrice, paymentMethodId, c
 // Inventory cannot be sold or moved at the store: the copy in hand belongs to that order.
 // Returns the message to show, or null when it may go ahead. wanted counts this copy
 // plus any already in the cart. Other copies mean nothing is wrong.
+// Will 2026-11-16「打印出来的在end of 第二天肯定做完了」: an online order is packed by the end of the day after its label is printed, so an order
+// dated today, yesterday or the day before (Pacific, the date the booking job writes) may still need its copy. Older orders have shipped: the card in
+// hand is another copy, and with no copy on the books it is sold and recorded for checking like any other.
+const ORDER_OPEN_DAYS = 2
+const _orderOpenSince = () => {
+  const [y, m, d] = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }).split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d - ORDER_OPEN_DAYS)).toISOString().slice(0, 10)
+}
+
 export const onlineOrderBlock = async (tcgId, wanted = 1, cardName = 'This card') => {
   if (!tcgId) return null
   const frontId = await getFrontStoreLocationId()
@@ -5247,6 +5256,7 @@ export const onlineOrderBlock = async (tcgId, wanted = 1, cardName = 'This card'
     .from('singles').select('sale_date, sale_notes')
     .eq('tcg_id', tcgId).eq('status', 'sold').eq('deleted', false)
     .like('sale_notes', '[online-single%')
+    .gte('sale_date', _orderOpenSince())
     .order('sale_date', { ascending: false })
     .limit(1)
   if (orderErr) throw orderErr
