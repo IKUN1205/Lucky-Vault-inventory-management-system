@@ -2136,7 +2136,29 @@ export const markSingleAsSold = async (id, saleData) => {
   // in api/sheet-mark-sold.js — we forward the human `message` to the
   // browser console so staff or anyone debugging can see what happened.
   reportSheetSyncResult('single', data.id)
+  void _storeSaleZone(data, Number(data.quantity) || 1, saleData.sold_by_id)   // not awaited: a slow zone write never holds up the register
   return data
+}
+
+// Will 2026-11-16「门店卖卡要改分区记录 但是stock check是double check」: a sale out of the Front Store takes its copies off the store's zone
+// record too. The store has one zone (STORE_ZONE), so there is no zone to choose. Not for the back rooms: which zone a sold copy left from there
+// is still open. While a count of the store is open nothing changes here: that count decides. Never fails the sale: the next scan corrects it.
+const _storeSaleZone = async (row, qty, userId) => {
+  try {
+    if (!row?.tcg_id || !(qty > 0) || row.form === 'graded' || !STOCK_BRANDS.includes(row.brand)) return
+    if (row.location_id !== await getFrontStoreLocationId()) return
+    const { data: open, error: openErr } = await supabase.from('stock_check_rounds').select('id')
+      .eq('location_id', row.location_id).eq('status', 'open').limit(1)
+    if (openErr) throw openErr
+    if (open?.length) return
+    const { data: cur, error } = await supabase.from('stock_zone_qty').select('qty')
+      .eq('location_id', row.location_id).eq('zone', STORE_ZONE).eq('tcg_id', row.tcg_id).maybeSingle()
+    if (error) throw error
+    const take = Math.min(qty, cur?.qty || 0)
+    if (take > 0) await changeZoneQtyAt(row.location_id, STORE_ZONE, row.tcg_id, -take, userId)
+  } catch (err) {
+    console.warn('[store-sale-zone] zone not updated, the next scan corrects it:', err)
+  }
 }
 
 // ============================================
@@ -5039,6 +5061,7 @@ export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
     payload: { sale: saleData, card: inserted, split_from: singleId },
     acted_by_id: saleData.sold_by_id || null,
   })
+  void _storeSaleZone(src, sellQty, saleData.sold_by_id)   // not awaited, see markSingleAsSold
   return inserted
 }
 
