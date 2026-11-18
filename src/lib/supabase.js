@@ -2090,6 +2090,7 @@ export const markSingleAsSold = async (id, saleData) => {
     buyer_name: saleData.buyer_name || null,
     sale_notes: saleData.sale_notes || null,
     sold_by_id: saleData.sold_by_id || null,
+    mystery_room: saleData.mystery_room || null,   // Mystery Game room (2026-11-18); null on every other sale, so a returned prize sold again loses it
     // New columns from the unified storefront checkout (Phase 1+2). Existing
     // callers don't pass these — left null so non-store flows are unchanged.
     payment_method_id: saleData.payment_method_id || null,
@@ -2706,6 +2707,9 @@ export const markSlabAsSold = async (id, saleData) => {
     buyer_name: saleData.buyer_name || null,
     notes: saleData.sale_notes || null,        // free-form notes column
     sold_by_id: saleData.sold_by_id || null,
+    // Mystery Game room (Gary 2026-11-18). Written on every sale, null when it is not a Mystery Game: a prize that comes
+    // back (return) and sells again the normal way must not keep the old game's room.
+    mystery_room: saleData.mystery_room || null,
     // New columns from the unified storefront checkout (Phase 1). Existing
     // callers (SellSlabModal etc.) don't pass these — left null so behaviour
     // for the non-store flows is unchanged.
@@ -4330,7 +4334,7 @@ export const processReturn = async ({ code, found: providedFound = null, reason 
     const { error } = await supabase.from('slabs').update({
       status: 'in_inventory', location_id: destId,
       sale_price_usd: null, sale_channel: null, sale_date: null, sale_fees_usd: null,
-      sold_at: null, sold_by_id: null, buyer_name: null,
+      sold_at: null, sold_by_id: null, buyer_name: null, mystery_room: null,
     }).eq('id', sl.id)
     if (error) throw error
     const log = await insertReturnLog({ ...base, quantity: 1, kind: 'slab', item_ref: sl.cert_number, item_name: sl.item_name,
@@ -5030,6 +5034,7 @@ export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
     trade_in_value_usd: saleData.trade_in_value_usd ?? null,
     net_cash_usd: saleData.net_cash_usd ?? null,
     parent_single_id: singleId,
+    ...(saleData.mystery_room ? { mystery_room: saleData.mystery_room } : {}),   // Mystery Game only (2026-11-18)
   }
   const { data: inserted, error: insErr } = await supabase
     .from('singles')
@@ -5291,7 +5296,7 @@ export const fetchLiveSinglesByTcgId = async (tcgId) => {
 export const STOCK_PENDING_TAG = '[stock-pending]'
 export const SINGLES_INVENTORY_ROOM_ID = '6d89a23e-c250-4dcd-81cf-2b4dd26c7592'
 
-const _bookStockPendingLine = async ({ source, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {}, frontStoreId, saleNotes, summary }) => {
+const _bookStockPendingLine = async ({ source, quantity, salePrice, paymentMethodId, cashierId, transactionId, saleDate, txMeta = {}, frontStoreId, saleNotes, summary, mysteryRoom }) => {
   const qty = Math.max(1, Number(quantity) || 1)
   return await _recoverSoldSingle(source, qty, {
     location_id: frontStoreId,
@@ -5307,6 +5312,7 @@ const _bookStockPendingLine = async ({ source, quantity, salePrice, paymentMetho
     transaction_type: txMeta.transactionType || 'sale',
     trade_in_value_usd: txMeta.tradeInValue ?? null,
     net_cash_usd: txMeta.netCash ?? null,
+    ...(mysteryRoom ? { mystery_room: mysteryRoom } : {}),   // Mystery Game only (2026-11-18)
   }, {
     saleNotes: saleNotes || `${STOCK_PENDING_TAG} Neither Front Store nor Inventory could cover this at the register, so no room was deducted. Waiting for John or Gary. Cost is blank until then.`,
     summary: summary || `Sold ${qty} ${source.card_name} at the register: Front Store short`,
@@ -5315,10 +5321,10 @@ const _bookStockPendingLine = async ({ source, quantity, salePrice, paymentMetho
 
 // Will 11/12 (Gary's permissions): Mystery Game may hand out a single the chosen room has no copy of. The sale is recorded the
 // same way as the register's: no room deducted, tagged, listed at the top of Stock Check for John or Will to deduct or not.
-export const bookMysteryPendingSingle = async ({ source, quantity, unitPrice, cashierId, transactionId, saleDate, roomLabel }) => {
+export const bookMysteryPendingSingle = async ({ source, quantity, unitPrice, cashierId, transactionId, saleDate, roomLabel, mysteryRoom }) => {
   const qty = Math.max(1, Number(quantity) || 1)
   return await _bookStockPendingLine({
-    source, quantity: qty, salePrice: unitPrice, paymentMethodId: null, cashierId, transactionId, saleDate,
+    source, quantity: qty, salePrice: unitPrice, paymentMethodId: null, cashierId, transactionId, saleDate, mysteryRoom,
     frontStoreId: await getFrontStoreLocationId(),
     saleNotes: `${STOCK_PENDING_TAG} Mystery Game: no copy in ${roomLabel || 'the room chosen'}, so no room was deducted. Waiting for John or Will. Cost is blank until then.`,
     summary: `Sold ${qty} ${source.card_name} in a Mystery Game: no copy in ${roomLabel || 'the room chosen'}`,

@@ -66,6 +66,20 @@ const MYSTERY_SOURCES = [
   { id: 'mixed', label: 'Mixed / 混合 (Store first)' },
 ]
 
+// Gary 2026-11-18「给他们加出库房间」: every Mystery Game names the room it ran for, so finance can cost each
+// room from what really left stock (tiktok4 = SlabbiePatty TikTok, D-20261118-07). Stored on each sold row as
+// mystery_room; the ids match the finance rooms.
+export const MYSTERY_ROOMS = [
+  { id: 'tiktok4', label: 'TikTok SlabbiePatty' },
+  { id: 'e2', label: 'eBay SlabbiePatty (eBay2)' },
+  { id: 'e1', label: 'eBay LuckyVaultUS (eBay1)' },
+  { id: 'e3', label: 'eBay PokeSino (eBay3)' },
+  { id: 'PK', label: 'TikTok PackHeads' },
+  { id: 'RK', label: 'TikTok Rockets' },
+  { id: 'Vault', label: 'TikTok Vault' },
+  { id: 'Store', label: 'Front Store / 门店' },
+]
+
 const mysterySourceRows = (rows, source, frontId, inventoryId) => {
   const live = rows.filter(r => (r.status === 'in_inventory' || r.status === 'listed') && Number(r.quantity) > 0)
   const inRoom = (id) => live.filter(r => r.location_id === id)
@@ -101,6 +115,7 @@ export default function MovedInventory() {
   // gets a sensible sale_price_usd recorded.
   const [mysteryPricelessTotal, setMysteryPricelessTotal] = useState('')
   const [mysterySource, setMysterySource] = useState('mixed')
+  const [mysteryRoom, setMysteryRoom] = useState('')    // required, no default: picked again every time the mode opens
 
   // Mixed-kind cart.
   //   sealed: { kind:'sealed', key, product_id, product, inventory_row, quantity }
@@ -499,6 +514,8 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
   const handleMysteryGameSubmit = async () => {
     if (cart.length === 0) { addToast('Cart is empty', 'error'); return }
     if (!movedById) { addToast('Pick who is running the game', 'error'); return }
+    const room = MYSTERY_ROOMS.find(r => r.id === mysteryRoom)
+    if (!room) { addToast('Pick which room this game is for', 'error'); return }
     const hasSealed = cart.some(c => c.kind === 'sealed')
     if (hasSealed && !fromLocationId) {
       addToast('Pick a FROM location — sealed packs deduct from a specific location', 'error')
@@ -536,12 +553,13 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
               sale_price_usd: price, sale_channel: 'in_person', sale_date: date,
               sale_fees_usd: null, buyer_name: null, sale_notes: 'Mystery Game',
               sold_by_id: movedById || null, transaction_id: transactionId, transaction_type: 'sale',
+              mystery_room: room.id,
             })
           } else if (item.kind === 'single' && item.pending) {
             const qty = Math.max(1, Math.floor(Number(item.quantity)) || 1)
             await bookMysteryPendingSingle({
               source: item.single, quantity: qty, unitPrice: price / qty, cashierId: movedById || null,
-              transactionId, saleDate: date, roomLabel: item.pending_where,
+              transactionId, saleDate: date, roomLabel: item.pending_where, mysteryRoom: room.id,
             })
           } else if (item.kind === 'single') {
             // singles.sale_price_usd is PER UNIT (SellSingleModal / POS split
@@ -553,6 +571,7 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
               sale_price_usd: price / qty, sale_channel: 'in_person', sale_date: date,
               sale_fees_usd: null, buyer_name: null, sale_notes: 'Mystery Game',
               sold_by_id: movedById || null, transaction_id: transactionId, transaction_type: 'sale',
+              mystery_room: room.id,
             })
           } else if (item.kind === 'sealed') {
             const qty = item.quantity
@@ -568,6 +587,7 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
               quantity: qty, sale_price: price, cost_basis: costBasis, profit: price - costBasis,
               payment_method_id: null, cashier_id: movedById || null,
               transaction_id: transactionId, transaction_type: 'sale', notes: 'Mystery Game',
+              mystery_room: room.id,
             })
             await updateInventory(item.product_id, loc, -qty)
           }
@@ -601,7 +621,7 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               type: 'move',
-              fromLocation: '🎲 Mystery Game',
+              fromLocation: `🎲 Mystery Game · ${room.label}`,
               toLocation: `Sold (${sold.length} item${sold.length === 1 ? '' : 's'} · $${totalPaid.toFixed(2)})`,
               items: itemsForLark,
               totalUnits,
@@ -873,7 +893,7 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
               </button>
               <button
                 type="button"
-                onClick={() => { if (!mysteryGame) { setCart([]); setMysteryPricelessTotal('') } setMysteryGame(true); setToLocationId(''); setFromLocationId('') }}
+                onClick={() => { if (!mysteryGame) { setCart([]); setMysteryPricelessTotal(''); setMysteryRoom('') } setMysteryGame(true); setToLocationId(''); setFromLocationId('') }}
                 className={`px-3 py-1.5 text-sm rounded-md transition flex items-center gap-2 ${
                   mysteryGame
                     ? 'bg-purple-500/80 text-white font-semibold'
@@ -924,6 +944,14 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
             <div className="space-y-3">
               <div className="text-xs text-purple-200 bg-purple-500/10 border border-purple-500/30 rounded p-3">
                 🎲 Mystery Game: scan a slab cert#, single TCG ID, or sealed UPC — each is marked sold at the price you enter (blank ones split the bucket total below). Slabs sell in place; sealed deducts from the FROM location.
+              </div>
+              <div className="md:w-1/2" data-testid="mystery-room">
+                <label className="block text-sm font-medium text-gray-300 mb-2">Room this game is for / 哪个房间 *</label>
+                <select value={mysteryRoom} onChange={(e) => setMysteryRoom(e.target.value)} disabled={submitting} required
+                  className={!mysteryRoom ? 'border-red-500/50' : ''}>
+                  <option value="">Pick the room…</option>
+                  {MYSTERY_ROOMS.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+                </select>
               </div>
               <div data-testid="mystery-source">
                 <label className="block text-sm font-medium text-gray-300 mb-2">Singles come from / 单卡从哪出</label>
@@ -1119,14 +1147,14 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
               submitting || cart.length === 0
               || !movedById
               || (mysteryGame
-                ? (!mgPricelessFilled || (mgHasSealed && !fromLocationId))
+                ? (!mgPricelessFilled || !mysteryRoom || (mgHasSealed && !fromLocationId))
                 : (!fromLocationId || !toLocationId))
             }
           >
             {submitting
               ? <div className="spinner w-5 h-5 border-2"></div>
               : mysteryGame
-                ? <><Save size={20} /> 🎲 Mark {cart.length} item{cart.length === 1 ? '' : 's'} as sold</>
+                ? <><Save size={20} /> 🎲 Mark {cart.length} item{cart.length === 1 ? '' : 's'} as sold{mysteryRoom ? ` · ${MYSTERY_ROOMS.find(r => r.id === mysteryRoom)?.label}` : ''}</>
                 : <><Save size={20} /> Move {cart.length || ''} {cart.length === 1 ? 'Item' : 'Items'}</>
             }
           </button>
