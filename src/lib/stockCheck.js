@@ -6,6 +6,7 @@
 export const LABEL_ALIASES = {
   '85665': '716158',   // Genesect EX (Team Plasma) 11/101: Plasma Blast -> 30th Celebration Classic Collection
   '149080': '716193',  // Buzzwole GX 57/111: Crimson Invasion -> 30th Celebration Classic Collection
+  '9910015': '9910072', // Will 11/18: Japanese Sabo OP09-027 labelled 9910015 is the 3 Brothers Pack version (own id 9910072)
 }
 export const labelId = (raw) => {
   const id = String(raw ?? '').trim()
