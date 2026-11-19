@@ -116,6 +116,10 @@ export default function MovedInventory() {
   const [mysteryPricelessTotal, setMysteryPricelessTotal] = useState('')
   const [mysterySource, setMysterySource] = useState('mixed')
   const [mysteryRoom, setMysteryRoom] = useState('')    // required, no default: picked again every time the mode opens
+  // Gary 2026-11-19「盲盒出库选房间 以及batch名字」: every game also names its batch (BATCH 104, Juney Batch 2 ...),
+  // so a board / slab batch can be costed as one. Required like the room, cleared when the mode opens.
+  const [mysteryBatch, setMysteryBatch] = useState('')
+  const batchName = mysteryBatch.trim().replace(/\s+/g, ' ').slice(0, 60)
 
   // Mixed-kind cart.
   //   sealed: { kind:'sealed', key, product_id, product, inventory_row, quantity }
@@ -516,6 +520,7 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
     if (!movedById) { addToast('Pick who is running the game', 'error'); return }
     const room = MYSTERY_ROOMS.find(r => r.id === mysteryRoom)
     if (!room) { addToast('Pick which room this game is for', 'error'); return }
+    if (!batchName) { addToast('Type the batch name for this game', 'error'); return }
     const hasSealed = cart.some(c => c.kind === 'sealed')
     if (hasSealed && !fromLocationId) {
       addToast('Pick a FROM location — sealed packs deduct from a specific location', 'error')
@@ -553,13 +558,13 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
               sale_price_usd: price, sale_channel: 'in_person', sale_date: date,
               sale_fees_usd: null, buyer_name: null, sale_notes: 'Mystery Game',
               sold_by_id: movedById || null, transaction_id: transactionId, transaction_type: 'sale',
-              mystery_room: room.id,
+              mystery_room: room.id, mystery_batch: batchName,
             })
           } else if (item.kind === 'single' && item.pending) {
             const qty = Math.max(1, Math.floor(Number(item.quantity)) || 1)
             await bookMysteryPendingSingle({
               source: item.single, quantity: qty, unitPrice: price / qty, cashierId: movedById || null,
-              transactionId, saleDate: date, roomLabel: item.pending_where, mysteryRoom: room.id,
+              transactionId, saleDate: date, roomLabel: item.pending_where, mysteryRoom: room.id, mysteryBatch: batchName,
             })
           } else if (item.kind === 'single') {
             // singles.sale_price_usd is PER UNIT (SellSingleModal / POS split
@@ -571,7 +576,7 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
               sale_price_usd: price / qty, sale_channel: 'in_person', sale_date: date,
               sale_fees_usd: null, buyer_name: null, sale_notes: 'Mystery Game',
               sold_by_id: movedById || null, transaction_id: transactionId, transaction_type: 'sale',
-              mystery_room: room.id,
+              mystery_room: room.id, mystery_batch: batchName,
             })
           } else if (item.kind === 'sealed') {
             const qty = item.quantity
@@ -587,7 +592,7 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
               quantity: qty, sale_price: price, cost_basis: costBasis, profit: price - costBasis,
               payment_method_id: null, cashier_id: movedById || null,
               transaction_id: transactionId, transaction_type: 'sale', notes: 'Mystery Game',
-              mystery_room: room.id,
+              mystery_room: room.id, mystery_batch: batchName,
             })
             await updateInventory(item.product_id, loc, -qty)
           }
@@ -621,7 +626,7 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               type: 'move',
-              fromLocation: `🎲 Mystery Game · ${room.label}`,
+              fromLocation: `🎲 Mystery Game · ${room.label} · ${batchName}`,
               toLocation: `Sold (${sold.length} item${sold.length === 1 ? '' : 's'} · $${totalPaid.toFixed(2)})`,
               items: itemsForLark,
               totalUnits,
@@ -893,7 +898,7 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
               </button>
               <button
                 type="button"
-                onClick={() => { if (!mysteryGame) { setCart([]); setMysteryPricelessTotal(''); setMysteryRoom('') } setMysteryGame(true); setToLocationId(''); setFromLocationId('') }}
+                onClick={() => { if (!mysteryGame) { setCart([]); setMysteryPricelessTotal(''); setMysteryRoom(''); setMysteryBatch('') } setMysteryGame(true); setToLocationId(''); setFromLocationId('') }}
                 className={`px-3 py-1.5 text-sm rounded-md transition flex items-center gap-2 ${
                   mysteryGame
                     ? 'bg-purple-500/80 text-white font-semibold'
@@ -952,6 +957,12 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
                   <option value="">Pick the room…</option>
                   {MYSTERY_ROOMS.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
                 </select>
+              </div>
+              <div className="md:w-1/2" data-testid="mystery-batch">
+                <label className="block text-sm font-medium text-gray-300 mb-2">Batch name / 批次名 *</label>
+                <input type="text" value={mysteryBatch} onChange={(e) => setMysteryBatch(e.target.value)} disabled={submitting}
+                  required maxLength={60} placeholder="e.g. BATCH 104 or Juney Batch 2"
+                  className={!batchName ? 'border-red-500/50' : ''} />
               </div>
               <div data-testid="mystery-source">
                 <label className="block text-sm font-medium text-gray-300 mb-2">Singles come from / 单卡从哪出</label>
@@ -1147,14 +1158,14 @@ ${where} 账上没有这张。手上有这张卡吗？确定 = 照卖，记下�
               submitting || cart.length === 0
               || !movedById
               || (mysteryGame
-                ? (!mgPricelessFilled || !mysteryRoom || (mgHasSealed && !fromLocationId))
+                ? (!mgPricelessFilled || !mysteryRoom || !batchName || (mgHasSealed && !fromLocationId))
                 : (!fromLocationId || !toLocationId))
             }
           >
             {submitting
               ? <div className="spinner w-5 h-5 border-2"></div>
               : mysteryGame
-                ? <><Save size={20} /> 🎲 Mark {cart.length} item{cart.length === 1 ? '' : 's'} as sold{mysteryRoom ? ` · ${MYSTERY_ROOMS.find(r => r.id === mysteryRoom)?.label}` : ''}</>
+                ? <><Save size={20} /> 🎲 Mark {cart.length} item{cart.length === 1 ? '' : 's'} as sold{mysteryRoom ? ` · ${MYSTERY_ROOMS.find(r => r.id === mysteryRoom)?.label}` : ''}{batchName ? ` · ${batchName}` : ''}</>
                 : <><Save size={20} /> Move {cart.length || ''} {cart.length === 1 ? 'Item' : 'Items'}</>
             }
           </button>
