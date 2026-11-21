@@ -107,6 +107,28 @@ async function readLastMoves(rows, ledger) {
   return last
 }
 
+// Will 2026-11-20「2次没扫到的直接删 假如扫到了再加回去」: ids listed as not found in this room's last finished round and left unchanged.
+// Not found again now: they go to the number found without the box. Rows are never deleted: stock goes to 0.
+async function readLastMissed(locationId) {
+  const { data, error } = await supabase.from('stock_check_rounds').select('result').eq('location_id', locationId).eq('status', 'applied')
+    .order('finished_at', { ascending: false }).limit(1)
+  if (error) throw error
+  const lines = data?.[0]?.result?.lines || []
+  return new Set(lines.filter(l => l.group === 'needs the box ticked' && !String(l.outcome || '').startsWith('changed')).map(l => String(l.id)))
+}
+
+// Rows whose last logged change is a stock check taking them to 0: found again, they go back up without the box.
+async function readZeroedByCheck(rowIds) {
+  const out = new Set()
+  for (let i = 0; i < rowIds.length; i += 100) {
+    const data = await readAllPages(() => supabase.from('singles_audit_log').select('id, single_id, payload, acted_at').in('single_id', rowIds.slice(i, i + 100)).order('acted_at').order('id'))
+    const last = new Map()
+    for (const d of data) last.set(d.single_id, d)     // ordered by time: the last one wins
+    for (const [rowId, d] of last) if (d.payload?.stock_check && Number(d.payload.after) === 0) out.add(rowId)
+  }
+  return out
+}
+
 // Ids sold from this room in the last few days, or since the round began: their copy may still be here, or a scan may be older than the sale.
 async function readRecentlySold(locationId, roundStart) {
   const days = new Date(Date.now() - RECENT_SALE_DAYS * 86400000).toLocaleDateString('en-CA')
@@ -126,6 +148,7 @@ async function readRecentlySold(locationId, roundStart) {
 
 // Will 2026-11-20 (D-20261120-32): singles with a market under $2 are not listed online. Stock Check shows them in red;
 // after the zone is submitted the office takes them out and checks them out in Mystery Game. Display only: nothing here writes.
+// That checkout is a sale from this room, so a later submit or the finish sees a recent sale and does not add the copies back.
 const TAKE_OUT_UNDER = 2
 
 const cardName = (r) => [r.card_name, r.card_number, r.language === 'EN' ? '' : r.language].filter(Boolean).join(' ')
@@ -512,6 +535,15 @@ export default function StockCheck() {
       const names = new Map([...rows].map(([id, rs]) => [id, cardName(rs[0])]))
       for (const [id, e] of expected) if (!names.has(id)) names.set(id, e.name)
       const p = planZoneSubmit({ submit, scans, ledger, rows, names, recentlySold, movedIds, movedAt, finishing })
+      // Not found two rounds running: changed without the box. Taken to 0 by a stock check and scanned again: put back without the box.
+      const missedBefore = await readLastMissed(locationId)
+      const zeroedRows = await readZeroedByCheck(p.raised.filter(l => l.now === 0).map(l => l.rowId))
+      const autoZero = p.zeroed.filter(l => missedBefore.has(l.id))
+      const autoBack = p.raised.filter(l => l.now === 0 && zeroedRows.has(l.rowId))
+      p.zeroed = p.zeroed.filter(l => !autoZero.includes(l))
+      p.raised = p.raised.filter(l => !autoBack.includes(l))
+      p.auto = [...autoZero.map(l => ({ ...l, reason: 'not found last round either / 上一轮也没扫到' })), ...autoBack.map(l => ({ ...l, reason: 'set to 0 by a stock check, found again / 之前核对改成 0，又扫到了' }))]
+      p.auto.forEach(l => p.holdUnlessTicked.delete(l.id))
       if (p.extras.length) {
         const ids = p.extras.map(e => e.id)
         const found = {}
@@ -542,9 +574,9 @@ export default function StockCheck() {
     }
   }
 
-  const share = plan ? loweredShare(plan, includeZeroed) : 0
+  const share = plan ? loweredShare({ ...plan, fixes: [...plan.fixes, ...plan.auto] }, includeZeroed) : 0
   const blocked = share > MAX_LOWERED_SHARE
-  const planLines = plan ? [...plan.fixes, ...(includeZeroed ? plan.zeroed : []), ...(includeRaised ? plan.raised : [])] : []
+  const planLines = plan ? [...plan.fixes, ...plan.auto, ...(includeZeroed ? plan.zeroed : []), ...(includeRaised ? plan.raised : [])] : []
 
   const resultLines = (outcomes) => {
     if (!plan) return []
@@ -552,6 +584,7 @@ export default function StockCheck() {
     const line = (group, l, outcome) => ({ group, ...l, zones: zones(l.id), outcome, rowId: undefined, rowQty: undefined })
     return [
       ...plan.fixes.map(l => line('difference', l, outcomes?.[l.id] || 'not changed')),
+      ...plan.auto.map(l => line(l.to < l.now ? 'not found twice' : 'found again after 0', l, outcomes?.[l.id] || 'not changed')),
       ...plan.zeroed.map(l => line('needs the box ticked', l, outcomes?.[l.id] || 'not changed')),
       ...plan.raised.map(l => line('counted more, needs the box ticked', l, outcomes?.[l.id] || 'not changed')),
       ...plan.people.map(l => line('needs a person', { ...l, name: l.name }, l.reason)),
@@ -670,8 +703,8 @@ export default function StockCheck() {
                 <button type="button" onClick={() => downloadTakeOut(takeOut, nameOf, locationName)} disabled={unpriced > 0 || !takeOut.length} className="disabled:opacity-40 text-xs px-2 py-1 text-gray-300 border border-vault-border rounded whitespace-nowrap">Download list / 下载清单</button>
               </div>
               <p className="text-xs text-gray-400 mb-2">
-                Finish the round first, then take these out and check them out in Mystery Game. Taken out earlier, the finish counts them again.
-                <br />先结束整轮，再把这些拿出来走 Mystery Game 出库。提前拿走，结束整轮时会再算一遍。
+                Submit the zone first, then take these out and check them out in Mystery Game.
+                <br />先提交小区，再把这些拿出来走 Mystery Game 出库。
               </p>
               {unpriced > 0 && (
                 <p className="text-xs text-amber-300 mb-2">
@@ -823,7 +856,7 @@ export default function StockCheck() {
                     </span>
                     {cheap(lastScanId) && (
                       <span data-testid="last-scan-cheap" className="w-full text-red-300 font-semibold">
-                        Market ${market[lastScanId].toFixed(2)}, under ${TAKE_OUT_UNDER}: keep scanning it here, take it out after the round is finished (Mystery Game). / 市价不到 ${TAKE_OUT_UNDER}，照常扫，整轮结束后拿出来走 Mystery Game 出库
+                        Market ${market[lastScanId].toFixed(2)}, under ${TAKE_OUT_UNDER}: keep scanning it here, take it out after the zone is submitted (Mystery Game). / 市价不到 ${TAKE_OUT_UNDER}，照常扫，提交小区后拿出来走 Mystery Game 出库
                       </span>
                     )}
                   </div>
@@ -893,6 +926,9 @@ export default function StockCheck() {
             {plan.same} cards no change. {plan.soldOk} fewer than last time, explained by sales or moves. {plan.filled} found where the app already counted them.
           </p>
           <PlanTable title={`Will change to your number: ${plan.fixes.length}`} tone="text-vault-gold" lines={plan.fixes} nameOf={nameOf} />
+          {plan.auto.length > 0 && (
+            <PlanTable title={`Will change without a tick: ${plan.auto.length} (not found two rounds running → found number; set to 0 before and found again → put back) / 不用打勾直接改`} tone="text-vault-gold" lines={plan.auto} nameOf={nameOf} showReason />
+          )}
           {plan.zeroed.length > 0 && (
             <>
               <PlanTable title={`Not found: ${plan.zeroed.length} cards, ${plan.zeroed.reduce((s, l) => s + (l.now - l.to), 0)} copies`} tone="text-red-300" lines={plan.zeroed} nameOf={nameOf} />
