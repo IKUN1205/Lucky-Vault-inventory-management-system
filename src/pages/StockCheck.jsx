@@ -124,7 +124,23 @@ async function readRecentlySold(locationId, roundStart) {
   return new Set(data.map(r => String(r.tcg_id).trim()))
 }
 
+// Will 2026-11-20 (D-20261120-32): singles with a market under $2 are not listed online. Stock Check shows them in red;
+// after the zone is submitted the office takes them out and checks them out in Mystery Game. Display only: nothing here writes.
+const TAKE_OUT_UNDER = 2
+
 const cardName = (r) => [r.card_name, r.card_number, r.language === 'EN' ? '' : r.language].filter(Boolean).join(' ')
+
+// The take-out list as a file: zone, id, card, market, copies.
+function downloadTakeOut(list, nameOf, locationName) {
+  const rows = [['zone', 'id', 'card', 'market', 'copies'], ...list.map(l => [zoneLabel(l.zone), l.id, nameOf(l.id), l.m.toFixed(2), l.qty])]
+  const text = '\ufeff' + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n')
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `take-out-under-${TAKE_OUT_UNDER}_${(locationName || 'room').replace(/[^\w-]+/g, '-')}_${new Date().toLocaleDateString('en-CA')}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 function downloadCsv(lines, locationName) {
   const url = URL.createObjectURL(new Blob([resultCsv(lines)], { type: 'text/csv;charset=utf-8' }))
@@ -149,6 +165,9 @@ export default function StockCheck() {
   const [scanInput, setScanInput] = useState('')
   const [lastScanId, setLastScanId] = useState(null)
   const [extraNames, setExtraNames] = useState({})    // id -> name of a scanned id outside the snapshot
+  const [market, setMarket] = useState({})            // id -> market price of its live rows (highest), null = none; for the take-out list
+  const marketAsked = useRef(new Set())
+  const marketGen = useRef(0)       // a new room or round starts a new generation: older reads are dropped
   const [saveFailed, setSaveFailed] = useState(false)
   const [plan, setPlan] = useState(null)
   const [planning, setPlanning] = useState(false)
@@ -247,6 +266,7 @@ export default function StockCheck() {
     scanVersion.current++
     setSaveFailed(false)
     setRound(null); setScans(new Map()); setZoneHeld(new Map()); setZone(null); setPlan(null); setApplyResult(null); setLastRound(null); setLastScanId(null)
+    marketGen.current++; marketAsked.current = new Set(); setMarket({})
     if (!id) { setLoading(false); return }
     setLoading(true)
     try {
@@ -291,6 +311,7 @@ export default function StockCheck() {
         .select('*').single()
       if (error) throw error
       setRound(data); setScans(new Map()); setLastRound(null)
+      marketGen.current++; marketAsked.current = new Set(); setMarket({})
       addToast(`Round started: ${snapshot.length} cards in the app here`, 'success')
     } catch (err) {
       addToast(`Could not start the round: ${err.message}`, 'error')
@@ -330,6 +351,46 @@ export default function StockCheck() {
   const zonesDone = useMemo(() => new Set(round?.zones_done || []), [round])
 
   const nameOf = (id) => expected.get(id)?.name || extraNames[id] || ''
+
+  // Market price of every scanned id, read once per id. A read that fails is asked again on the next scan.
+  useEffect(() => {
+    const ids = [...totals.keys()].filter(id => !marketAsked.current.has(id))
+    if (!ids.length) return
+    ids.forEach(id => marketAsked.current.add(id))
+    const gen = marketGen.current
+    ;(async () => {
+      for (let i = 0; i < ids.length; i += 100) {
+        const part = ids.slice(i, i + 100)
+        let data
+        try {
+          data = await readAllPages(() => supabase.from('singles').select('id, tcg_id, current_market_price_usd')
+            .in('tcg_id', part).eq('deleted', false).neq('status', 'sold').order('id'))
+        } catch {
+          if (gen === marketGen.current) part.forEach(id => marketAsked.current.delete(id))
+          continue
+        }
+        if (gen !== marketGen.current) return
+        const got = Object.fromEntries(part.map(id => [id, null]))
+        for (const r of data || []) {
+          const m = Number(r.current_market_price_usd)
+          const id = String(r.tcg_id).trim()
+          if (m > 0 && (got[id] === null || m > got[id])) got[id] = m
+        }
+        setMarket(prev => ({ ...prev, ...got }))
+      }
+    })()
+  }, [totals])
+  const cheap = (id) => market[id] != null && market[id] < TAKE_OUT_UNDER
+  // Every scanned copy under $2 in this round, zone by zone in grid order.
+  const takeOut = useMemo(() => {
+    const out = []
+    for (const [k, q] of scans) {
+      const [z, id] = k.split('|')
+      if (q > 0 && market[id] != null && market[id] < TAKE_OUT_UNDER) out.push({ zone: z, id, qty: q, m: market[id] })
+    }
+    const at = (z) => { const i = ZONES.indexOf(z); return i < 0 ? 9999 : i }
+    return out.sort((a, b) => at(a.zone) - at(b.zone) || a.id.localeCompare(b.id))
+  }, [scans, market])
 
   // ─── Scanning ───────────────────────────────────────────────────────
   const changeScan = (z, id, delta) => {
@@ -599,6 +660,29 @@ export default function StockCheck() {
 
   // ─── Render ─────────────────────────────────────────────────────────
   const closed = round?.status === 'applied'
+  const takeOutPanel = takeOut.length > 0 && (
+            <div data-testid="take-out" className="mb-4 p-3 rounded border border-red-500/40 bg-red-500/5 text-sm">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className="font-semibold text-red-300">Take out: market under ${TAKE_OUT_UNDER} ({takeOut.reduce((s, l) => s + l.qty, 0)} cards) / 拿出来：市价不到 ${TAKE_OUT_UNDER}</span>
+                <button type="button" onClick={() => downloadTakeOut(takeOut, nameOf, locationName)} className="text-xs px-2 py-1 text-gray-300 border border-vault-border rounded whitespace-nowrap">Download list / 下载清单</button>
+              </div>
+              <p className="text-xs text-gray-400 mb-2">
+                Submit the zone first, then take these out and check them out in Mystery Game. The other way round, the submit puts them back in stock.
+                <br />先提交小区，再把这些拿出来走 Mystery Game 出库。顺序反了，提交时会把它们加回库存。
+              </p>
+              <div className="max-h-64 overflow-y-auto text-xs">
+                {takeOut.map(l => (
+                  <div key={`${l.zone}|${l.id}`} className="flex items-center gap-2 py-0.5">
+                    <span className="w-16 font-semibold text-vault-gold">{zoneLabel(l.zone)}</span>
+                    <span className="font-mono text-gray-400">{l.id}</span>
+                    <span className="flex-1 min-w-0 truncate text-gray-300">{nameOf(l.id)}</span>
+                    <span className="text-gray-400 whitespace-nowrap">${l.m.toFixed(2)}</span>
+                    <span className="text-white whitespace-nowrap">×{l.qty}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+  )
   const zoneLines = zone ? [...scans].filter(([k, q]) => q > 0 && k.startsWith(`${zone}|`)).map(([k, q]) => ({ id: k.split('|')[1], qty: q })) : []
 
   return (
@@ -727,6 +811,11 @@ export default function StockCheck() {
                     <span className="whitespace-nowrap">
                       {e ? `${total} of ${e.qty}${total > e.qty ? ' · more than app has' : ''}` : `not in this room's stock when the round started · ×${total}`}
                     </span>
+                    {cheap(lastScanId) && (
+                      <span data-testid="last-scan-cheap" className="w-full text-red-300 font-semibold">
+                        Market ${market[lastScanId].toFixed(2)}, under ${TAKE_OUT_UNDER}: keep scanning it here, take it out after the zone is submitted (Mystery Game). / 市价不到 ${TAKE_OUT_UNDER}，照常扫，提交小区后拿出来走 Mystery Game 出库
+                      </span>
+                    )}
                   </div>
                 )
               })()}
@@ -744,6 +833,7 @@ export default function StockCheck() {
                   <div key={id} className="flex items-center justify-between gap-2 py-0.5">
                     <span className="font-mono text-gray-400">{id}</span>
                     <span className="flex-1 min-w-0 truncate text-gray-300">{nameOf(id)}</span>
+                    {cheap(id) && <span className="text-red-300 font-semibold whitespace-nowrap">${market[id].toFixed(2)} · take out / 拿出</span>}
                     <span className="text-white whitespace-nowrap">×{qty}</span>
                     <button
                       type="button"
@@ -764,6 +854,8 @@ export default function StockCheck() {
               </div>
             </div>
           )}
+
+          {takeOutPanel}
 
           <div className="flex flex-wrap justify-end gap-2 mb-4">
             <button type="button" onClick={cancelRound} className="text-xs px-3 py-1.5 text-gray-400 hover:text-red-400 border border-vault-border rounded">
@@ -859,6 +951,7 @@ export default function StockCheck() {
           )}
           {applyResult.submitted?.length > 0 && <p className="text-sm text-gray-300 mb-2">Zones saved: {applyResult.submitted.map(zoneLabel).join(', ')}. Other zones were not touched. / 已保存这些小区，其他小区没动。</p>}
           <button type="button" onClick={() => downloadCsv(applyResult.lines, locationName)} className="text-xs px-3 py-1.5 text-gray-300 border border-vault-border rounded">Download CSV</button>
+          {closed && takeOutPanel && <div className="mt-3">{takeOutPanel}</div>}
           {closed && (
             <button type="button" onClick={() => loadRoom(locationId)} className="ml-2 text-xs px-3 py-1.5 text-gray-300 border border-vault-border rounded">Back to the room</button>
           )}
