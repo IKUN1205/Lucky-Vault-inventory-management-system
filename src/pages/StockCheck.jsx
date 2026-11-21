@@ -167,6 +167,7 @@ export default function StockCheck() {
   const [extraNames, setExtraNames] = useState({})    // id -> name of a scanned id outside the snapshot
   const [market, setMarket] = useState({})            // id -> market price of its live rows (highest), null = none; for the take-out list
   const marketAsked = useRef(new Set())
+  const [marketTry, setMarketTry] = useState(0)   // "read again" for prices that failed
   const marketGen = useRef(0)       // a new room or round starts a new generation: older reads are dropped
   const [saveFailed, setSaveFailed] = useState(false)
   const [plan, setPlan] = useState(null)
@@ -379,7 +380,9 @@ export default function StockCheck() {
         setMarket(prev => ({ ...prev, ...got }))
       }
     })()
-  }, [totals])
+  }, [totals, marketTry])
+  // Scanned ids whose price is not read yet (still reading, or the read failed): the list is not complete until this is 0.
+  const unpriced = [...totals.keys()].filter(id => market[id] === undefined).length
   const cheap = (id) => market[id] != null && market[id] < TAKE_OUT_UNDER
   // Every scanned copy under $2 in this round, zone by zone in grid order.
   const takeOut = useMemo(() => {
@@ -642,7 +645,7 @@ export default function StockCheck() {
       setApplyResult({ ...summary, lines, submitted: plan.submit })
       if (plan.finishing && skipped === 0 && failed === 0) {
         const { error } = await supabase.from('stock_check_rounds')
-          .update({ status: 'applied', finished_at: new Date().toISOString(), finished_by_id: user?.id || null, result: { ...summary, lines } })
+          .update({ status: 'applied', finished_at: new Date().toISOString(), finished_by_id: user?.id || null, result: { ...summary, lines, takeOut } })
           .eq('id', round.id)
         if (error) addToast(`Stock changed, but the round could not be closed: ${error.message}`, 'error')
         else setRound(r => ({ ...r, status: 'applied' }))
@@ -660,16 +663,23 @@ export default function StockCheck() {
 
   // ─── Render ─────────────────────────────────────────────────────────
   const closed = round?.status === 'applied'
-  const takeOutPanel = takeOut.length > 0 && (
+  const takeOutPanel = (takeOut.length > 0 || unpriced > 0 || closed) && totals.size > 0 && (
             <div data-testid="take-out" className="mb-4 p-3 rounded border border-red-500/40 bg-red-500/5 text-sm">
               <div className="flex items-center justify-between gap-2 mb-1">
                 <span className="font-semibold text-red-300">Take out: market under ${TAKE_OUT_UNDER} ({takeOut.reduce((s, l) => s + l.qty, 0)} cards) / 拿出来：市价不到 ${TAKE_OUT_UNDER}</span>
-                <button type="button" onClick={() => downloadTakeOut(takeOut, nameOf, locationName)} className="text-xs px-2 py-1 text-gray-300 border border-vault-border rounded whitespace-nowrap">Download list / 下载清单</button>
+                <button type="button" onClick={() => downloadTakeOut(takeOut, nameOf, locationName)} disabled={unpriced > 0 || !takeOut.length} className="disabled:opacity-40 text-xs px-2 py-1 text-gray-300 border border-vault-border rounded whitespace-nowrap">Download list / 下载清单</button>
               </div>
               <p className="text-xs text-gray-400 mb-2">
-                Submit the zone first, then take these out and check them out in Mystery Game. The other way round, the submit puts them back in stock.
-                <br />先提交小区，再把这些拿出来走 Mystery Game 出库。顺序反了，提交时会把它们加回库存。
+                Finish the round first, then take these out and check them out in Mystery Game. Taken out earlier, the finish counts them again.
+                <br />先结束整轮，再把这些拿出来走 Mystery Game 出库。提前拿走，结束整轮时会再算一遍。
               </p>
+              {unpriced > 0 && (
+                <p className="text-xs text-amber-300 mb-2">
+                  Prices not read yet for {unpriced} cards: this list may be missing some. / 还有 {unpriced} 张没读到市价，清单可能不全
+                  <button type="button" onClick={() => setMarketTry(t => t + 1)} className="ml-2 px-2 py-0.5 border border-vault-border rounded text-gray-300">Read again / 再读</button>
+                </p>
+              )}
+              {takeOut.length === 0 && unpriced === 0 && <p className="text-xs text-gray-300">None under ${TAKE_OUT_UNDER}. / 没有低于 ${TAKE_OUT_UNDER} 的</p>}
               <div className="max-h-64 overflow-y-auto text-xs">
                 {takeOut.map(l => (
                   <div key={`${l.zone}|${l.id}`} className="flex items-center gap-2 py-0.5">
@@ -813,7 +823,7 @@ export default function StockCheck() {
                     </span>
                     {cheap(lastScanId) && (
                       <span data-testid="last-scan-cheap" className="w-full text-red-300 font-semibold">
-                        Market ${market[lastScanId].toFixed(2)}, under ${TAKE_OUT_UNDER}: keep scanning it here, take it out after the zone is submitted (Mystery Game). / 市价不到 ${TAKE_OUT_UNDER}，照常扫，提交小区后拿出来走 Mystery Game 出库
+                        Market ${market[lastScanId].toFixed(2)}, under ${TAKE_OUT_UNDER}: keep scanning it here, take it out after the round is finished (Mystery Game). / 市价不到 ${TAKE_OUT_UNDER}，照常扫，整轮结束后拿出来走 Mystery Game 出库
                       </span>
                     )}
                   </div>
