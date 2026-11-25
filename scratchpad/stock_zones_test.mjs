@@ -6,18 +6,19 @@ let pass = 0, fail = 0
 const ok = (name, cond, extra = '') => { if (cond) pass++; else { fail++; console.log('FAIL', name, extra) } }
 
 const re = new RegExp(ZONE_PATTERN)
-ok('90 small zones', ZONES.length === 90, ZONES.length)
+ok('95 small zones', ZONES.length === 95, ZONES.length)
 ok('no zone twice', new Set(ZONES).size === ZONES.length)
 ok('the 50 Pokemon zones first, unchanged', ZONES.slice(0, 50).join() === 'ABCDEFGHIJ'.split('').flatMap(l => [1, 2, 3, 4, 5].map(n => l + n)).join())
 ok('Dragon Ball 1-5', ['DB1', 'DB2', 'DB3', 'DB4', 'DB5'].every(z => ZONES.includes(z)))
-for (const c of ['BLU', 'PUR', 'RED', 'GRN', 'YEL', 'BLK', 'LD']) ok(`One Piece ${c} 1-5`, [1, 2, 3, 4, 5].every(n => ZONES.includes(c + n)))
+for (const c of ['BLU', 'PUR', 'RED', 'GRN', 'YEL', 'BLK', 'LD', 'JPOP']) ok(`One Piece ${c} 1-5`, [1, 2, 3, 4, 5].every(n => ZONES.includes(c + n)))
 ok('every zone passes the pattern', [...ZONES, UNSORTED, STORE_ZONE].every(z => re.test(z)), [...ZONES].filter(z => !re.test(z)).join())
 // the pattern lets in nothing the page does not have
 const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
 const tries = [...letters.flatMap(a => [0, 1, 5, 6].map(n => a + n)), ...letters.flatMap(a => letters.flatMap(b => [0, 1, 5, 6].map(n => a + b + n))),
   ...['BLU', 'PUR', 'RED', 'GRN', 'YEL', 'BLK', 'BLUE', 'LDR', 'DON', 'OP', 'DBS'].flatMap(c => [0, 1, 5, 6, 11].map(n => c + n)), 'unsorted', 'store', 'Unsorted ', ' A1', 'A1 ', 'A11', 'DB1\n', '']
 ok('the pattern lets in only the page zones', tries.filter(t => re.test(t)).every(t => ZONES.includes(t)), tries.filter(t => re.test(t) && !ZONES.includes(t)).join())
-for (const f of ['scripts/stock_zones_games_migration.sql', 'scripts/create_stock_check_tables.sql']) {
+// 11/24: the newest migration carries the live pattern; the older files hold the patterns they set at their time.
+for (const f of ['scripts/stock_zones_jpop_migration.sql']) {
   const found = [...readFileSync(new URL('../' + f, import.meta.url), 'utf8').matchAll(/zone ~ '([^']+)'/g)].map(m => m[1])
   ok(`${f} has the pattern twice`, found.length === 2 && found.every(p => p === ZONE_PATTERN), found.join(' | '))
 }
@@ -44,6 +45,8 @@ ok('label: Blue 1', zoneLabel('BLU1') === 'Blue 1')
 ok('label: Dragon Ball 5', zoneLabel('DB5') === 'Dragon Ball 5')
 ok('label: Purple / Red / Green / Yellow / Black', ['PUR2', 'RED3', 'GRN4', 'YEL5', 'BLK1'].map(zoneLabel).join(',') === 'Purple 2,Red 3,Green 4,Yellow 5,Black 1')
 ok('label: Leader + DON!! 3', zoneLabel('LD3') === 'Leader + DON!! 3')
+ok('label: JP One Piece 2', zoneLabel('JPOP2') === 'JP One Piece 2')
+ok('JPOP0 / JPOP6 / JPO1 refused', !['JPOP0', 'JPOP6', 'JPO1', 'JP1'].some(z => new RegExp(ZONE_PATTERN).test(z)))
 ok('label: Pokemon zones as they are', zoneLabel('A1') === 'A1' && zoneLabel('J5') === 'J5')
 ok('label: big zones', zoneLabel(UNSORTED).startsWith('Unsorted') && zoneLabel(STORE_ZONE).startsWith('Store'))
 ok('every zone has a label, all different', new Set(ZONES.map(zoneLabel)).size === ZONES.length && ZONES.every(z => zoneLabel(z)))

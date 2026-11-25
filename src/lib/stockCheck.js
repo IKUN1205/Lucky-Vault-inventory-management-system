@@ -17,7 +17,8 @@ export const ZONE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']
 const five = (code) => [1, 2, 3, 4, 5].map(n => `${code}${n}`)
 // Will 11/11 (Gary's permissions): Dragon Ball 1-5; One Piece by its six colours, 1-5 each; one more for One Piece leaders and DON!!, 1-5.
 // The codes are short because the packing slip prints them (lv-finance/single_slip.py). A row is one line of five on the page.
-export const ONE_PIECE_ROWS = [['BLU', 'Blue / 蓝'], ['PUR', 'Purple / 紫'], ['RED', 'Red / 红'], ['GRN', 'Green / 绿'], ['YEL', 'Yellow / 黄'], ['BLK', 'Black / 黑'], ['LD', 'Leader + DON!!']]
+export const ONE_PIECE_ROWS = [['BLU', 'Blue / 蓝'], ['PUR', 'Purple / 紫'], ['RED', 'Red / 红'], ['GRN', 'Green / 绿'], ['YEL', 'Yellow / 黄'], ['BLK', 'Black / 黑'], ['LD', 'Leader + DON!!'], ['JPOP', 'Japanese / 日文']]
+// Will 11/24: one more row for Japanese One Piece, 1-5 (JPOP1-JPOP5); the packing slip prints it as JP OP.
 export const ZONE_GROUPS = [
   { name: 'Pokemon / 宝可梦', rows: ZONE_LETTERS.map(l => ({ zones: five(l) })) },
   { name: 'Dragon Ball / 龙珠', rows: [{ zones: five('DB') }] },
@@ -26,7 +27,7 @@ export const ZONE_GROUPS = [
 export const ZONES = ZONE_GROUPS.flatMap(g => g.rows.flatMap(r => r.zones))
 // Will 11/12: on the page a zone is written out (Blue 1, Dragon Ball 1). Only what is shown: the code stays the key in the
 // database and what the packing slip prints.
-const ZONE_WORDS = { DB: 'Dragon Ball', BLU: 'Blue', PUR: 'Purple', RED: 'Red', GRN: 'Green', YEL: 'Yellow', BLK: 'Black', LD: 'Leader + DON!!' }
+const ZONE_WORDS = { DB: 'Dragon Ball', BLU: 'Blue', PUR: 'Purple', RED: 'Red', GRN: 'Green', YEL: 'Yellow', BLK: 'Black', LD: 'Leader + DON!!', JPOP: 'JP One Piece' }
 export function zoneLabel(z) {
   if (z === UNSORTED) return 'Unsorted / 未分区'
   if (z === STORE_ZONE) return 'Store / 门店'
@@ -40,7 +41,7 @@ export function zoneState({ done, scanned, held }) {
   return (scanned || 0) > 0 || (held || 0) > 0 ? 'todo' : 'empty'
 }
 // The same names the database lets in: stock_check_scans.zone and stock_zone_qty.zone (scripts/stock_zones_games_migration.sql).
-export const ZONE_PATTERN = '^([A-J][1-5]|DB[1-5]|(BLU|PUR|RED|GRN|YEL|BLK|LD)[1-5]|Unsorted|Store)$'
+export const ZONE_PATTERN = '^([A-J][1-5]|DB[1-5]|(BLU|PUR|RED|GRN|YEL|BLK|LD|JPOP)[1-5]|Unsorted|Store)$'
 // The games John checks. Gary 11/04 set Pokemon only; Will 11/11 added the two games that got zones.
 export const STOCK_BRANDS = ['Pokemon', 'One Piece', 'Dragon Ball Fusion World']
 export const UNSORTED = 'Unsorted'        // Gary 11/05: Inventory has one big zone for cards not in a small zone yet
