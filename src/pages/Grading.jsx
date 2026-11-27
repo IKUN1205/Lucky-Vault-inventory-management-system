@@ -5,6 +5,7 @@ import { useAuth } from '../lib/AuthContext'
 import { ToastContainer, useToast } from '../components/Toast'
 import { labelId } from '../lib/stockCheck'
 import { DECISION_LABEL, REASON_LABEL, batchSummary, planScan, variantLabel } from '../lib/grading'
+import { PutAway } from './StockCheck'
 
 // Will 2026-11-26 (D-20261126-02): a Roca batch with labels goes to Kevin. When he is done, every label is scanned here as
 // Grading (he keeps it) or Stock (goes into TCGplayer Singles, zone Unsorted). This page only records; the stock cards are put
@@ -40,6 +41,7 @@ export default function Grading() {
   const [choose, setChoose] = useState(null)     // { id, options, decision, resolve }
   const [last, setLast] = useState([])           // this screen's scans, newest first: { seq?, extraId?, id, decision, name, failed? }
   const [filter, setFilter] = useState('all')
+  const [tab, setTab] = useState('scan')            // Will 11/26: 'scan' a batch, or 'zones' = Unsorted -> each zone (was Put Away on Stock Check)
   const [finishing, setFinishing] = useState(false)   // Codex 11/26: no new scans once Finish is confirmed
   const inputRef = useRef(null)
   // Codex 11/26: scans are queued and saved one after another from these refs, so a slow save never drops the next scan and a
@@ -223,6 +225,17 @@ export default function Grading() {
         </p>
       </div>
 
+      <div className="flex gap-2">
+        {[['scan', 'Scan batch / 扫批次'], ['zones', 'Unsorted → zones / 放分区']].map(([k, l]) => (
+          <button key={k} type="button" onClick={() => setTab(k)} disabled={k === 'zones' && (pending > 0 || !!choose)}
+            className={`px-4 py-2 rounded font-semibold ${tab === k ? 'bg-vault-gold text-black' : 'bg-vault-dark text-gray-300 border border-gray-600'}`}>{l}</button>
+        ))}
+      </div>
+
+      {/* Codex 11/26: kept mounted while hidden, so its queued writes, prompts and Undo survive a tab switch */}
+      <div className={tab === 'zones' ? '' : 'hidden'}><PutAway addToast={addToast} user={user} /></div>
+
+      {tab === 'scan' && (<>
       <div className="card p-4 flex flex-wrap items-end gap-4">
         <label className="flex flex-col text-sm text-gray-300">
           Batch / 批次
@@ -359,6 +372,7 @@ export default function Grading() {
           })}
         </div>
       )}
+      </>)}
     </div>
   )
 }

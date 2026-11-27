@@ -743,7 +743,6 @@ export default function StockCheck() {
 
       <StockPendingSales addToast={addToast} user={user} />
       <FindCard addToast={addToast} user={user} />
-      <PutAway addToast={addToast} user={user} />
       <MoveToStore user={user} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -1091,7 +1090,8 @@ const changeZoneQty = (zone, id, delta, userId) => changeZoneQtyAt(INVENTORY_ROO
 // A copy recorded in Unsorted comes out of Unsorted. A copy with no room in the books waits for a person on the page: a pop-up would
 // take the Enter of the next scan as its answer.
 
-function PutAway({ addToast, user }) {
+// Will 11/26 (D-20261126-04): shown on the Grading page now, not here; new cards go Unsorted -> zones from there.
+export function PutAway({ addToast, user }) {
   const [zone, setZone] = useState('')
   const [code, setCode] = useState('')
   const [held, setHeld] = useState(null)      // copies recorded in the chosen zone
