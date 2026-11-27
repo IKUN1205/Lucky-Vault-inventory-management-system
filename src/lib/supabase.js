@@ -2157,7 +2157,7 @@ const _storeSaleZone = async (row, qty, userId) => {
     if (open?.length) return
     const order = front ? [STORE_ZONE] : [...ZONES, UNSORTED]
     let left = qty
-    for (let pass = 0; pass < 3 && left > 0; pass++) {   // another sale took from a zone meanwhile: read again and go on (Codex 11/26)
+    for (let pass = 0; pass < 6 && left > 0; pass++) {   // another sale took from a zone meanwhile: read again and go on (Codex 11/26)
       const { data: held, error } = await supabase.from('stock_zone_qty').select('zone, qty')
         .eq('location_id', row.location_id).eq('tcg_id', row.tcg_id)
       if (error) throw error
