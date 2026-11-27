@@ -2143,23 +2143,30 @@ export const markSingleAsSold = async (id, saleData) => {
 }
 
 // Will 2026-11-16「门店卖卡要改分区记录 但是stock check是double check」: a sale out of the Front Store takes its copies off the store's zone
-// record too. The store has one zone (STORE_ZONE), so there is no zone to choose. Not for the back rooms: which zone a sold copy left from there
-// is still open. While a count of the store is open nothing changes here: that count decides. Never fails the sale: the next scan corrects it.
+// record too. Will 2026-11-26 (T1113-07, option 2「少卖比超售好多了」): a sale out of Inventory does too, from the front zone the same way
+// as a move (small zones in order, then Unsorted); which zone the copy really left is not known, the next count corrects it.
+// While a count of that room is open nothing changes here: that count decides. Never fails the sale: the next scan corrects it.
 const _storeSaleZone = async (row, qty, userId) => {
   try {
     if (!row?.tcg_id || !(qty > 0) || row.form === 'graded' || !STOCK_BRANDS.includes(row.brand)) return
-    if (row.location_id !== await getFrontStoreLocationId()) return
+    const front = row.location_id === await getFrontStoreLocationId()
+    if (!front && row.location_id !== SINGLES_INVENTORY_ROOM_ID) return
     const { data: open, error: openErr } = await supabase.from('stock_check_rounds').select('id')
       .eq('location_id', row.location_id).eq('status', 'open').limit(1)
     if (openErr) throw openErr
     if (open?.length) return
-    const { data: cur, error } = await supabase.from('stock_zone_qty').select('qty')
-      .eq('location_id', row.location_id).eq('zone', STORE_ZONE).eq('tcg_id', row.tcg_id).maybeSingle()
+    const { data: held, error } = await supabase.from('stock_zone_qty').select('zone, qty')
+      .eq('location_id', row.location_id).eq('tcg_id', row.tcg_id)
     if (error) throw error
-    const take = Math.min(qty, cur?.qty || 0)
-    if (take > 0) await changeZoneQtyAt(row.location_id, STORE_ZONE, row.tcg_id, -take, userId)
+    const order = front ? [STORE_ZONE] : [...ZONES, UNSORTED]
+    let left = qty
+    for (const h of (held || []).filter(h => order.includes(h.zone)).sort((x, y) => order.indexOf(x.zone) - order.indexOf(y.zone))) {
+      const take = Math.min(left, Number(h.qty) || 0)
+      if (take > 0) { await changeZoneQtyAt(row.location_id, h.zone, row.tcg_id, -take, userId); left -= take }
+      if (left <= 0) break
+    }
   } catch (err) {
-    console.warn('[store-sale-zone] zone not updated, the next scan corrects it:', err)
+    console.warn('[sale-zone] zone not updated, the next scan corrects it:', err)
   }
 }
 
@@ -5402,6 +5409,7 @@ export const resolveStockPending = async (row, action, inventoryLocationId, user
     payload: { stock_pending_sale: row.id, before: Number(inv.quantity), after },
     acted_by_id: user?.id || null,
   })
+  void _storeSaleZone(inv, n, user?.id)   // the copy left Inventory: its zone record follows (Will 11/26), not awaited
   // Now we know which copy it was, so the sale carries its cost.
   const { error: costErr } = await supabase.from('singles').update({
     acquisition_cost_usd: inv.acquisition_cost_usd,
