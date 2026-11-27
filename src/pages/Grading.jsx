@@ -233,7 +233,7 @@ export default function Grading() {
       </div>
 
       {/* Codex 11/26: kept mounted while hidden, so its queued writes, prompts and Undo survive a tab switch */}
-      <div className={tab === 'zones' ? '' : 'hidden'}><PutAway addToast={addToast} user={user} /></div>
+      <div className={tab === 'zones' ? '' : 'hidden'}><PutAway addToast={addToast} user={user} source="unsorted" /></div>
 
       {tab === 'scan' && (<>
       <div className="card p-4 flex flex-wrap items-end gap-4">

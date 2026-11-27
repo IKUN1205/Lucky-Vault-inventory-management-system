@@ -743,6 +743,7 @@ export default function StockCheck() {
 
       <StockPendingSales addToast={addToast} user={user} />
       <FindCard addToast={addToast} user={user} />
+      <PutAway addToast={addToast} user={user} source="unknown" />
       <MoveToStore user={user} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -1090,8 +1091,9 @@ const changeZoneQty = (zone, id, delta, userId) => changeZoneQtyAt(INVENTORY_ROO
 // A copy recorded in Unsorted comes out of Unsorted. A copy with no room in the books waits for a person on the page: a pop-up would
 // take the Enter of the next scan as its answer.
 
-// Will 11/26 (D-20261126-04): shown on the Grading page now, not here; new cards go Unsorted -> zones from there.
-export function PutAway({ addToast, user }) {
+// Will 11/26 (D-20261126-04): two places. Stock Check: source 'unknown' = a copy not recorded in Unsorted. Grading page: source
+// 'unsorted' = a copy recorded in Unsorted goes into a zone. Each refuses the other's copies, so one card is never in two places.
+export function PutAway({ addToast, user, source = 'unknown' }) {
   const [zone, setZone] = useState('')
   const [code, setCode] = useState('')
   const [held, setHeld] = useState(null)      // copies recorded in the chosen zone
@@ -1196,15 +1198,20 @@ export function PutAway({ addToast, user }) {
       const records = await readAllPages(() => supabase.from('stock_zone_qty').select('zone, qty').eq('location_id', INVENTORY_ROOM).eq('tcg_id', id).order('zone'))
       const inZones = records.reduce((s, r) => s + (Number(r.qty) || 0), 0)
       const unsorted = records.some(r => r.zone === UNSORTED && r.qty > 0)
-      info = { name: cardName(here[0]), rowId: here[0].id, fromUnsorted: unsorted }
-      const noRoom = !unsorted && inZones >= stock
+      // Will 11/26: the Grading page takes only a copy recorded in Unsorted; Stock Check takes only a copy with no record (stock above
+      // what the zones hold) and never takes out of Unsorted. Codex: one id can have both kinds of copy at once.
+      const fromU = source === 'unsorted'
+      info = { name: cardName(here[0]), rowId: here[0].id, fromUnsorted: fromU }
+      if (fromU && !unsorted) { set({ ...info, state: 'refused', note: 'Not in Unsorted: put it away on Stock Check. / 不在 Unsorted，请到 Stock Check 的 Put Away 放' }); return }
+      const noRoom = !fromU && inZones >= stock
+      if (noRoom && unsorted && !yes) { set({ ...info, state: 'refused', note: 'Every copy is recorded and one is in Unsorted: put it away on the Grading page (Unsorted → zones). / 这张都有记录，在 Unsorted 的请到 Grading 页「放分区」放' }); return }
       if (noRoom && !yes) {
         const list = records.map(r => `${zoneLabel(r.zone)}×${r.qty}`).join(' ')
         set({ ...info, state: 'ask', note: `Stock ${stock}, and the zones already hold ${inZones}: ${list}. Another copy? / 账上 ${stock} 张，分区里已经有 ${inZones} 张，还有一张吗？` })
         return
       }
       if (await countOpen()) { set({ state: 'refused', note: COUNT_OPEN }); return }
-      await addToZone(z, id, here[0].id, unsorted)
+      await addToZone(z, id, here[0].id, fromU)
       set({ ...info, state: 'added', at: Date.now(), note: noRoom ? 'zones now hold more than stock / 分区张数比账上多' : '' })
       refreshHeld(z).catch(() => {})    // the writes are done: only the count on the page is late
     } catch (err) {
@@ -1259,7 +1266,7 @@ export function PutAway({ addToast, user }) {
   const color = { working: 'text-gray-400', added: 'text-green-400', refused: 'text-red-400', ask: 'text-vault-gold', undone: 'text-gray-500' }
   return (
     <div className="card mb-4" data-testid="put-away">
-      <div className="text-sm font-semibold text-white">Put cards in a zone / 往分区放卡</div>
+      <div className="text-sm font-semibold text-white">{source === 'unsorted' ? 'Unsorted → zone / 从 Unsorted 放进分区' : 'Put cards in a zone (not from Unsorted) / 往分区放卡（来源未知）'}</div>
       <div className="text-xs text-gray-400 mt-0.5">Adds to one zone, no need to scan the whole zone. Stock does not change. / 只加这一个分区，不用整区重扫，库存数不变。</div>
       <div className="mt-2 flex flex-wrap items-stretch gap-2">
         {zone && !picking && (
