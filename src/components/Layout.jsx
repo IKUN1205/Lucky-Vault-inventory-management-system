@@ -124,6 +124,7 @@ const navSections = [
       { path: '/cards/log',    label: 'Activity Log', icon: HistoryIcon },
       { path: '/cards/audit',  label: 'Sheet Audit',  icon: Scale },
       { path: '/cards/stock-check', label: 'Stock Check', icon: ScanLine },
+      { path: '/cards/grading', label: 'Grading', icon: ScanLine },
       { path: '/cards/singles-view', label: 'Singles Inventory', icon: Layers },
       { path: '/cards/show-return', label: 'Show Return', icon: Tent },
     ]
