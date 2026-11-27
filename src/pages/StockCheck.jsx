@@ -577,7 +577,8 @@ export default function StockCheck() {
   }
 
   const share = plan ? loweredShare({ ...plan, fixes: [...plan.fixes, ...plan.auto] }, includeZeroed) : 0
-  const blocked = share > MAX_LOWERED_SHARE
+  // Will 11/26「30%保护不用了 如果有这种情况跟我讲就行」: a big drop no longer stops the submit; it is shown, to tell Will.
+  const bigDrop = share > MAX_LOWERED_SHARE
   const planLines = plan ? [...plan.fixes, ...plan.auto, ...(includeZeroed ? plan.zeroed : []), ...(includeRaised ? plan.raised : [])] : []
 
   const resultLines = (outcomes) => {
@@ -611,7 +612,7 @@ export default function StockCheck() {
   }
 
   const applyPlan = async () => {
-    if (blocked || busyRef.current) return
+    if (busyRef.current) return
     if (plan.version !== scanVersion.current) { setPlan(null); return }
     const ask = planLines.length
       ? `Change stock for ${planLines.length} card${planLines.length === 1 ? '' : 's'} in ${locationName}?`
@@ -966,16 +967,16 @@ export default function StockCheck() {
               </div>
             </div>
           )}
-          {blocked && (
+          {bigDrop && (
             <div className="mb-3 p-3 rounded border border-red-500/50 bg-red-500/10 text-sm text-red-300 flex gap-2">
               <AlertTriangle size={16} className="flex-shrink-0" />
-              <span>This would lower {Math.round(share * 100)}% of the room's stock, which looks like a mistake. Check the zones, or ask Gary. / 这样会减掉 {Math.round(share * 100)}% 的库存，看起来不对。检查小区，或者问 Gary。</span>
+              <span>This lowers {Math.round(share * 100)}% of the room's stock. Tell Will. / 这样会减掉 {Math.round(share * 100)}% 的库存，请告诉 Will。</span>
             </div>
           )}
           <div className="flex flex-wrap justify-end gap-2">
             <button type="button" onClick={() => downloadCsv(resultLines({}), locationName)} className="text-xs px-3 py-1.5 text-gray-300 border border-vault-border rounded">Download CSV</button>
             {planLines.length > 0 ? (
-              <button type="button" onClick={applyPlan} disabled={blocked || busy} className="text-sm px-3 py-1.5 bg-red-500/25 border border-red-500/50 text-red-200 rounded hover:bg-red-500/35 disabled:opacity-50 font-semibold flex items-center gap-1">
+              <button type="button" onClick={applyPlan} disabled={busy} className="text-sm px-3 py-1.5 bg-red-500/25 border border-red-500/50 text-red-200 rounded hover:bg-red-500/35 disabled:opacity-50 font-semibold flex items-center gap-1">
                 {applying ? <><Loader2 size={12} className="animate-spin" /> {applying.done} / {applying.total}</> : `Confirm: change stock for ${planLines.length} / 确认改库存`}
               </button>
             ) : (
