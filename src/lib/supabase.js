@@ -2078,7 +2078,7 @@ export const markSinglesAsSoldBatch = async (entries) => {
   }
 }
 
-export const markSingleAsSold = async (id, saleData) => {
+export const markSingleAsSold = async (id, saleData, { zoneLater = false } = {}) => {
   const patch = {
     status: 'sold',
     sale_price_usd: saleData.sale_price_usd,
@@ -2138,7 +2138,7 @@ export const markSingleAsSold = async (id, saleData) => {
   // in api/sheet-mark-sold.js — we forward the human `message` to the
   // browser console so staff or anyone debugging can see what happened.
   reportSheetSyncResult('single', data.id)
-  void _storeSaleZone(data, Number(data.quantity) || 1, saleData.sold_by_id)   // not awaited: a slow zone write never holds up the register
+  if (!zoneLater) void _storeSaleZone(data, Number(data.quantity) || 1, saleData.sold_by_id)   // not awaited: a slow zone write never holds up the register
   return data
 }
 
@@ -2155,15 +2155,22 @@ const _storeSaleZone = async (row, qty, userId) => {
       .eq('location_id', row.location_id).eq('status', 'open').limit(1)
     if (openErr) throw openErr
     if (open?.length) return
-    const { data: held, error } = await supabase.from('stock_zone_qty').select('zone, qty')
-      .eq('location_id', row.location_id).eq('tcg_id', row.tcg_id)
-    if (error) throw error
     const order = front ? [STORE_ZONE] : [...ZONES, UNSORTED]
     let left = qty
-    for (const h of (held || []).filter(h => order.includes(h.zone)).sort((x, y) => order.indexOf(x.zone) - order.indexOf(y.zone))) {
-      const take = Math.min(left, Number(h.qty) || 0)
-      if (take > 0) { await changeZoneQtyAt(row.location_id, h.zone, row.tcg_id, -take, userId); left -= take }
-      if (left <= 0) break
+    for (let pass = 0; pass < 3 && left > 0; pass++) {   // another sale took from a zone meanwhile: read again and go on (Codex 11/26)
+      const { data: held, error } = await supabase.from('stock_zone_qty').select('zone, qty')
+        .eq('location_id', row.location_id).eq('tcg_id', row.tcg_id)
+      if (error) throw error
+      let changed = false
+      for (const h of (held || []).filter(h => order.includes(h.zone)).sort((x, y) => order.indexOf(x.zone) - order.indexOf(y.zone))) {
+        const take = Math.min(left, Number(h.qty) || 0)
+        if (take > 0) {
+          try { await changeZoneQtyAt(row.location_id, h.zone, row.tcg_id, -take, userId); left -= take }
+          catch { changed = true; break }
+        }
+        if (left <= 0) break
+      }
+      if (!changed) break
     }
   } catch (err) {
     console.warn('[sale-zone] zone not updated, the next scan corrects it:', err)
@@ -4953,7 +4960,7 @@ const _sellSlabLine = async ({ slab, salePrice, paymentMethodId, cashierId, tran
 export const shouldSplitSingleRow = (sourceQty, sellQty) =>
   (Number(sourceQty) || 1) > 1 && (Number(sellQty) || 1) < (Number(sourceQty) || 1)
 
-export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
+export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData, { zoneLater = false } = {}) => {
   const { data: src, error: srcErr } = await supabase
     .from('singles').select('*').eq('id', singleId).single()
   if (srcErr) throw srcErr
@@ -4968,7 +4975,7 @@ export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
   // note it does NOT touch quantity, so the row records "N sold", which is
   // right only when all N really were sold.
   if (!shouldSplitSingleRow(sourceQty, sellQty)) {
-    return await markSingleAsSold(singleId, saleData)
+    return await markSingleAsSold(singleId, saleData, { zoneLater })
   }
 
   // Partial sale: split the row — INSERT a clone with qty=sellQty +
@@ -5076,7 +5083,7 @@ export const sellSingleQtySplit = async (singleId, sellQtyRaw, saleData) => {
     payload: { sale: saleData, card: inserted, split_from: singleId },
     acted_by_id: saleData.sold_by_id || null,
   })
-  void _storeSaleZone(src, sellQty, saleData.sold_by_id)   // not awaited, see markSingleAsSold
+  if (!zoneLater) void _storeSaleZone(src, sellQty, saleData.sold_by_id)   // not awaited, see markSingleAsSold
   return inserted
 }
 
@@ -6899,7 +6906,7 @@ const _sellSingleLinePlatform = async ({
 
   let soldRow, rollback
   if (!isFungibleRaw || sellQty === sourceQty) {
-    soldRow = await markSingleAsSold(single.id, saleData)
+    soldRow = await markSingleAsSold(single.id, saleData, { zoneLater: true })
     rollback = () => supabase.from('singles').update({
       status: 'in_inventory',
       sale_price_usd: null, sale_price_native: null, sale_fees_usd: null,
@@ -6911,7 +6918,7 @@ const _sellSingleLinePlatform = async ({
     // this path used to carry its own decrement-first copy of the split,
     // with the same lose-units-on-insert-failure ordering bug the modal/POS
     // path had; now all three run the insert-first + optimistic-lock code).
-    soldRow = await sellSingleQtySplit(single.id, sellQty, saleData)
+    soldRow = await sellSingleQtySplit(single.id, sellQty, saleData, { zoneLater: true })
     rollback = async () => {
       await supabase.from('singles').delete().eq('id', soldRow.id)             // remove the just-created clone
       await supabase.from('singles').update({ quantity: sourceQty }).eq('id', single.id)  // restore source qty
@@ -6940,5 +6947,6 @@ const _sellSingleLinePlatform = async ({
     try { await rollback() } catch (rb) { console.error('[sell-single-platform] rollback failed:', rb) }
     throw error
   }
+  void _storeSaleZone(soldRow, sellQty, saleData.sold_by_id)   // zones only once the sale record is written: a failed sale leaves them as they were (Codex 11/26)
   return { single: soldRow }
 }
