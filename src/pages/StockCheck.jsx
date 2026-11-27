@@ -1097,7 +1097,11 @@ export function PutAway({ addToast, user, source = 'unknown' }) {
   const [zone, setZone] = useState('')
   const [code, setCode] = useState('')
   const [held, setHeld] = useState(null)      // copies recorded in the chosen zone
-  const [lines, setLines] = useState([])      // this session, newest first
+  // Codex 11/26: cards waiting for "from Unsorted or unknown?" are kept in this browser, so going to another page does not lose them.
+  const KEEP = `lv_put_away_waiting_${source}`
+  const [lines, setLines] = useState(() => {
+    try { return (JSON.parse(localStorage.getItem(KEEP) || '[]') || []).map((l, i) => ({ ...l, key: -1 - i, state: 'pending' })) } catch { return [] }
+  })      // this session, newest first
   const [working, setWorking] = useState(0)
   const queue = useRef(Promise.resolve())     // a scanner is faster than the checks: one card at a time
   const seq = useRef(0)
@@ -1178,7 +1182,8 @@ export function PutAway({ addToast, user, source = 'unknown' }) {
   const COUNT_OPEN = 'A count of Inventory is open: scan it there instead, a submit would replace this. / 后面正在核对，请在核对里扫'
 
   // yes: the person has said there is one more copy. Every check still runs again, on the numbers as they are now.
-  const checkAndAdd = async (key, z, id, yes = false) => {
+  // from: 'scan' = Stock Check, just scanned; 'unsorted' / 'unknown' = what the person said at Submit (or the Grading page).
+  const checkAndAdd = async (key, z, id, yes = false, from = source === 'unsorted' ? 'unsorted' : 'scan') => {
     const set = (patch) => setLines(ls => ls.map(l => (l.key === key ? { ...l, ...patch } : l)))
     let info = {}
     try {
@@ -1198,13 +1203,17 @@ export function PutAway({ addToast, user, source = 'unknown' }) {
       const records = await readAllPages(() => supabase.from('stock_zone_qty').select('zone, qty').eq('location_id', INVENTORY_ROOM).eq('tcg_id', id).order('zone'))
       const inZones = records.reduce((s, r) => s + (Number(r.qty) || 0), 0)
       const unsorted = records.some(r => r.zone === UNSORTED && r.qty > 0)
-      // Will 11/26: the Grading page takes only a copy recorded in Unsorted; Stock Check takes only a copy with no record (stock above
-      // what the zones hold) and never takes out of Unsorted. Codex: one id can have both kinds of copy at once.
-      const fromU = source === 'unsorted'
-      info = { name: cardName(here[0]), rowId: here[0].id, fromUnsorted: fromU }
-      if (fromU && !unsorted) { set({ ...info, state: 'refused', note: 'Not in Unsorted: put it away on Stock Check. / 不在 Unsorted，请到 Stock Check 的 Put Away 放' }); return }
+      // Will 11/26: the Grading page takes only a copy recorded in Unsorted. On Stock Check a card that Unsorted also holds waits,
+      // and at Submit the person says whether it came from Unsorted or from somewhere unknown; other cards go in as unknown.
+      const fromU = from === 'unsorted'
+      info = { name: cardName(here[0]), rowId: here[0].id, fromUnsorted: fromU, from }
+      if (fromU && !unsorted) {
+        if (source === 'unsorted') set({ ...info, state: 'refused', note: 'Not in Unsorted: put it away on Stock Check. / 不在 Unsorted，请到 Stock Check 的 Put Away 放' })
+        else set({ ...info, from: 'scan', fromUnsorted: false, state: 'pending', note: 'Unsorted has no copy of it now: choose unknown. / Unsorted 里已经没有了，请选来源未知' })
+        return
+      }
+      if (from === 'scan' && unsorted) { set({ ...info, fromUnsorted: false, state: 'pending', note: 'Unsorted has it too: asked at Submit. / Unsorted 里也有，提交时问' }); return }
       const noRoom = !fromU && inZones >= stock
-      if (noRoom && unsorted && !yes) { set({ ...info, state: 'refused', note: 'Every copy is recorded and one is in Unsorted: put it away on the Grading page (Unsorted → zones). / 这张都有记录，在 Unsorted 的请到 Grading 页「放分区」放' }); return }
       if (noRoom && !yes) {
         const list = records.map(r => `${zoneLabel(r.zone)}×${r.qty}`).join(' ')
         set({ ...info, state: 'ask', note: `Stock ${stock}, and the zones already hold ${inZones}: ${list}. Another copy? / 账上 ${stock} 张，分区里已经有 ${inZones} 张，还有一张吗？` })
@@ -1230,7 +1239,7 @@ export function PutAway({ addToast, user, source = 'unknown' }) {
     setCode('')
     if (!id || !zone) return
     const key = ++seq.current
-    setLines(ls => [{ key, zone, id, name: '', state: 'working', note: '' }, ...ls].slice(0, 100))
+    setLines(ls => [{ key, zone, id, name: '', state: 'working', note: '' }, ...ls].filter((l, i) => i < 100 || ['pending', 'working', 'ask'].includes(l.state)))
     run(() => checkAndAdd(key, zone, id))
     inputRef.current?.focus()
   }
@@ -1239,8 +1248,32 @@ export function PutAway({ addToast, user, source = 'unknown' }) {
 
   const addAnyway = (l) => {
     setLine(l.key, { state: 'working', note: '' })
-    run(() => checkAndAdd(l.key, l.zone, l.id, true))
+    run(() => checkAndAdd(l.key, l.zone, l.id, true, l.from))
   }
+
+  // Submit: each waiting card goes in as the person says.
+  const [asking, setAsking] = useState(false)
+  const waiting = lines.filter(l => l.state === 'pending')
+  // Only cards not yet decided: one being written may already be in its zone, and must not come back as waiting.
+  const keepKey = waiting.map(l => l.key).join(',')
+  useEffect(() => {
+    try {
+      if (waiting.length) localStorage.setItem(KEEP, JSON.stringify(waiting.map(l => ({ zone: l.zone, id: l.id, name: l.name }))))
+      else localStorage.removeItem(KEEP)
+    } catch { /* storage full or off: the warning on leaving still applies */ }
+  }, [keepKey])
+  const decide = (ls, from) => {
+    for (const l of ls) {
+      setLine(l.key, { state: 'working', note: '' })
+      run(() => checkAndAdd(l.key, l.zone, l.id, false, from))
+    }
+  }
+  useEffect(() => {
+    if (!waiting.length) { setAsking(false); return }
+    const warn = (e) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [waiting.length])
 
   // A count since the add may already have corrected it, so its undo no longer applies. A minute's margin for the two clocks.
   // Two writes. If the second fails the line remembers the first is done, so pressing Undo again does not take a second copy.
@@ -1262,8 +1295,8 @@ export function PutAway({ addToast, user, source = 'unknown' }) {
     })
   }
 
-  const label = { working: 'checking', added: 'added', refused: 'not added', ask: 'needs you', undone: 'undone' }
-  const color = { working: 'text-gray-400', added: 'text-green-400', refused: 'text-red-400', ask: 'text-vault-gold', undone: 'text-gray-500' }
+  const label = { working: 'checking', added: 'added', refused: 'not added', ask: 'needs you', undone: 'undone', pending: 'waiting' }
+  const color = { working: 'text-gray-400', added: 'text-green-400', refused: 'text-red-400', ask: 'text-vault-gold', undone: 'text-gray-500', pending: 'text-vault-gold' }
   return (
     <div className="card mb-4" data-testid="put-away">
       <div className="text-sm font-semibold text-white">{source === 'unsorted' ? 'Unsorted → zone / 从 Unsorted 放进分区' : 'Put cards in a zone (not from Unsorted) / 往分区放卡（来源未知）'}</div>
@@ -1311,6 +1344,35 @@ export function PutAway({ addToast, user, source = 'unknown' }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+      {waiting.length > 0 && (
+        <div className="mt-2 p-2 rounded border border-vault-gold/50 bg-vault-gold/10 text-xs" data-testid="put-away-submit">
+          {!asking ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-gray-200">{waiting.length} card(s) not added yet: Unsorted has them too. / {waiting.length} 张还没加：Unsorted 里也有这张</span>
+              <button type="button" onClick={() => setAsking(true)} className="px-3 py-1 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded font-semibold">Submit / 提交</button>
+            </div>
+          ) : (
+            <div>
+              <div className="text-gray-200 font-semibold">Did these come from Unsorted? / 这些卡是从 Unsorted 拿来的吗？</div>
+              <div className="text-gray-400">From Unsorted: Unsorted −1, zone +1. Unknown: zone +1 only. / 从 Unsorted：Unsorted 减 1、分区加 1；来源未知：只加分区</div>
+              <div className="mt-1 flex flex-wrap gap-2">
+                <button type="button" onClick={() => decide(waiting, 'unsorted')} className="px-2 py-0.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded font-semibold">All from Unsorted / 全部从 Unsorted</button>
+                <button type="button" onClick={() => decide(waiting, 'unknown')} className="px-2 py-0.5 border border-vault-border text-gray-300 rounded">All unknown / 全部来源未知</button>
+              </div>
+              {waiting.map(l => (
+                <div key={l.key} className="flex flex-wrap items-center gap-x-3 py-1 border-t border-vault-border/40">
+                  <span className="font-semibold text-vault-gold">{zoneLabel(l.zone)}</span>
+                  <span className="font-mono text-gray-400">{l.id}</span>
+                  <span className="flex-1 min-w-0 text-gray-200">{l.name}</span>
+                  <button type="button" onClick={() => decide([l], 'unsorted')} className="px-2 py-0.5 bg-vault-gold/25 border border-vault-gold/50 text-vault-gold rounded">From Unsorted / 从 Unsorted</button>
+                  <button type="button" onClick={() => decide([l], 'unknown')} className="px-2 py-0.5 border border-vault-border text-gray-300 rounded">Unknown / 来源未知</button>
+                  <button type="button" onClick={() => setLine(l.key, { state: 'refused', note: 'skipped / 没加' })} className="px-2 py-0.5 border border-vault-border text-gray-400 rounded">Skip</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {lines.length > 0 && (
