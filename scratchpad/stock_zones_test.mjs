@@ -35,6 +35,7 @@ p = planZoneSubmit({ submit: new Set(['BLU1']), scans: new Map([['BLU1|OP1', 3]]
 ok('a part scan (3 of 4) lowers nothing: the rest may sit in a zone not scanned yet', p.fixes.length === 0 && p.zeroed.length === 0)
 p = planZoneSubmit({ submit: new Set(['BLU1', 'DB1']), scans: new Map([['BLU1|OP1', 3], ['DB1|DB9', 2]]), ledger: new Map([['A1|PK1', { qty: 3, at: '2026-11-05' }]]), rows, finishing: true })
 ok('finishing lists the copy no zone holds, and only that', p.zeroed.length === 1 && p.zeroed[0].id === 'OP1' && p.zeroed[0].to === 3 && p.fixes.length === 0)
+ok('a copy no zone holds is marked unheld at the finish', p.zeroed[0].unheld === true)
 p = planZoneSubmit({ submit: new Set(['RED2']), scans: new Map([['RED2|OP1', 6]]), ledger: new Map(), rows })
 ok('more than stock is never added by itself', p.raised.length === 1 && p.holdUnlessTicked.has('OP1') && p.fixes.length === 0)
 p = planZoneSubmit({ submit: new Set(['DB2']), scans: new Map([['DB2|XX', 1]]), ledger: new Map(), rows })

@@ -538,11 +538,13 @@ export default function StockCheck() {
       // Not found two rounds running: changed without the box. Taken to 0 by a stock check and scanned again: put back without the box.
       const missedBefore = await readLastMissed(locationId)
       const zeroedRows = await readZeroedByCheck(p.raised.filter(l => l.now === 0).map(l => l.rowId))
-      const autoZero = p.zeroed.filter(l => missedBefore.has(l.id))
+      // Will 11/26「这些如果在下一次check的时候没有发现 就清空」: at the end of a whole round, copies no zone record holds and
+      // the round did not find go to the number found without the box, like cards not found two rounds running.
+      const autoZero = p.zeroed.filter(l => missedBefore.has(l.id) || l.unheld)
       const autoBack = p.raised.filter(l => l.now === 0 && zeroedRows.has(l.rowId))
       p.zeroed = p.zeroed.filter(l => !autoZero.includes(l))
       p.raised = p.raised.filter(l => !autoBack.includes(l))
-      p.auto = [...autoZero.map(l => ({ ...l, reason: 'not found last round either / 上一轮也没扫到' })), ...autoBack.map(l => ({ ...l, reason: 'set to 0 by a stock check, found again / 之前核对改成 0，又扫到了' }))]
+      p.auto = [...autoZero.map(l => ({ ...l, reason: l.unheld ? 'no zone record, not found this round / 没有分区记录，这轮也没扫到' : 'not found last round either / 上一轮也没扫到' })), ...autoBack.map(l => ({ ...l, reason: 'set to 0 by a stock check, found again / 之前核对改成 0，又扫到了' }))]
       p.auto.forEach(l => p.holdUnlessTicked.delete(l.id))
       if (p.extras.length) {
         const ids = p.extras.map(e => e.id)
@@ -584,7 +586,7 @@ export default function StockCheck() {
     const line = (group, l, outcome) => ({ group, ...l, zones: zones(l.id), outcome, rowId: undefined, rowQty: undefined })
     return [
       ...plan.fixes.map(l => line('difference', l, outcomes?.[l.id] || 'not changed')),
-      ...plan.auto.map(l => line(l.to < l.now ? 'not found twice' : 'found again after 0', l, outcomes?.[l.id] || 'not changed')),
+      ...plan.auto.map(l => line(l.to < l.now ? (l.unheld ? 'no zone record, not found' : 'not found twice') : 'found again after 0', l, outcomes?.[l.id] || 'not changed')),
       ...plan.zeroed.map(l => line('needs the box ticked', l, outcomes?.[l.id] || 'not changed')),
       ...plan.raised.map(l => line('counted more, needs the box ticked', l, outcomes?.[l.id] || 'not changed')),
       ...plan.people.map(l => line('needs a person', { ...l, name: l.name }, l.reason)),
@@ -927,7 +929,7 @@ export default function StockCheck() {
           </p>
           <PlanTable title={`Will change to your number: ${plan.fixes.length}`} tone="text-vault-gold" lines={plan.fixes} nameOf={nameOf} />
           {plan.auto.length > 0 && (
-            <PlanTable title={`Will change without a tick: ${plan.auto.length} (not found two rounds running → found number; set to 0 before and found again → put back) / 不用打勾直接改`} tone="text-vault-gold" lines={plan.auto} nameOf={nameOf} showReason />
+            <PlanTable title={`Will change without a tick: ${plan.auto.length} (not found two rounds running, or no zone record and not found this round → found number; set to 0 before and found again → put back) / 不用打勾直接改`} tone="text-vault-gold" lines={plan.auto} nameOf={nameOf} showReason />
           )}
           {plan.zeroed.length > 0 && (
             <>

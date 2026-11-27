@@ -181,7 +181,8 @@ export function planZoneSubmit({ submit, scans, ledger, rows, names = new Map(),
       if (rs[0].status !== 'in_inventory') { plan.people.push({ ...l, reason: `status is ${rs[0].status}` }); plan.hold.add(id); continue }
       const already = plan.fixes.findIndex(f => f.id === id)
       if (already >= 0) plan.fixes.splice(already, 1)
-      plan.zeroed.push({ ...l, now, rowId: rs[0].id, rowQty: now })
+      // unheld: copies no zone record holds and the round did not find. Will 11/26: they go without the box (see StockCheck.jsx).
+      plan.zeroed.push({ ...l, now, rowId: rs[0].id, rowQty: now, unheld: true })
     }
   }
   return plan
